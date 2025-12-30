@@ -1,0 +1,151 @@
+name: Agent Evaluation
+
+on:
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Target environment to evaluate"
+        required: true
+        default: "local"
+        type: choice
+        options:
+          - local
+          - staging
+          - production
+      run_full_suite:
+        description: "Run full evaluation suite"
+        required: false
+        default: false
+        type: boolean
+
+  # Scheduled evaluation
+  schedule:
+    - cron: "0 0 * * 0"  # Weekly on Sunday at midnight
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  evaluate:
+    name: Run Agent Evaluation
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: scoratis
+          POSTGRES_PASSWORD: scoratis_password
+          POSTGRES_DB: scoratis_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmagic1
+
+      - name: Install Python dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install aiosqlite
+
+      - name: Run evaluation suite
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://scoratis:scoratis_password@localhost:5432/scoratis_test
+          DATABASE_URL_ASYNC: postgresql+asyncpg://scoratis:scoratis_password@localhost:5432/scoratis_test
+          REDIS_URL: redis://localhost:6379/0
+          TESTING: "true"
+          LANGCHAIN_TRACING_V2: ${{ secrets.LANGCHAIN_API_KEY && 'true' || 'false' }}
+          LANGCHAIN_API_KEY: ${{ secrets.LANGCHAIN_API_KEY }}
+          LANGCHAIN_PROJECT: "scoratis-evaluation"
+          EVALUATION_TARGET: ${{ github.event.inputs.target || 'local' }}
+        run: |
+          if [ "${{ github.event.inputs.run_full_suite }}" == "true" ]; then
+            pytest tests/evaluation -v --tb=short -x
+          else
+            pytest tests/evaluation -v --tb=short -m "not slow"
+          fi
+
+      - name: Generate evaluation report
+        working-directory: backend
+        if: always()
+        run: |
+          python -c "
+          import json
+          from datetime import datetime
+
+          report = {
+              'timestamp': datetime.utcnow().isoformat(),
+              'target': '${{ github.event.inputs.target || 'local' }}',
+              'run_id': '${{ github.run_id }}',
+              'status': 'completed'
+          }
+
+          with open('evaluation_report.json', 'w') as f:
+              json.dump(report, f, indent=2)
+          "
+
+      - name: Upload evaluation report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evaluation-report-${{ github.run_id }}
+          path: |
+            backend/evaluation_report.json
+            backend/coverage_html/
+
+      - name: Post evaluation summary
+        if: always()
+        run: |
+          echo "## Evaluation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Target:** ${{ github.event.inputs.target || 'local' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Full Suite:** ${{ github.event.inputs.run_full_suite || 'false' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+
+  # Notify on failure
+  notify-failure:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    needs: evaluate
+    if: failure()
+
+    steps:
+      - name: Send failure notification
+        run: |
+          echo "Agent evaluation failed!"
+          # Add Slack/Discord/Email notification here
+          # Example: curl -X POST -H 'Content-type: application/json' \
+          #   --data '{"text":"Agent evaluation failed!"}' \
+          #   ${{ secrets.SLACK_WEBHOOK_URL }}

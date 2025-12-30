@@ -1,0 +1,98 @@
+# ===========================================
+# Scoratis AI Learning Platform - .gitignore
+# ===========================================
+
+# ----- Python -----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# ----- Database -----
+*.db
+*.sqlite3
+*.sqlite
+
+# ----- Logs -----
+*.log
+logs/
+flask.log
+
+# ----- Environment -----
+.env
+.env.local
+.env.*.local
+
+# ----- IDE -----
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-*
+.project
+.settings/
+
+# ----- OS -----
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ----- Temporary -----
+*.tmp
+*.bak
+*.backup
+
+# ----- Node/Frontend -----
+node_modules/
+frontend/node_modules/
+.vite/
+frontend/.vite/
+
+# ----- Build Artifacts -----
+frontend/dist/
+*.map
+
+# ----- Generated Content -----
+backend/generated_videos/
+backend/audio_cache/
+backend/embeddings_cache/
+
+# ----- Docker -----
+*.tar
+
+# ----- Testing -----
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+
+# ----- Misc -----
+*.pid
+*.seed
+*.pid.lock
