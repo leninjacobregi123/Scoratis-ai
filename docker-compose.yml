@@ -111,6 +111,12 @@ services:
       dockerfile: Dockerfile
     container_name: scoratis-celery-worker
     command: celery -A celery_app worker --loglevel=info --concurrency=2 -Q default,ingestion
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'celery.*worker' > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
     environment:
       - DATABASE_URL=postgresql://scoratis:scoratis_password@postgres:5432/scoratis
       - DATABASE_URL_ASYNC=postgresql+asyncpg://scoratis:scoratis_password@postgres:5432/scoratis

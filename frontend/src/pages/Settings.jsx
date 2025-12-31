@@ -348,6 +348,7 @@ export default function Settings() {
   const [temperature, setTemperature] = useState(0.7)
   const [maxTokens, setMaxTokens] = useState(2048)
   const [contextLength, setContextLength] = useState(4096)
+  const [validationError, setValidationError] = useState(null) // New: Track validation errors
   const api = useApi()
 
   useEffect(() => {
@@ -414,16 +415,96 @@ export default function Settings() {
   const updateModelSettings = async () => {
     if (!currentConfig) return
     setSaving(true)
+    setValidationError(null) // Clear previous errors
     try {
-      await api.post('/llm/configure', {
+      const result = await api.post('/llm/configure', {
         model: currentConfig.model,
         provider: currentConfig.provider || 'ollama',
         temperature,
         max_tokens: maxTokens,
         context_length: contextLength
       })
+
+      // Success - result.success should be true
+      if (result.success) {
+        setValidationError(null)
+        await loadAll()
+      }
     } catch (error) {
       console.error('Failed to update settings:', error)
+
+      // Extract error details from HTTPException response
+      if (error.response?.data?.detail) {
+        const detail = error.response.data.detail
+        setValidationError({
+          type: detail.error_type || 'unknown_error',
+          message: detail.message || 'Configuration failed',
+          suggestion: detail.suggestion,
+          installed_models: detail.installed_models
+        })
+      } else if (error.response?.status === 400 || error.response?.status === 500) {
+        // Fallback for non-standard error responses
+        setValidationError({
+          type: 'validation_error',
+          message: error.message || 'Configuration failed',
+          suggestion: 'Check model settings and try again'
+        })
+      } else {
+        // Network or other errors
+        setValidationError({
+          type: 'network_error',
+          message: 'Failed to connect to server',
+          suggestion: 'Check if the backend is running'
+        })
+      }
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // Function to select and validate a model
+  const selectModel = async (model, provider = 'ollama') => {
+    setSaving(true)
+    setValidationError(null)
+    try {
+      const result = await api.post('/llm/configure', {
+        model,
+        provider,
+        temperature,
+        max_tokens: maxTokens,
+        context_length: contextLength
+      })
+
+      // Success
+      if (result.success) {
+        setCurrentConfig(result.config)
+        setValidationError(null)
+      }
+    } catch (error) {
+      console.error('Failed to select model:', error)
+
+      // Extract error details from HTTPException response
+      if (error.response?.data?.detail) {
+        const detail = error.response.data.detail
+        setValidationError({
+          type: detail.error_type || 'unknown_error',
+          message: detail.message || 'Model validation failed',
+          suggestion: detail.suggestion,
+          installed_models: detail.installed_models
+        })
+      } else if (error.response?.status === 400 || error.response?.status === 500) {
+        setValidationError({
+          type: 'validation_error',
+          message: error.message || 'Model validation failed',
+          suggestion: 'Check model settings and try again'
+        })
+      } else {
+        setValidationError({
+          type: 'network_error',
+          message: 'Failed to connect to server',
+          suggestion: 'Check if the backend is running'
+        })
+      }
     } finally {
       setSaving(false)
     }
@@ -488,6 +569,49 @@ export default function Settings() {
             Parameters
           </button>
         </div>
+
+        {/* Validation Error Banner */}
+        {validationError && (
+          <div className="mb-6 p-4 rounded-xl bg-red-50 border border-red-200">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-red-600 mt-0.5 flex-shrink-0" />
+              <div className="flex-1">
+                <h4 className="font-semibold text-red-800 mb-1">
+                  {validationError.type === 'model_not_installed' && 'Model Not Installed'}
+                  {validationError.type === 'server_unavailable' && 'Server Unavailable'}
+                  {validationError.type === 'insufficient_memory' && 'Insufficient Memory'}
+                  {validationError.type === 'timeout' && 'Request Timeout'}
+                  {validationError.type === 'authentication_error' && 'Authentication Failed'}
+                  {validationError.type === 'connection_error' && 'Connection Error'}
+                  {validationError.type === 'network_error' && 'Network Error'}
+                  {!['model_not_installed', 'server_unavailable', 'insufficient_memory', 'timeout', 'authentication_error', 'connection_error', 'network_error'].includes(validationError.type) && 'Configuration Error'}
+                </h4>
+                <p className="text-sm text-red-700 mb-2">{validationError.message}</p>
+                {validationError.suggestion && (
+                  <div className="text-sm">
+                    <span className="text-red-600 font-medium">Fix: </span>
+                    <code className="bg-red-100 text-red-800 px-2 py-0.5 rounded font-mono text-xs">
+                      {validationError.suggestion}
+                    </code>
+                  </div>
+                )}
+                {validationError.installed_models && validationError.installed_models.length > 0 && (
+                  <div className="mt-2 text-sm text-red-700">
+                    <span className="font-medium">Available models: </span>
+                    {validationError.installed_models.join(', ')}
+                  </div>
+                )}
+              </div>
+              <button
+                onClick={() => setValidationError(null)}
+                className="text-red-600 hover:text-red-800 p-1"
+              >
+                <span className="sr-only">Dismiss</span>
+                ×
+              </button>
+            </div>
+          </div>
+        )}
 
         {loading ? (
           <div className="flex items-center justify-center py-20">

@@ -1,13 +1,13 @@
 """
 Scoratis LLM Service - Universal Provider Support
-Powered by LiteLLM for 100+ model support including local Ollama
-All data stays on your machine with Ollama - fully open source
+
+This is a facade service that delegates to the centralized LiteLLMService.
+It maintains backwards compatibility with the existing API while leveraging
+the centralized error handling and validation from LiteLLMService.
 """
 
 import os
 import httpx
-import asyncio
-from abc import ABC, abstractmethod
 from typing import Optional, List, Dict, Any, AsyncGenerator
 from dataclasses import dataclass
 from enum import Enum
@@ -15,7 +15,11 @@ import logging
 
 from config import settings
 from models import ProviderType, PROVIDER_INFO
-from services.litellm_service import get_litellm_service
+from services.litellm_service import (
+    get_litellm_service,
+    LLMGenerationError,
+    LLMError,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -192,7 +196,9 @@ class OllamaProvider:
 class LLMService:
     """
     Universal LLM service supporting multiple providers via LiteLLM.
-    Maintains backwards compatibility with existing Ollama-only interface.
+
+    This is a facade that delegates to the centralized LiteLLMService
+    while maintaining backwards compatibility with the existing API.
     """
 
     def __init__(self):
@@ -219,7 +225,6 @@ class LLMService:
         context_length: int = 4096
     ):
         """Set the LLM configuration"""
-        # Map string to enum
         try:
             provider_enum = LLMProvider(provider.lower())
         except ValueError:
@@ -235,7 +240,6 @@ class LLMService:
             context_length=context_length
         )
 
-        # Initialize Ollama provider for direct operations
         if provider_enum == LLMProvider.OLLAMA:
             self.ollama_provider = OllamaProvider(self.current_config)
 
@@ -247,11 +251,20 @@ class LLMService:
             return ProviderType(self.current_config.provider.value)
         return ProviderType.OLLAMA
 
+    # ==================== GENERATION METHODS ====================
+    # These delegate to LiteLLMService and let exceptions propagate
+
     async def generate(self, messages: List[Dict[str, str]], system_prompt: str) -> str:
-        """Generate a response using LiteLLM"""
+        """
+        Generate a response using LiteLLM.
+
+        Raises:
+            LLMGenerationError: On any LLM failure with structured error info
+        """
         if not self.current_config:
             raise Exception("LLM provider not configured")
 
+        # Delegate to centralized service - let LLMGenerationError propagate
         return await self.litellm.generate(
             messages=messages,
             system_prompt=system_prompt,
@@ -268,7 +281,12 @@ class LLMService:
         messages: List[Dict[str, str]],
         system_prompt: str
     ) -> AsyncGenerator[str, None]:
-        """Generate a streaming response using LiteLLM"""
+        """
+        Generate a streaming response using LiteLLM.
+
+        Raises:
+            LLMGenerationError: On any LLM failure with structured error info
+        """
         if not self.current_config:
             raise Exception("LLM provider not configured")
 
@@ -306,18 +324,137 @@ class LLMService:
             temperature=self.current_config.temperature,
         )
 
+    # ==================== VALIDATION METHODS ====================
+    # These delegate to the centralized LiteLLMService validation
+
+    async def validate_model_config(
+        self,
+        provider: str,
+        model: str,
+        api_key_encrypted: Optional[str] = None,
+        base_url: Optional[str] = None,
+        timeout_seconds: int = 30,
+    ) -> Dict[str, Any]:
+        """
+        Validate an LLM configuration by attempting a test API call with timeout.
+
+        Delegates to the centralized LiteLLMService.validate_config method.
+
+        Returns:
+            Dict with 'success', 'message', 'error_type', and optionally 'suggestion'
+        """
+        try:
+            provider_type = ProviderType(provider.lower())
+        except ValueError:
+            return {
+                "success": False,
+                "message": f"Unknown provider: {provider}",
+                "error_type": "invalid_provider",
+            }
+
+        # For Ollama, first check if model is installed (quick check)
+        if provider_type == ProviderType.OLLAMA:
+            is_installed, installed_models = await self.litellm.check_model_installed(model)
+
+            # Check server availability
+            ollama_health = await self.litellm.check_ollama_health()
+            if not ollama_health.get("available"):
+                return {
+                    "success": False,
+                    "message": "Ollama server is not running",
+                    "error_type": "server_unavailable",
+                    "suggestion": "Start Ollama with: ollama serve",
+                }
+
+            if not is_installed:
+                return {
+                    "success": False,
+                    "message": f"Model '{model}' is not installed locally",
+                    "error_type": "model_not_installed",
+                    "suggestion": f"Download the model with: ollama pull {model}",
+                    "installed_models": installed_models[:10],
+                }
+
+        # Use centralized validation with timeout
+        is_valid, message, error = await self.litellm.validate_config(
+            provider=provider_type,
+            model=model,
+            api_key_encrypted=api_key_encrypted,
+            base_url=base_url,
+            timeout=timeout_seconds,
+        )
+
+        if is_valid:
+            return {
+                "success": True,
+                "message": message,
+                "error_type": None,
+            }
+        else:
+            return {
+                "success": False,
+                "message": message,
+                "error_type": error.error_type if error else "unknown_error",
+                "suggestion": error.suggestion if error else None,
+            }
+
+    async def check_model_availability(self, model: str = None) -> Dict[str, Any]:
+        """
+        Quick check if current/specified model is available and ready.
+
+        Returns:
+            Dict with 'available', 'message', 'error_type', and 'suggestion'
+        """
+        model = model or (self.current_config.model if self.current_config else settings.DEFAULT_LLM_MODEL)
+        provider = self.current_config.provider if self.current_config else LLMProvider.OLLAMA
+
+        if provider == LLMProvider.OLLAMA:
+            ollama_health = await self.litellm.check_ollama_health()
+
+            if not ollama_health.get("available"):
+                return {
+                    "available": False,
+                    "message": "Ollama server is not running",
+                    "error_type": "server_unavailable",
+                    "suggestion": "Start Ollama with: ollama serve",
+                }
+
+            is_installed, installed_models = await self.litellm.check_model_installed(model)
+
+            if not is_installed:
+                return {
+                    "available": False,
+                    "message": f"Model '{model}' is not installed",
+                    "error_type": "model_not_installed",
+                    "suggestion": f"ollama pull {model}",
+                    "installed_models": installed_models[:5],
+                }
+
+            return {
+                "available": True,
+                "message": f"Model '{model}' is ready",
+                "error_type": None,
+            }
+        else:
+            # For cloud providers, assume available if API key is set
+            return {
+                "available": True,
+                "message": f"Cloud provider '{provider.value}' configured",
+                "error_type": None,
+            }
+
+    # ==================== PROVIDER MANAGEMENT ====================
+
     async def check_availability(self) -> Dict[str, Any]:
         """Check provider availability"""
         result = {}
 
-        # Check Ollama
         ollama_health = await self.litellm.check_ollama_health()
         result["ollama"] = {
             "available": ollama_health["available"],
             "installed_models": ollama_health.get("installed_models", []),
         }
 
-        # Get all available providers
         result["providers"] = self.litellm.get_available_providers()
 
         return result
@@ -328,7 +465,6 @@ class LLMService:
             "ollama": AVAILABLE_MODELS.get(LLMProvider.OLLAMA, []),
         }
 
-        # Add models from all providers
         for provider in PROVIDER_INFO:
             provider_models = PROVIDER_INFO[provider].get("models", [])
             result[provider.value] = [
@@ -373,7 +509,6 @@ class LLMService:
             if self.ollama_provider:
                 return await self.ollama_provider.health_check()
 
-        # For other providers, do a test call
         provider_type = self._get_provider_type()
         result = await self.litellm.test_provider(
             provider=provider_type,

@@ -3,7 +3,8 @@ import { useOutletContext, useSearchParams } from 'react-router-dom';
 import {
   ArrowUp, MessageSquare, Plus, PanelLeftClose, PanelLeft,
   MoreVertical, Trash2, Edit2, Check, X,
-  Play, Loader2, Download, Film, Pause, Volume2, VolumeX, Mic, MicOff, FileText
+  Play, Loader2, Download, Film, Pause, Volume2, VolumeX, Mic, MicOff, FileText,
+  Globe, Brain
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import SocratesLogo from '../3d/SocratesLogo';
@@ -12,10 +13,13 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import SubjectBackground from '../components/SubjectBackground';
 import LLMSwitcher from '../components/LLMSwitcher';
-import { getSubjectTheme, DEFAULT_THEME, getSubjectImage, getSubjectTutor } from '../config/subjectThemes';
+import { getSubjectTheme, DEFAULT_THEME, getSubjectImage, getSubjectTutor, isDarkTheme } from '../config/subjectThemes';
 import { parseCitations, buildSourceMap, hasCitations } from '../utils/citations';
 import { CitationNumber, CitationPopup, CitationList, SourcesBadge } from '../components/Citation';
 import AgenticWorkflow, { useAgenticWorkflow } from '../components/AgenticWorkflow';
+import { AttachmentButton, AttachmentPreview, UploadProgressOverlay } from '../components/ChatAttachments';
+import { ChatOptionsBar, DEFAULT_CHAT_OPTIONS } from '../components/ChatOptions';
+import { CanvasPanel, CanvasToggleButton } from '../components/CanvasPanel';
 
 // ============== UI COMPONENTS ==============
 
@@ -300,8 +304,42 @@ function stripPedagogicalPlan(content) {
     .trim();
 }
 
+// Guardrail Warning Card - displays when query is blocked
+function GuardrailCard({ message, suggestedSubject, onSwitchSubject }) {
+  const subjectName = suggestedSubject?.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+  return (
+    <div className="bg-amber-50 border border-amber-300 rounded-xl p-4 my-4 animate-fade-in">
+      <div className="flex items-start gap-3">
+        <div className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center flex-shrink-0">
+          <svg className="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
+        </div>
+        <div className="flex-1">
+          <h4 className="font-semibold text-amber-900 mb-2">Topic Guidance</h4>
+          <div className="text-amber-800 text-sm leading-relaxed whitespace-pre-wrap">
+            {message}
+          </div>
+          {suggestedSubject && (
+            <button
+              onClick={() => onSwitchSubject(suggestedSubject)}
+              className="mt-3 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+              </svg>
+              Switch to {subjectName}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Message card - Claude.ai inspired professional design
-function MessageCard({ message, index, audioUrl, isCurrentlyPlaying, isLoadingAudio, onPlayAudio, onPauseAudio, video, generatingVideo, onRemoveVideo, videoRecommendation, onAcceptVideo, onDismissVideo, currentSubject, theme, subjectId, sources, workflow }) {
+function MessageCard({ message, index, audioUrl, isCurrentlyPlaying, isLoadingAudio, onPlayAudio, onPauseAudio, video, generatingVideo, onRemoveVideo, videoRecommendation, onAcceptVideo, onDismissVideo, currentSubject, theme, subjectId, sources, workflow, guardrailInfo, onSwitchSubject, onCitationClick }) {
   const isUser = message.role === 'user';
   const [isVisible, setIsVisible] = useState(false);
   const [showVideoOffer, setShowVideoOffer] = useState(false);
@@ -406,6 +444,18 @@ function MessageCard({ message, index, audioUrl, isCurrentlyPlaying, isLoadingAu
           </div>
         ) : (
           <div>
+            {/* Guardrail Warning - shown when topic is blocked */}
+            {guardrailInfo?.triggered && (
+              <GuardrailCard
+                message={message.content}
+                suggestedSubject={guardrailInfo.suggestedSubject}
+                onSwitchSubject={onSwitchSubject}
+              />
+            )}
+
+            {/* Normal AI Response (hidden if guardrail triggered) */}
+            {!guardrailInfo?.triggered && (
+              <>
             {/* Agentic Workflow Display - shows tool usage, thinking, etc. */}
             {workflow && workflow.hasTools && (
               <AgenticWorkflow
@@ -545,9 +595,10 @@ function MessageCard({ message, index, audioUrl, isCurrentlyPlaying, isLoadingAu
                 {showSourcesList && (
                   <div className="mt-3 space-y-2">
                     {sources.map((source, i) => (
-                      <div
+                      <button
                         key={source.chunk_id || i}
-                        className="flex items-start gap-3 p-3 rounded-lg bg-bg-tertiary/50 border border-border-color/30"
+                        onClick={() => onCitationClick?.(source)}
+                        className="w-full flex items-start gap-3 p-3 rounded-lg bg-bg-tertiary/50 border border-border-color/30 hover:bg-bg-tertiary hover:border-blue-300 transition-colors text-left cursor-pointer"
                       >
                         <span className="flex items-center justify-center w-6 h-6 bg-blue-100 text-blue-700 rounded text-xs font-bold flex-shrink-0">
                           {source.citation_number || i + 1}
@@ -563,11 +614,13 @@ function MessageCard({ message, index, audioUrl, isCurrentlyPlaying, isLoadingAu
                             <p className="text-xs text-text-muted/60 mt-1">Page {source.page}</p>
                           )}
                         </div>
-                      </div>
+                      </button>
                     ))}
                   </div>
                 )}
               </div>
+            )}
+              </>
             )}
           </div>
         )}
@@ -576,17 +629,17 @@ function MessageCard({ message, index, audioUrl, isCurrentlyPlaying, isLoadingAu
   );
 }
 
-// Typing indicator - Claude.ai style
-function TypingIndicator({ currentSubject }) {
+// Typing indicator - Theme-aware
+function TypingIndicator({ currentSubject, theme, isDark }) {
   const displayName = currentSubject ? `${currentSubject.icon} ${currentSubject.name}` : 'Socrates';
 
   return (
-    <div className="bg-bg-secondary/50 py-6 animate-fade-in">
+    <div className={`py-6 animate-fade-in ${isDark ? 'bg-white/5' : 'bg-bg-secondary/50'}`}>
       <div className="max-w-3xl mx-auto px-6">
         <div className="flex items-center gap-2 mb-4">
-          <span className="text-sm font-medium text-gray-800">{displayName}</span>
-          <span className="text-xs text-text-muted/60">·</span>
-          <span className="text-xs text-text-muted/60 animate-pulse">thinking...</span>
+          <span className={`text-sm font-medium ${isDark ? 'text-white' : 'text-gray-800'}`}>{displayName}</span>
+          <span className={`text-xs ${isDark ? 'text-gray-400' : 'text-text-muted/60'}`}>·</span>
+          <span className={`text-xs animate-pulse ${isDark ? 'text-gray-400' : 'text-text-muted/60'}`}>thinking...</span>
         </div>
 
         <div className="flex items-center gap-3">
@@ -594,20 +647,20 @@ function TypingIndicator({ currentSubject }) {
             {[...Array(3)].map((_, i) => (
               <div
                 key={i}
-                className="w-2 h-2 rounded-full bg-gray-600 animate-bounce"
+                className={`w-2 h-2 rounded-full animate-bounce ${isDark ? 'bg-white/60' : 'bg-gray-600'}`}
                 style={{ animationDelay: `${i * 150}ms` }}
               />
             ))}
           </div>
-          <span className="text-text-muted text-sm">Formulating a response...</span>
+          <span className={`text-sm ${isDark ? 'text-gray-300' : 'text-text-muted'}`}>Formulating a response...</span>
         </div>
       </div>
     </div>
   );
 }
 
-// Conversation sidebar item - Polished
-function ConversationItem({ conversation, isActive, onClick, onDelete, onRename }) {
+// Conversation sidebar item - Theme-aware
+function ConversationItem({ conversation, isActive, onClick, onDelete, onRename, isDark }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(conversation.title);
   const [showMenu, setShowMenu] = useState(false);
@@ -616,8 +669,8 @@ function ConversationItem({ conversation, isActive, onClick, onDelete, onRename 
     <div
       className={`group relative flex items-center gap-3 px-4 py-3 rounded-xl cursor-pointer transition-all ${
         isActive
-          ? 'bg-gray-100 text-text-primary border-l-2 border-gray-800'
-          : 'hover:bg-bg-tertiary text-text-secondary'
+          ? isDark ? 'bg-white/10 text-white border-l-2 border-white/50' : 'bg-gray-100 text-text-primary border-l-2 border-gray-800'
+          : isDark ? 'hover:bg-white/5 text-gray-300' : 'hover:bg-bg-tertiary text-text-secondary'
       }`}
       onClick={() => !isEditing && onClick(conversation.id)}
     >
@@ -627,14 +680,14 @@ function ConversationItem({ conversation, isActive, onClick, onDelete, onRename 
             type="text"
             value={editTitle}
             onChange={(e) => setEditTitle(e.target.value)}
-            className="flex-1 bg-bg-card px-3 py-1.5 rounded-lg text-sm text-text-primary outline-none border border-gray-400"
+            className={`flex-1 px-3 py-1.5 rounded-lg text-sm outline-none border ${isDark ? 'bg-white/10 text-white border-white/20' : 'bg-bg-card text-text-primary border-gray-400'}`}
             onClick={(e) => e.stopPropagation()}
             autoFocus
           />
-          <button onClick={(e) => { e.stopPropagation(); onRename(conversation.id, editTitle); setIsEditing(false); }} className="text-gray-600 hover:text-gray-900">
+          <button onClick={(e) => { e.stopPropagation(); onRename(conversation.id, editTitle); setIsEditing(false); }} className={`${isDark ? 'text-green-400 hover:text-green-300' : 'text-gray-600 hover:text-gray-900'}`}>
             <Check className="w-4 h-4" />
           </button>
-          <button onClick={(e) => { e.stopPropagation(); setIsEditing(false); }} className="text-text-muted hover:text-text-primary">
+          <button onClick={(e) => { e.stopPropagation(); setIsEditing(false); }} className={`${isDark ? 'text-gray-400 hover:text-white' : 'text-text-muted hover:text-text-primary'}`}>
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -644,15 +697,15 @@ function ConversationItem({ conversation, isActive, onClick, onDelete, onRename 
             {conversation.title || 'New conversation'}
           </span>
           <div className="opacity-0 group-hover:opacity-100 transition-opacity">
-            <button onClick={(e) => { e.stopPropagation(); setShowMenu(!showMenu); }} className="p-1.5 hover:bg-bg-card rounded-lg">
-              <MoreVertical className="w-3.5 h-3.5 text-text-muted" />
+            <button onClick={(e) => { e.stopPropagation(); setShowMenu(!showMenu); }} className={`p-1.5 rounded-lg ${isDark ? 'hover:bg-white/10' : 'hover:bg-bg-card'}`}>
+              <MoreVertical className={`w-3.5 h-3.5 ${isDark ? 'text-gray-400' : 'text-text-muted'}`} />
             </button>
             {showMenu && (
-              <div className="absolute right-2 top-full mt-1 bg-bg-card border border-border-color rounded-xl shadow-xl z-50 py-1.5 min-w-[120px]">
-                <button onClick={(e) => { e.stopPropagation(); setIsEditing(true); setShowMenu(false); }} className="w-full flex items-center gap-2 px-4 py-2 text-sm text-text-secondary hover:bg-bg-tertiary hover:text-text-primary transition-colors">
+              <div className={`absolute right-2 top-full mt-1 rounded-xl shadow-xl z-50 py-1.5 min-w-[120px] ${isDark ? 'bg-gray-800 border border-white/10' : 'bg-bg-card border border-border-color'}`}>
+                <button onClick={(e) => { e.stopPropagation(); setIsEditing(true); setShowMenu(false); }} className={`w-full flex items-center gap-2 px-4 py-2 text-sm transition-colors ${isDark ? 'text-gray-300 hover:bg-white/10 hover:text-white' : 'text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'}`}>
                   <Edit2 className="w-3.5 h-3.5" /> Rename
                 </button>
-                <button onClick={(e) => { e.stopPropagation(); onDelete(conversation.id); setShowMenu(false); }} className="w-full flex items-center gap-2 px-4 py-2 text-sm text-red-500 hover:bg-red-50 transition-colors">
+                <button onClick={(e) => { e.stopPropagation(); onDelete(conversation.id); setShowMenu(false); }} className={`w-full flex items-center gap-2 px-4 py-2 text-sm text-red-500 transition-colors ${isDark ? 'hover:bg-red-500/10' : 'hover:bg-red-50'}`}>
                   <Trash2 className="w-3.5 h-3.5" /> Delete
                 </button>
               </div>
@@ -693,6 +746,22 @@ export default function Chat() {
   // Citation/Sources state for RAG
   const [messageSources, setMessageSources] = useState({}); // {msgId: sources[]}
 
+  // Guardrail state - tracks messages blocked by subject guardrails
+  const [guardrailMessages, setGuardrailMessages] = useState({}); // {msgId: {triggered, suggestedSubject}}
+
+  // Attachment and options state
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStatus, setUploadStatus] = useState('pending'); // pending, uploading, processing, completed, error
+  const [chatOptions, setChatOptions] = useState(DEFAULT_CHAT_OPTIONS);
+  const [showOptions, setShowOptions] = useState(false);
+
+  // Canvas Panel state
+  const [canvasOpen, setCanvasOpen] = useState(false);
+  const [canvasDocuments, setCanvasDocuments] = useState([]);
+  const [activeCanvasDocId, setActiveCanvasDocId] = useState(null);
+  const [highlightedChunkId, setHighlightedChunkId] = useState(null);
+
   // Audio/Voice state for Socrates TTS
   const [playingMessageId, setPlayingMessageId] = useState(null);
   const [messageAudioUrls, setMessageAudioUrls] = useState({}); // Map message id to audio url
@@ -732,6 +801,9 @@ export default function Chat() {
     const subjectId = currentSubject?.id || subjectFromUrl;
     return getSubjectTheme(subjectId);
   }, [currentSubject, subjectFromUrl]);
+
+  // Check if current theme is dark
+  const isDark = useMemo(() => isDarkTheme(currentSubject?.id || subjectFromUrl), [currentSubject, subjectFromUrl]);
 
   // Load subject details from URL
   useEffect(() => {
@@ -1108,6 +1180,42 @@ export default function Chat() {
     });
   };
 
+  // Handle switching subject from guardrail suggestion
+  const handleSwitchSubject = useCallback((suggestedSubject) => {
+    // Navigate to the suggested subject channel
+    window.location.href = `/chat?subject=${suggestedSubject}&fresh=true`;
+  }, []);
+
+  // Fetch documents for canvas panel
+  const fetchCanvasDocuments = useCallback(async () => {
+    try {
+      const baseUrl = import.meta.env.VITE_API_URL || '';
+      const response = await fetch(`${baseUrl}/v1/documents?status=COMPLETED`);
+      if (response.ok) {
+        const data = await response.json();
+        setCanvasDocuments(data.documents || []);
+      }
+    } catch (error) {
+      console.error('Failed to fetch documents for canvas:', error);
+    }
+  }, []);
+
+  // Load documents when canvas opens
+  useEffect(() => {
+    if (canvasOpen) {
+      fetchCanvasDocuments();
+    }
+  }, [canvasOpen, fetchCanvasDocuments]);
+
+  // Handle citation click - open canvas and highlight chunk
+  const handleCitationClick = useCallback((source) => {
+    if (source?.document_id) {
+      setActiveCanvasDocId(source.document_id);
+      setHighlightedChunkId(source.chunk_id);
+      setCanvasOpen(true);
+    }
+  }, []);
+
   const sendMessage = async (customMessage = null) => {
     const content = customMessage || input.trim();
     if (!content || loading) return;
@@ -1138,13 +1246,46 @@ export default function Chat() {
 
     try {
       const baseUrl = import.meta.env.VITE_API_URL || '';
-      const response = await fetch(`${baseUrl}/chat/stream`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ message: content, session_id: sessionId, subject: currentSubject?.id || subjectFromUrl || 'general' })
-      });
+      let response;
+
+      // If file is attached, use multipart form data
+      if (selectedFile) {
+        setUploadStatus('uploading');
+        const formData = new FormData();
+        formData.append('message', content);
+        formData.append('session_id', sessionId);
+        formData.append('subject', currentSubject?.id || subjectFromUrl || 'general');
+        formData.append('file', selectedFile);
+        formData.append('use_web_search', chatOptions.useWebSearch);
+        formData.append('use_reasoning', chatOptions.useReasoning);
+        formData.append('use_documents', chatOptions.useDocuments);
+
+        response = await fetch(`${baseUrl}/chat/with-attachment`, {
+          method: 'POST',
+          body: formData
+        });
+
+        // Clear file after sending
+        setSelectedFile(null);
+        setUploadStatus('pending');
+        setUploadProgress(0);
+      } else {
+        // Regular JSON request with chat options
+        response = await fetch(`${baseUrl}/chat/stream`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            message: content,
+            session_id: sessionId,
+            subject: currentSubject?.id || subjectFromUrl || 'general',
+            use_web_search: chatOptions.useWebSearch,
+            use_reasoning: chatOptions.useReasoning,
+            use_documents: chatOptions.useDocuments
+          })
+        });
+      }
 
       if (!response.ok) {
         throw new Error('Stream request failed');
@@ -1215,6 +1356,20 @@ export default function Chat() {
               }
 
               if (data.done) {
+                // Check for guardrail triggered response
+                if (data.guardrail_triggered) {
+                  setGuardrailMessages(prev => ({
+                    ...prev,
+                    [newMessageId]: {
+                      triggered: true,
+                      suggestedSubject: data.suggested_subject,
+                      source: data.source
+                    }
+                  }));
+                  // Don't fetch TTS for guardrail messages
+                  return;
+                }
+
                 // Mark agentic workflow complete
                 handleWorkflowComplete();
                 setMessageWorkflows(prev => ({
@@ -1303,11 +1458,11 @@ export default function Chat() {
       <div className={`${sidebarOpen ? 'w-64' : 'w-0'} transition-all duration-300 ease-in-out overflow-hidden border-r ${theme.classes.sidebarBorder} ${theme.classes.sidebarBg} backdrop-blur-md flex flex-col`}>
         <div className="w-64 h-full flex flex-col">
           {/* Sidebar Header with Close Button */}
-          <div className="h-14 flex items-center justify-between px-4 border-b border-border-color">
-            <span className="text-sm font-medium text-text-primary">Chat History</span>
+          <div className={`h-14 flex items-center justify-between px-4 border-b ${isDark ? 'border-white/10' : 'border-border-color'}`}>
+            <span className={`text-sm font-medium ${isDark ? 'text-white' : 'text-text-primary'}`}>Chat History</span>
             <button
               onClick={() => setSidebarOpen(false)}
-              className="p-2 rounded-lg hover:bg-bg-tertiary text-text-muted hover:text-text-primary transition-colors"
+              className={`p-2 rounded-lg transition-colors ${isDark ? 'hover:bg-white/10 text-gray-400 hover:text-white' : 'hover:bg-bg-tertiary text-text-muted hover:text-text-primary'}`}
               title="Close sidebar"
             >
               <PanelLeftClose className="w-4 h-4" />
@@ -1318,10 +1473,11 @@ export default function Chat() {
           <div className="p-3">
             <button
               onClick={startNewConversation}
-              className="w-full flex items-center justify-center gap-2 py-2.5
-                         border border-border-color text-text-primary rounded-xl
-                         font-medium text-sm hover:border-gray-800 hover:text-gray-800
-                         transition-all group"
+              className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-xl font-medium text-sm transition-all group
+                ${isDark
+                  ? 'border border-white/20 text-gray-300 hover:border-white/40 hover:text-white hover:bg-white/5'
+                  : 'border border-border-color text-text-primary hover:border-gray-800 hover:text-gray-800'
+                }`}
             >
               <Plus className="w-4 h-4 group-hover:rotate-90 transition-transform duration-300" />
               New dialogue
@@ -1330,7 +1486,7 @@ export default function Chat() {
 
           {/* Conversation List */}
           <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-1">
-            <div className="text-xs text-text-muted/70 uppercase tracking-wider px-3 py-2 font-medium">
+            <div className={`text-xs uppercase tracking-wider px-3 py-2 font-medium ${isDark ? 'text-gray-500' : 'text-text-muted/70'}`}>
               History
             </div>
             {conversations.map((conv) => (
@@ -1341,10 +1497,11 @@ export default function Chat() {
                 onClick={loadConversation}
                 onDelete={deleteConversation}
                 onRename={renameConversation}
+                isDark={isDark}
               />
             ))}
             {conversations.length === 0 && (
-              <div className="text-center py-8 text-text-muted">
+              <div className={`text-center py-8 ${isDark ? 'text-gray-400' : 'text-text-muted'}`}>
                 <MessageSquare className="w-8 h-8 mx-auto mb-3 opacity-30" />
                 <p className="text-sm">No dialogues yet</p>
                 <p className="text-xs mt-1 opacity-60">Start a conversation</p>
@@ -1423,7 +1580,7 @@ export default function Chat() {
             );
           })()}
 
-          {/* Right side - Loading indicator */}
+          {/* Right side - Loading indicator and Canvas toggle */}
           <div className="relative z-10 flex items-center gap-3">
             {loading && (
               <div className="flex items-center gap-2 text-white opacity-90">
@@ -1431,6 +1588,12 @@ export default function Chat() {
                 <span className="text-sm font-medium">Thinking...</span>
               </div>
             )}
+            {/* Canvas Panel Toggle */}
+            <CanvasToggleButton
+              isOpen={canvasOpen}
+              onClick={() => setCanvasOpen(!canvasOpen)}
+              documentCount={canvasDocuments.length}
+            />
           </div>
         </div>
 
@@ -1458,14 +1621,17 @@ export default function Chat() {
                 theme={theme}
                 subjectId={currentSubject?.id || subjectFromUrl}
                 sources={messageSources[msg.id]}
+                guardrailInfo={guardrailMessages[msg.id]}
+                onSwitchSubject={handleSwitchSubject}
+                onCitationClick={handleCitationClick}
               />
             ))}
-            {loading && <TypingIndicator currentSubject={currentSubject} />}
+            {loading && <TypingIndicator currentSubject={currentSubject} theme={theme} isDark={isDark} />}
             <div ref={messagesEndRef} />
           </div>
         </div>
 
-        {/* Welcome screen - Elegant centered design with tutor portrait */}
+        {/* Welcome screen - Theme-aware centered design with tutor portrait */}
         {messages.length <= 1 && (() => {
           const welcomeTutor = getSubjectTutor(currentSubject?.id || subjectFromUrl);
           return (
@@ -1474,7 +1640,7 @@ export default function Chat() {
                 {/* Tutor portrait */}
                 <div className="flex justify-center mb-6">
                   <div className="relative">
-                    <div className="w-36 h-36 rounded-full overflow-hidden shadow-2xl border-4 border-white/90 ring-4 ring-gray-200">
+                    <div className={`w-36 h-36 rounded-full overflow-hidden shadow-2xl border-4 ring-4 ${isDark ? 'border-white/30 ring-white/10' : 'border-white/90 ring-gray-200'}`}>
                       <img
                         src={welcomeTutor?.portrait || getSubjectImage(currentSubject?.id, 'avatar')}
                         alt={welcomeTutor?.name || 'Scoratis'}
@@ -1483,7 +1649,7 @@ export default function Chat() {
                       />
                     </div>
                     {currentSubject && (
-                      <div className="absolute -bottom-2 -right-2 w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center text-xl shadow-lg border-2 border-white">
+                      <div className={`absolute -bottom-2 -right-2 w-10 h-10 rounded-full flex items-center justify-center text-xl shadow-lg border-2 ${isDark ? 'bg-white/20 border-white/30' : 'bg-gray-800 border-white'}`}>
                         {currentSubject.icon}
                       </div>
                     )}
@@ -1491,27 +1657,27 @@ export default function Chat() {
                 </div>
 
                 {/* Tutor name and title */}
-                <h2 className="text-2xl font-medium text-text-primary mb-1"
+                <h2 className={`text-2xl font-medium mb-1 ${isDark ? 'text-white' : 'text-text-primary'}`}
                     style={{ fontFamily: 'Georgia, serif' }}>
                   {welcomeTutor?.name || 'Scoratis'}
                 </h2>
-                <p className="text-sm text-gray-600 font-medium mb-1">
+                <p className={`text-sm font-medium mb-1 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
                   {welcomeTutor?.title || 'Your Socratic Tutor'}
                 </p>
                 {welcomeTutor?.years && (
-                  <p className="text-xs text-text-muted/70 mb-4">
+                  <p className={`text-xs mb-4 ${isDark ? 'text-gray-400' : 'text-text-muted/70'}`}>
                     {welcomeTutor.years}
                   </p>
                 )}
 
                 {/* Subject name */}
-                <h1 className="text-xl font-light text-text-primary mb-2"
+                <h1 className={`text-xl font-light mb-2 ${isDark ? 'text-white' : 'text-text-primary'}`}
                     style={{ fontFamily: 'Georgia, serif' }}>
                   {currentSubject ? `${currentSubject.icon} ${currentSubject.name}` : 'Welcome to Scoratis'}
                 </h1>
 
                 {/* Tutor quote */}
-                <p className="text-base text-text-muted mb-8 italic px-4">
+                <p className={`text-base mb-8 italic px-4 ${isDark ? 'text-gray-300' : 'text-text-muted'}`}>
                   {welcomeTutor?.quote || '"The unexamined life is not worth living."'}
                 </p>
 
@@ -1530,9 +1696,11 @@ export default function Chat() {
                     <button
                       key={i}
                       onClick={() => { setInput(item.prompt); inputRef.current?.focus(); }}
-                      className="w-full text-left px-5 py-4 rounded-xl border border-[#D4CFB8]
-                                 hover:border-gray-800 hover:bg-gray-50 transition-all
-                                 text-base text-text-secondary hover:text-text-primary"
+                      className={`w-full text-left px-5 py-4 rounded-xl border transition-all text-base
+                        ${isDark
+                          ? 'border-white/20 hover:border-white/40 hover:bg-white/10 text-gray-300 hover:text-white'
+                          : 'border-[#D4CFB8] hover:border-gray-800 hover:bg-gray-50 text-text-secondary hover:text-text-primary'
+                        }`}
                     >
                       {item.label}
                     </button>
@@ -1543,82 +1711,202 @@ export default function Chat() {
           );
         })()}
 
-        {/* Input area - Clean floating bar - Themed */}
-        <div className="border-t border-white/20 bg-white/50 backdrop-blur-md py-6">
-          <div className="max-w-3xl mx-auto px-6">
-            <div className={`relative ${theme.classes.inputBg} backdrop-blur-sm rounded-2xl shadow-lg border ${theme.classes.inputBorder}
-                            ${theme.classes.inputFocus} transition-all`}>
-              <textarea
-                ref={inputRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    sendMessage();
-                  }
-                }}
-                placeholder={currentSubject ? `Ask about ${currentSubject.name}...` : 'Ask a question...'}
-                className={`w-full bg-transparent px-5 py-4 text-base leading-6
-                           text-text-primary placeholder-text-muted outline-none
-                           resize-none min-h-[56px] max-h-48 ${voiceSupported ? 'pr-28' : 'pr-14'}`}
-                rows={1}
-                disabled={loading}
-                onInput={(e) => {
-                  e.target.style.height = 'auto';
-                  e.target.style.height = Math.min(e.target.scrollHeight, 192) + 'px';
-                }}
-              />
+        {/* Input area - Theme-aware floating bar */}
+        <div className={`pt-4 pb-6 ${isDark ? 'bg-gradient-to-t from-black/60 via-black/30 to-transparent' : 'bg-gradient-to-t from-white/80 via-white/60 to-transparent'}`}>
+          <div className="max-w-3xl mx-auto px-4">
+            {/* File Preview (when file selected) */}
+            {selectedFile && (
+              <div className={`mb-3 backdrop-blur-sm rounded-2xl p-3 shadow-sm ${isDark ? 'bg-white/10 border border-white/20' : 'bg-white/90 border border-gray-200/50'}`}>
+                <AttachmentPreview
+                  file={selectedFile}
+                  uploadProgress={uploadProgress}
+                  uploadStatus={uploadStatus}
+                  onRemove={() => {
+                    setSelectedFile(null);
+                    setUploadStatus('pending');
+                    setUploadProgress(0);
+                  }}
+                />
+              </div>
+            )}
 
-              {/* Voice input button */}
-              {voiceSupported && (
+            {/* Main input container - Theme-aware */}
+            <div className={`relative backdrop-blur-xl rounded-3xl shadow-lg transition-all duration-200
+                            ${isDark
+                              ? 'bg-white/10 border border-white/20 hover:bg-white/15 hover:border-white/30'
+                              : 'bg-white/95 border border-gray-200/60 hover:shadow-xl hover:border-gray-300/80'
+                            }
+                            ${loading ? 'opacity-75' : ''}`}>
+
+              {/* Top row - Options pills */}
+              <div className={`flex items-center gap-2 px-4 pt-3 pb-1 border-b ${isDark ? 'border-white/10' : 'border-gray-100/50'}`}>
                 <button
-                  onClick={toggleVoiceInput}
-                  disabled={loading}
-                  className={`absolute right-16 bottom-3 w-10 h-10 rounded-xl
-                             flex items-center justify-center transition-all shadow-sm
-                             ${isListening
-                               ? 'bg-red-500 text-white animate-pulse'
-                               : 'bg-bg-tertiary text-text-muted hover:text-gray-800 hover:bg-gray-100'
-                             } disabled:opacity-40`}
-                  title={isListening ? 'Stop listening' : 'Voice input'}
+                  onClick={() => setChatOptions(prev => ({ ...prev, useWebSearch: !prev.useWebSearch }))}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all
+                    ${chatOptions.useWebSearch
+                      ? `${theme.classes.accent} bg-opacity-10 border border-current`
+                      : isDark ? 'text-gray-300 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'}`}
+                  title="Web Search"
                 >
-                  {isListening ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+                  <Globe className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Search</span>
                 </button>
-              )}
 
-              <button
-                onClick={() => sendMessage()}
-                disabled={loading || !input.trim()}
-                className={`absolute right-3 bottom-3 w-10 h-10 ${theme.classes.sendBtn} rounded-xl
-                           flex items-center justify-center
-                           disabled:opacity-40 transition-all shadow-sm`}
-              >
-                <ArrowUp className="w-5 h-5 text-white" />
-              </button>
+                <button
+                  onClick={() => setChatOptions(prev => ({ ...prev, useReasoning: !prev.useReasoning }))}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all
+                    ${chatOptions.useReasoning
+                      ? isDark ? 'text-purple-300 bg-purple-500/20 border border-purple-400/30' : 'text-purple-600 bg-purple-50 border border-purple-200'
+                      : isDark ? 'text-gray-300 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'}`}
+                  title="Deep Thinking"
+                >
+                  <Brain className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Think</span>
+                </button>
+
+                <button
+                  onClick={() => setChatOptions(prev => ({ ...prev, useDocuments: !prev.useDocuments }))}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all
+                    ${chatOptions.useDocuments
+                      ? isDark ? 'text-green-300 bg-green-500/20 border border-green-400/30' : 'text-green-600 bg-green-50 border border-green-200'
+                      : isDark ? 'text-gray-300 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'}`}
+                  title="Use Documents"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Docs</span>
+                </button>
+
+                <div className="flex-1" />
+
+                {/* Video generation hint */}
+                <button
+                  onClick={() => {
+                    if (input.trim()) {
+                      sendMessage(input.trim() + ' [Please explain this visually with a video]');
+                    }
+                  }}
+                  disabled={loading || !input.trim()}
+                  className={`flex items-center gap-1 px-2 py-1 text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed
+                    ${isDark ? 'text-gray-400 hover:text-gray-200' : 'text-gray-400 hover:text-gray-600'}`}
+                  title="Generate visual explanation"
+                >
+                  <Film className="w-3.5 h-3.5" />
+                  <span className="hidden md:inline">Video</span>
+                </button>
+              </div>
+
+              {/* Bottom row - Input area */}
+              <div className="flex items-end gap-2 p-3">
+                {/* Attachment button */}
+                <button
+                  onClick={() => document.getElementById('gemini-file-input')?.click()}
+                  disabled={loading || uploadStatus === 'uploading'}
+                  className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all disabled:opacity-40
+                    ${isDark ? 'text-gray-300 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'}`}
+                  title="Attach file"
+                >
+                  <Plus className="w-5 h-5" />
+                </button>
+                <input
+                  id="gemini-file-input"
+                  type="file"
+                  className="hidden"
+                  accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      setSelectedFile(file);
+                      setUploadStatus('pending');
+                    }
+                    e.target.value = '';
+                  }}
+                />
+
+                {/* Text input */}
+                <div className="flex-1 min-w-0">
+                  <textarea
+                    ref={inputRef}
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        sendMessage();
+                      }
+                    }}
+                    placeholder={currentSubject ? `Ask ${getSubjectTutor(currentSubject.id)?.name || 'Scoratis'} about ${currentSubject.name}...` : 'Ask a question...'}
+                    className={`w-full bg-transparent text-base leading-6 outline-none resize-none min-h-[24px] max-h-32
+                      ${isDark ? 'text-white placeholder-gray-400' : 'text-gray-800 placeholder-gray-400'}`}
+                    rows={1}
+                    disabled={loading}
+                    onInput={(e) => {
+                      e.target.style.height = 'auto';
+                      e.target.style.height = Math.min(e.target.scrollHeight, 128) + 'px';
+                    }}
+                  />
+                </div>
+
+                {/* Right side buttons */}
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  {/* Voice input button */}
+                  {voiceSupported && (
+                    <button
+                      onClick={toggleVoiceInput}
+                      disabled={loading}
+                      className={`w-10 h-10 rounded-full flex items-center justify-center transition-all disabled:opacity-40
+                        ${isListening
+                          ? 'bg-red-500 text-white animate-pulse'
+                          : isDark ? 'text-gray-300 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
+                        }`}
+                      title={isListening ? 'Stop listening' : 'Voice input'}
+                    >
+                      {isListening ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+                    </button>
+                  )}
+
+                  {/* Send button */}
+                  <button
+                    onClick={() => sendMessage()}
+                    disabled={loading || (!input.trim() && !selectedFile)}
+                    className={`w-10 h-10 rounded-full flex items-center justify-center transition-all
+                      ${(input.trim() || selectedFile) && !loading
+                        ? `${theme.classes.sendBtn} shadow-md hover:shadow-lg hover:scale-105`
+                        : isDark ? 'bg-white/10 text-gray-500 cursor-not-allowed' : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                      } disabled:opacity-40`}
+                    title="Send message"
+                  >
+                    {loading ? (
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                    ) : (
+                      <ArrowUp className={`w-5 h-5 ${(input.trim() || selectedFile) ? 'text-white' : ''}`} />
+                    )}
+                  </button>
+                </div>
+              </div>
             </div>
 
-            <div className="flex justify-center mt-3">
-              <button
-                onClick={() => {
-                  if (input.trim()) {
-                    sendMessage(input.trim() + ' [Please explain this visually with a video]');
-                  }
-                }}
-                disabled={loading || !input.trim()}
-                className={`text-xs text-text-muted hover:${theme.classes.accent}
-                           transition-colors flex items-center gap-1.5 disabled:opacity-40`}
-              >
-                <Film className="w-3.5 h-3.5" />
-                Generate visual explanation
-              </button>
-            </div>
+            {/* Subtle hint text */}
+            <p className={`text-center text-xs mt-2 ${isDark ? 'text-gray-400' : 'text-gray-400'}`}>
+              {currentSubject ? `Learning ${currentSubject.name} with ${getSubjectTutor(currentSubject.id)?.name || 'Scoratis'}` : 'Socratic learning powered by AI'}
+            </p>
           </div>
         </div>
       </div>
 
       {/* Hidden Audio Element for TTS Playback */}
       <audio ref={audioRef} preload="none" className="hidden" />
+
+      {/* Canvas Panel - Document preview sidebar */}
+      <CanvasPanel
+        isOpen={canvasOpen}
+        onClose={() => setCanvasOpen(false)}
+        onToggle={() => setCanvasOpen(!canvasOpen)}
+        documents={canvasDocuments}
+        activeDocumentId={activeCanvasDocId}
+        onSelectDocument={setActiveCanvasDocId}
+        highlightedChunkId={highlightedChunkId}
+        onOpenDocument={handleCitationClick}
+      />
     </div>
   </SubjectBackground>
   );

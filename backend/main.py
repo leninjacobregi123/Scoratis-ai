@@ -23,6 +23,7 @@ import logging
 
 from database import get_database, DatabaseManager
 from llm_service import llm_service, RECOMMENDED_MODELS
+from services.litellm_service import LLMGenerationError, LLMError
 from prompts import (
     detect_video_potential, get_subject_prompt, get_available_subjects,
     SUBJECT_CHANNELS, CITATION_INSTRUCTIONS, RAG_CONTEXT_AWARENESS
@@ -40,6 +41,9 @@ from services.video_analyzer_service import (
     get_video_analyzer_service
 )
 from services.agent import create_agent, get_agent, ScoratisAgent
+from services.guardrail_service import (
+    get_guardrail_service, GuardrailService, GuardrailResult, GuardrailResponse
+)
 from config import settings
 
 load_dotenv()
@@ -72,6 +76,10 @@ class ChatMessage(BaseModel):
     message: str
     session_id: Optional[str] = "default"
     subject: Optional[str] = "general"  # Subject channel: physics, chemistry, math, etc.
+    attachment_ids: Optional[List[int]] = None  # Document IDs to include in context
+    use_web_search: Optional[bool] = True  # Enable/disable web search augmentation
+    use_reasoning: Optional[bool] = False  # Enable deep thinking mode
+    use_documents: Optional[bool] = True  # Enable RAG document search
 
 class DeleteConversation(BaseModel):
     permanent: Optional[bool] = False
@@ -86,6 +94,8 @@ class LLMConfigUpdate(BaseModel):
     max_tokens: Optional[int] = 2048
     temperature: Optional[float] = 0.7
     context_length: Optional[int] = 4096
+    validate: Optional[bool] = True  # Validate model before accepting
+    skip_validation: Optional[bool] = False  # Force skip validation
 
 
 class LLMProviderCreate(BaseModel):
@@ -127,6 +137,7 @@ memory_service = None
 langgraph_service = None
 video_analyzer_service = None
 scoratis_agent: ScoratisAgent = None
+guardrail_service: GuardrailService = None
 
 def get_youtube_client():
     """Lazy load YouTube API client"""
@@ -144,7 +155,7 @@ def get_youtube_client():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler"""
-    global db, rag_service, web_search_service, memory_service, langgraph_service, video_analyzer_service, scoratis_agent
+    global db, rag_service, web_search_service, memory_service, langgraph_service, video_analyzer_service, scoratis_agent, guardrail_service
 
     # Initialize PostgreSQL database
     db = get_database()
@@ -192,7 +203,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Scoratis Agent initialization failed (using fallback): {e}")
 
-    print("Scoratis FastAPI Server Started (PostgreSQL + RAG + Web Search + LangGraph + Agent + Auto-Video)")
+    # Initialize Guardrail Service for subject validation
+    guardrail_service = get_guardrail_service(llm_service)
+    logger.info("Guardrail service initialized for subject validation")
+
+    print("Scoratis FastAPI Server Started (PostgreSQL + RAG + Web Search + LangGraph + Agent + Auto-Video + Guardrails)")
     yield
     print("Scoratis FastAPI Server Stopped")
 
@@ -330,8 +345,49 @@ async def delete_folder(folder_id: int):
 
 # ==================== CHAT ENDPOINTS ====================
 
-def generate_fallback(user_message: str) -> str:
-    """Generate contextual fallback response when no LLM is available"""
+# Store last LLM error for better user feedback
+_last_llm_error: Dict[str, Any] = {}
+
+
+def generate_fallback(user_message: str, error_info: Dict[str, Any] = None) -> str:
+    """
+    Generate contextual fallback response when LLM is unavailable.
+
+    Provides specific feedback based on the error type:
+    - model_not_installed: Tell user to download the model
+    - server_unavailable: Tell user to start Ollama
+    - insufficient_memory: Suggest smaller model
+    - timeout: Model may be downloading
+    """
+    global _last_llm_error
+    if error_info:
+        _last_llm_error = error_info
+
+    # Check if we have a specific LLM error to report
+    if error_info:
+        error_type = error_info.get("error_type", "")
+        suggestion = error_info.get("suggestion", "")
+
+        if error_type == "model_not_installed":
+            model = error_info.get("model", "the selected model")
+            return f"I'm unable to respond because the AI model '{model}' is not installed. To fix this, open your terminal and run: {suggestion}"
+
+        elif error_type == "server_unavailable":
+            return f"I'm unable to respond because the AI server is not running. To fix this: {suggestion}"
+
+        elif error_type == "insufficient_memory":
+            return f"I'm unable to respond because the selected AI model requires more memory than your system has available. {suggestion}"
+
+        elif error_type == "timeout":
+            return f"The AI model is taking too long to respond. {suggestion}"
+
+        elif error_type == "authentication_error":
+            return f"I'm unable to connect to the AI service due to an authentication issue. {suggestion}"
+
+        elif error_type == "connection_error":
+            return f"I'm unable to connect to the AI service. {suggestion}"
+
+    # Generic fallback responses based on user message
     msg_lower = user_message.lower().strip()
 
     if any(word in msg_lower for word in ["everything", "nothing", "all of it"]):
@@ -346,7 +402,20 @@ def generate_fallback(user_message: str) -> str:
     if any(phrase in msg_lower for phrase in ["help", "homework", "assignment"]):
         return "I'm here to help! Let's work through this together. What's the specific problem or question you're working on? Share it with me and we'll break it down step by step."
 
-    return f"Great question! I want to make sure I give you the most helpful response. Could you tell me a bit more about what you're trying to learn or accomplish? That way I can tailor my explanation to exactly what you need."
+    return f"I apologize, but I'm having trouble connecting to the AI model. Please check your model settings or try again in a moment."
+
+
+async def get_llm_error_info() -> Dict[str, Any]:
+    """Get detailed error info about current LLM configuration."""
+    model_status = await llm_service.check_model_availability()
+    if not model_status.get("available"):
+        return {
+            "error_type": model_status.get("error_type"),
+            "suggestion": model_status.get("suggestion"),
+            "message": model_status.get("message"),
+            "model": llm_service.current_config.model if llm_service.current_config else None,
+        }
+    return {}
 
 # ==================== LLM CONFIGURATION ENDPOINTS ====================
 
@@ -368,22 +437,64 @@ async def get_llm_providers():
 
 @app.post("/llm/configure")
 async def configure_llm(config: LLMConfigUpdate):
-    """Configure the LLM model"""
+    """
+    Configure the LLM model with validation.
+
+    By default, validates that the model is available before accepting.
+    Set skip_validation=true to bypass validation (useful for downloading models).
+
+    Raises HTTPException(400) on validation failure with:
+    - error_type: model_not_installed, server_unavailable, insufficient_memory, timeout, authentication_error
+    - message: Human-readable error message
+    - suggestion: Actionable fix command
+    """
+    provider = config.provider or "ollama"
+
+    # Validate model before accepting (unless explicitly skipped)
+    if config.validate and not config.skip_validation:
+        validation_result = await llm_service.validate_model_config(
+            provider=provider,
+            model=config.model,
+            base_url=config.base_url,
+            timeout_seconds=30,
+        )
+
+        if not validation_result.get("success"):
+            # Raise HTTPException with structured error details
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": validation_result.get("message"),
+                    "error_type": validation_result.get("error_type"),
+                    "suggestion": validation_result.get("suggestion"),
+                    "installed_models": validation_result.get("installed_models"),
+                }
+            )
+
     try:
         llm_service.set_provider(
             model=config.model,
-            provider=config.provider or "ollama",
+            provider=provider,
             base_url=config.base_url,
             max_tokens=config.max_tokens or 2048,
             temperature=config.temperature or 0.7,
             context_length=config.context_length or 4096
         )
         return {
-            "message": f"LLM configured to {config.provider or 'ollama'}/{config.model}",
+            "success": True,
+            "message": f"LLM configured to {provider}/{config.model}",
+            "error_type": None,
             "config": llm_service.get_current_config()
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Failed to configure LLM: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": f"Failed to configure LLM: {str(e)}",
+                "error_type": "configuration_error",
+            }
+        )
 
 @app.get("/llm/test")
 async def test_llm():
@@ -409,6 +520,39 @@ async def test_llm():
 async def llm_health():
     """Comprehensive LLM health check"""
     return await llm_service.health_check()
+
+
+@app.post("/llm/validate")
+async def validate_llm_model(config: LLMConfigUpdate):
+    """
+    Validate an LLM model configuration without applying it.
+
+    Returns detailed error information if validation fails:
+    - error_type: Type of error (model_not_installed, server_unavailable, etc.)
+    - message: Human-readable error message
+    - suggestion: Actionable fix (e.g., 'ollama pull llama3.2')
+    """
+    provider = config.provider or "ollama"
+
+    result = await llm_service.validate_model_config(
+        provider=provider,
+        model=config.model,
+        base_url=config.base_url,
+        timeout_seconds=30,
+    )
+
+    return result
+
+
+@app.get("/llm/model-status")
+async def get_model_status():
+    """
+    Quick check if the current model is available and ready.
+
+    Useful for showing status in the UI before attempting chat.
+    """
+    return await llm_service.check_model_availability()
+
 
 @app.get("/llm/recommended")
 async def get_recommended_models(vram_gb: int = Query(4, description="GPU VRAM in GB")):
@@ -717,6 +861,41 @@ async def chat(message: ChatMessage):
     # Get subject (defaults to "general")
     subject = message.subject or "general"
 
+    # === GUARDRAIL CHECK: Validate query is related to subject ===
+    guardrail_result = None
+    if guardrail_service and subject != "general":
+        try:
+            guardrail_result = await guardrail_service.check_query_async(
+                query=user_message,
+                subject=subject,
+                use_llm=False  # Use fast keyword matching for /chat, LLM for /chat/stream
+            )
+
+            if guardrail_result.result == GuardrailResult.BLOCKED:
+                # Return early with guardrail message
+                redirection_msg = guardrail_service.get_redirection_response(
+                    guardrail_result, subject, user_message
+                )
+                return {
+                    "reply": redirection_msg,
+                    "source": "guardrail",
+                    "search_used": False,
+                    "session_id": session_id,
+                    "context": subject,
+                    "conversation_id": None,
+                    "model": None,
+                    "video_available": False,
+                    "video_topic": None,
+                    "video_concepts": [],
+                    "video_type": None,
+                    "learning_state": "initial",
+                    "turn_count": 0,
+                    "guardrail_triggered": True,
+                    "suggested_subject": guardrail_result.suggested_subject,
+                }
+        except Exception as guardrail_error:
+            logger.warning(f"Guardrail check error (continuing): {guardrail_error}")
+
     # Get subject-specific prompt (all subjects use Socratic + scaffolding approach)
     base_system_prompt = get_subject_prompt(subject)
     context = subject
@@ -763,6 +942,7 @@ async def chat(message: ChatMessage):
             system_prompt = base_system_prompt
 
         # Generate response using LLM service
+        error_info = None
         try:
             response_text = await llm_service.generate(
                 messages=conversation_memory[session_id],
@@ -790,9 +970,34 @@ async def chat(message: ChatMessage):
                 except Exception as search_error:
                     logger.warning(f"Web search error (using original response): {search_error}")
 
-        except Exception as llm_error:
-            logger.error(f"LLM Error: {llm_error}")
-            response_text = generate_fallback(user_message)
+        except LLMGenerationError as llm_error:
+            # Centralized error handling - extract structured error from LLMGenerationError
+            logger.error(f"LLM Generation Error: {llm_error.error.message}")
+
+            error_info = {
+                "error_type": llm_error.error.error_type,
+                "model": llm_error.error.model,
+                "provider": llm_error.error.provider,
+                "suggestion": llm_error.error.suggestion,
+                "message": llm_error.error.message,
+            }
+            response_text = generate_fallback(user_message, error_info)
+            source = "fallback"
+
+        except Exception as e:
+            # Fallback for any other unexpected errors
+            logger.error(f"Unexpected LLM Error: {e}")
+
+            # Try to get detailed info from model availability check
+            error_info = await get_llm_error_info()
+            if not error_info:
+                error_info = {
+                    "error_type": "unknown_error",
+                    "message": str(e)[:200],
+                    "suggestion": "Check logs for details or try again",
+                }
+
+            response_text = generate_fallback(user_message, error_info)
             source = "fallback"
 
         # Save AI response to database with embedding
@@ -862,12 +1067,18 @@ async def chat(message: ChatMessage):
             "video_concepts": video_concepts,
             "video_type": video_type,
             "learning_state": learning_state_str,
-            "turn_count": turn_count
+            "turn_count": turn_count,
+            # Error info for frontend (only present if source is "fallback")
+            "error_info": error_info if source == "fallback" else None,
         }
 
     except Exception as e:
         logger.error(f"Chat Error: {e}")
-        response_text = generate_fallback(user_message)
+
+        # Try to get specific error info
+        error_info = await get_llm_error_info()
+        response_text = generate_fallback(user_message, error_info)
+
         try:
             await db.add_chat_message(session_id, 'ai', response_text)
         except:
@@ -877,6 +1088,7 @@ async def chat(message: ChatMessage):
             "source": "fallback",
             "session_id": session_id,
             "error": str(e),
+            "error_info": error_info,
             "search_used": False,
             "video_available": False,
             "video_topic": None,
@@ -897,6 +1109,33 @@ async def chat_stream(message: ChatMessage):
 
     # Get subject (defaults to "general")
     subject = message.subject or "general"
+
+    # === GUARDRAIL CHECK: Validate query is related to subject ===
+    if guardrail_service and subject != "general":
+        try:
+            guardrail_result = await guardrail_service.check_query_async(
+                query=user_message,
+                subject=subject,
+                use_llm=True  # Use LLM for streaming endpoint (more thorough)
+            )
+
+            if guardrail_result.result == GuardrailResult.BLOCKED:
+                # Return guardrail response as a stream
+                redirection_msg = guardrail_service.get_redirection_response(
+                    guardrail_result, subject, user_message
+                )
+
+                async def guardrail_stream():
+                    # Stream the guardrail message
+                    yield f"data: {json.dumps({'chunk': redirection_msg, 'done': False})}\n\n"
+                    yield f"data: {json.dumps({'done': True, 'guardrail_triggered': True, 'suggested_subject': guardrail_result.suggested_subject, 'source': 'guardrail'})}\n\n"
+
+                return StreamingResponse(
+                    guardrail_stream(),
+                    media_type="text/event-stream"
+                )
+        except Exception as guardrail_error:
+            logger.warning(f"Guardrail check error (continuing): {guardrail_error}")
 
     # Get subject-specific prompt
     base_system_prompt = get_subject_prompt(subject)
@@ -923,29 +1162,33 @@ async def chat_stream(message: ChatMessage):
         conversation_memory[session_id] = conversation_memory[session_id][-20:]
 
     # === RAG: Get relevant context with hybrid search ===
+    # Only search documents if use_documents option is enabled
     rag_context_xml = ""
     rag_sources = []
     rag_chunk_mapping = {}
+    use_documents = message.use_documents if message.use_documents is not None else True
+    use_web_search = message.use_web_search if message.use_web_search is not None else True
 
-    try:
-        async with db.get_session() as db_session:
-            # Try new hybrid search with citations first
-            try:
-                rag_result = await rag_service.get_context_with_citations(
-                    db_session, user_message
-                )
-                rag_context_xml = rag_result.get("context_xml", "")
-                rag_sources = rag_result.get("sources", [])
-                rag_chunk_mapping = rag_result.get("chunk_mapping", {})
-            except Exception as hybrid_error:
-                logger.warning(f"Hybrid search error, falling back to legacy: {hybrid_error}")
-                # Fallback to legacy search
-                relevant_context = await rag_service.get_relevant_context(
-                    db_session, user_message, session_id
-                )
-                rag_context_xml = rag_service.format_context_for_llm(relevant_context)
-    except Exception as rag_error:
-        logger.warning(f"RAG search error (continuing without): {rag_error}")
+    if use_documents:
+        try:
+            async with db.get_session() as db_session:
+                # Try new hybrid search with citations first
+                try:
+                    rag_result = await rag_service.get_context_with_citations(
+                        db_session, user_message
+                    )
+                    rag_context_xml = rag_result.get("context_xml", "")
+                    rag_sources = rag_result.get("sources", [])
+                    rag_chunk_mapping = rag_result.get("chunk_mapping", {})
+                except Exception as hybrid_error:
+                    logger.warning(f"Hybrid search error, falling back to legacy: {hybrid_error}")
+                    # Fallback to legacy search
+                    relevant_context = await rag_service.get_relevant_context(
+                        db_session, user_message, session_id
+                    )
+                    rag_context_xml = rag_service.format_context_for_llm(relevant_context)
+        except Exception as rag_error:
+            logger.warning(f"RAG search error (continuing without): {rag_error}")
 
     # Build enhanced system prompt with citation instructions
     if rag_context_xml and rag_sources:
@@ -1124,13 +1367,23 @@ async def chat_stream(message: ChatMessage):
             }
             yield f"data: {json.dumps(final_data)}\n\n"
 
-        except Exception as e:
-            logger.error(f"Stream Error: {e}")
-            fallback = generate_fallback(user_message)
+        except LLMGenerationError as llm_error:
+            # Centralized error handling - extract structured error
+            logger.error(f"Stream LLM Error: {llm_error.error.message}")
+
+            error_info = {
+                "error_type": llm_error.error.error_type,
+                "model": llm_error.error.model,
+                "provider": llm_error.error.provider,
+                "suggestion": llm_error.error.suggestion,
+                "message": llm_error.error.message,
+            }
+            fallback = generate_fallback(user_message, error_info)
             error_data = {
                 'chunk': fallback,
                 'done': True,
-                'error': str(e),
+                'error': llm_error.error.message,
+                'error_info': error_info,
                 'full_response': fallback,
                 'search_used': False,
                 'video_available': False,
@@ -1139,7 +1392,39 @@ async def chat_stream(message: ChatMessage):
                 'video_type': None,
                 'learning_state': 'initial',
                 'turn_count': 0,
-                'auto_video': None  # No auto-video on error
+                'auto_video': None
+            }
+            yield f"data: {json.dumps(error_data)}\n\n"
+            try:
+                await db.add_chat_message(session_id, 'ai', fallback)
+                conversation_memory[session_id].append({
+                    "role": "assistant",
+                    "content": fallback
+                })
+            except:
+                pass
+
+        except Exception as e:
+            # Fallback for unexpected errors
+            logger.error(f"Stream Error: {e}")
+
+            # Try to get structured error info
+            error_info = await get_llm_error_info()
+            fallback = generate_fallback(user_message, error_info)
+            error_data = {
+                'chunk': fallback,
+                'done': True,
+                'error': str(e),
+                'error_info': error_info,
+                'full_response': fallback,
+                'search_used': False,
+                'video_available': False,
+                'video_topic': None,
+                'video_concepts': [],
+                'video_type': None,
+                'learning_state': 'initial',
+                'turn_count': 0,
+                'auto_video': None
             }
             yield f"data: {json.dumps(error_data)}\n\n"
             try:
@@ -1180,6 +1465,142 @@ async def get_session_state(session_id: str):
     """Get the learning state for a session"""
     state = conversation_analyzer.get_or_create_state(session_id)
     return state.to_dict()
+
+
+@app.post("/chat/with-attachment")
+async def chat_with_attachment(
+    message: str = Form(...),
+    session_id: str = Form("default"),
+    subject: str = Form("general"),
+    file: Optional[UploadFile] = File(None),
+    use_web_search: bool = Form(True),
+    use_reasoning: bool = Form(False),
+    use_documents: bool = Form(True),
+):
+    """
+    Chat with an optional file attachment.
+
+    The file will be uploaded and processed for RAG, then included
+    in the context for the chat response.
+
+    This is a combined endpoint that:
+    1. Uploads the file (if provided)
+    2. Processes it inline (for small files) or queues it
+    3. Returns a chat response with the document context
+
+    Returns:
+        Streaming response with document upload status and chat response
+    """
+    user_message = message.strip()
+    if not user_message:
+        raise HTTPException(status_code=400, detail="Message is required")
+
+    document_id = None
+    document_title = None
+
+    # Handle file upload if provided
+    if file and file.filename:
+        file_ext = Path(file.filename).suffix.lower().lstrip(".")
+
+        # Validate file type
+        if file_ext not in settings.ALLOWED_FILE_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type: {file_ext}. Allowed: {settings.ALLOWED_FILE_TYPES}"
+            )
+
+        # Validate file size
+        file.file.seek(0, 2)
+        file_size = file.file.tell()
+        file.file.seek(0)
+
+        max_size = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+        if file_size > max_size:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File too large. Maximum size: {settings.MAX_UPLOAD_SIZE_MB}MB"
+            )
+
+        # Save file
+        unique_id = str(uuid.uuid4())[:8]
+        safe_filename = f"{unique_id}_{file.filename}"
+        upload_dir = Path(settings.UPLOAD_DIR)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        file_path = upload_dir / safe_filename
+
+        try:
+            async with aiofiles.open(file_path, "wb") as f:
+                content = await file.read()
+                await f.write(content)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+
+        # Create document record
+        document_title = Path(file.filename).stem
+        async with db.get_session() as session:
+            document = Document(
+                user_id=1,
+                title=document_title,
+                content="",
+                source_type=SourceType.UPLOAD,
+                file_path=str(file_path),
+                file_type=file_ext,
+                file_size=file_size,
+                document_metadata={"original_filename": file.filename, "attached_to_chat": True},
+                status=DocumentStatus.PENDING,
+            )
+            session.add(document)
+            await session.flush()
+            document_id = document.id
+
+        # Queue for background processing
+        try:
+            from tasks.ingestion_tasks import process_document_task
+            task = process_document_task.delay(document_id)
+            logger.info(f"Document {document_id} queued for processing: {task.id}")
+        except Exception as task_error:
+            logger.warning(f"Failed to queue document processing: {task_error}")
+
+    # Create chat message with options
+    chat_message = ChatMessage(
+        message=user_message,
+        session_id=session_id,
+        subject=subject,
+        attachment_ids=[document_id] if document_id else None,
+        use_web_search=use_web_search,
+        use_reasoning=use_reasoning,
+        use_documents=use_documents,
+    )
+
+    # Stream response using existing chat_stream logic
+    async def combined_stream():
+        # First, emit document upload info if a file was attached
+        if document_id:
+            upload_event = {
+                "type": "upload",
+                "document_id": document_id,
+                "document_title": document_title,
+                "status": "processing",
+            }
+            yield f"data: {json.dumps(upload_event)}\n\n"
+
+        # Now stream the actual chat response
+        # Re-use the streaming logic from chat_stream
+        response = await chat_stream(chat_message)
+
+        # Forward the streaming response
+        async for chunk in response.body_iterator:
+            yield chunk
+
+    return StreamingResponse(
+        combined_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 
 @app.get("/chat/session/{session_id}/summary")

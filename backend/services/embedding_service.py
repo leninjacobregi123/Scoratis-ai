@@ -26,8 +26,9 @@ def get_model():
             from config import settings
 
             logger.info(f"Loading embedding model: {settings.EMBEDDING_MODEL}")
-            _model = SentenceTransformer(settings.EMBEDDING_MODEL)
-            logger.info("Embedding model loaded successfully")
+            # Use CPU for embeddings to avoid conflicts with Ollama using GPU
+            _model = SentenceTransformer(settings.EMBEDDING_MODEL, device='cpu')
+            logger.info("Embedding model loaded successfully on CPU")
         except Exception as e:
             logger.warning(f"Failed to load embedding model: {e}. Embeddings disabled.")
             _model_failed = True
