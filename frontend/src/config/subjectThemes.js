@@ -102,6 +102,7 @@ export const SUBJECT_THEMES = {
       gradient: 'radial-gradient(ellipse at top, #1E40AF 0%, #0F172A 50%, #000000 100%)',
       overlay: 'cosmic-dust',
     },
+
   },
 
   // ==========================================
@@ -198,6 +199,7 @@ export const SUBJECT_THEMES = {
       gradient: 'radial-gradient(ellipse at bottom, #065F46 0%, #022C22 60%, #011815 100%)',
       overlay: 'molecular',
     },
+
   },
 
   // ==========================================
@@ -294,6 +296,7 @@ export const SUBJECT_THEMES = {
       gradient: 'radial-gradient(ellipse at center, #2D1F26 0%, #1A0F14 50%, #0F0A0C 100%)',
       overlay: 'organic',
     },
+
   },
 
   // ==========================================
@@ -390,6 +393,7 @@ export const SUBJECT_THEMES = {
       gradient: 'radial-gradient(ellipse at top left, #4338CA 0%, #1E1B4B 40%, #0C0A1D 100%)',
       overlay: 'geometric',
     },
+
   },
 
   // ==========================================
@@ -486,6 +490,7 @@ export const SUBJECT_THEMES = {
       gradient: 'linear-gradient(180deg, #042F2E 0%, #0F172A 50%, #020617 100%)',
       overlay: 'digital',
     },
+
   },
 
   // ==========================================
@@ -582,6 +587,7 @@ export const SUBJECT_THEMES = {
       gradient: 'radial-gradient(ellipse at bottom right, #44403C 0%, #292524 40%, #1C1917 100%)',
       overlay: 'parchment',
     },
+
   },
 
   // ==========================================
@@ -678,6 +684,7 @@ export const SUBJECT_THEMES = {
       gradient: 'radial-gradient(ellipse at center, #44403C 0%, #292524 50%, #1C1917 100%)',
       overlay: 'ancient',
     },
+
   },
 
   // ==========================================
@@ -774,6 +781,7 @@ export const SUBJECT_THEMES = {
       gradient: 'radial-gradient(ellipse at top, #FFFFFF 0%, #FAF6ED 50%, #F5F0E6 100%)',
       overlay: 'marble',
     },
+
   },
 
   // ==========================================
@@ -870,6 +878,7 @@ export const SUBJECT_THEMES = {
       gradient: 'radial-gradient(ellipse at center, #3F3F46 0%, #27272A 50%, #18181B 100%)',
       overlay: 'mind',
     },
+
   },
 
   // ==========================================
@@ -966,6 +975,7 @@ export const SUBJECT_THEMES = {
       gradient: 'radial-gradient(ellipse at bottom, #166534 0%, #14532D 50%, #052E16 100%)',
       overlay: 'financial',
     },
+
   },
 };
 
