@@ -1,11 +1,45 @@
 /**
  * Citation Components
- * Renders inline citation numbers and popup previews
+ * Renders inline citation numbers, popup previews, and footnote sections
+ *
+ * Updated for Enhanced RAG with superscript footnotes
  */
 
 import { useState, useRef, useEffect } from 'react';
-import { FileText, BookOpen, MessageSquare, X, ExternalLink } from 'lucide-react';
+import { FileText, BookOpen, MessageSquare, X, ExternalLink, Quote } from 'lucide-react';
 import { formatSourceType } from '../utils/citations';
+
+// Unicode superscript digits for footnote display
+const SUPERSCRIPT_MAP = {
+  '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
+  '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹'
+};
+
+/**
+ * Convert a number to superscript Unicode characters
+ */
+export function toSuperscript(num) {
+  return String(num).split('').map(d => SUPERSCRIPT_MAP[d] || d).join('');
+}
+
+/**
+ * SuperscriptCitation - Inline superscript footnote marker
+ * Clickable to show source details
+ */
+export function SuperscriptCitation({ number, source, onClick, theme }) {
+  const themeClasses = theme?.classes || {};
+
+  return (
+    <sup
+      onClick={() => onClick?.(source)}
+      className={`cursor-pointer font-semibold transition-all hover:opacity-70
+                  ${themeClasses.textPrimary || 'text-blue-600'}`}
+      title={source?.documentTitle || `Source ${number}`}
+    >
+      {toSuperscript(number)}
+    </sup>
+  );
+}
 
 /**
  * CitationNumber - Inline superscript citation number
@@ -196,9 +230,141 @@ export function SourcesBadge({ count, onClick }) {
   );
 }
 
+/**
+ * FootnotesSection - Academic-style footnotes displayed below content
+ * Renders sources with superscript numbers, titles, and content previews
+ */
+export function FootnotesSection({ sources, citationInfo, theme, onSourceClick }) {
+  const themeClasses = theme?.classes || {};
+
+  // Filter to only cited sources if citationInfo is available
+  const displaySources = sources?.filter(s => s.was_cited !== false) || [];
+
+  if (!displaySources || displaySources.length === 0) return null;
+
+  const getSourceIcon = (sourceType) => {
+    switch (sourceType) {
+      case 'journal':
+        return <BookOpen className="w-3 h-3" />;
+      case 'chat':
+        return <MessageSquare className="w-3 h-3" />;
+      default:
+        return <FileText className="w-3 h-3" />;
+    }
+  };
+
+  return (
+    <div className={`mt-4 pt-4 border-t ${themeClasses.border || 'border-gray-200'}`}>
+      {/* Header */}
+      <div className="flex items-center gap-2 mb-3">
+        <Quote className={`w-4 h-4 ${themeClasses.textMuted || 'text-gray-500'}`} />
+        <h4 className={`text-xs font-semibold uppercase tracking-wider
+                        ${themeClasses.textMuted || 'text-gray-500'}`}>
+          Sources
+          {citationInfo?.citations_used && (
+            <span className="font-normal ml-1">
+              ({citationInfo.citations_used} of {citationInfo.total_sources} used)
+            </span>
+          )}
+        </h4>
+      </div>
+
+      {/* Footnotes List */}
+      <div className="space-y-2">
+        {displaySources.map((source, idx) => {
+          const citationNum = source.citationNumber || source.citation_number || idx + 1;
+          const title = source.documentTitle || source.document_title || 'Unknown Source';
+          const preview = source.contentPreview || source.content_preview || '';
+          const page = source.page;
+          const sourceType = source.sourceType || source.source_type;
+
+          return (
+            <div
+              key={source.chunkId || source.chunk_id || idx}
+              onClick={() => onSourceClick?.(source)}
+              className={`flex items-start gap-2 text-sm cursor-pointer
+                          hover:opacity-80 transition-opacity`}
+            >
+              {/* Superscript Number */}
+              <span className={`font-semibold min-w-[1rem]
+                               ${themeClasses.textPrimary || 'text-blue-600'}`}>
+                {toSuperscript(citationNum)}
+              </span>
+
+              {/* Source Details */}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  {/* Source Type Icon */}
+                  <span className={themeClasses.textMuted || 'text-gray-400'}>
+                    {getSourceIcon(sourceType)}
+                  </span>
+
+                  {/* Title */}
+                  <span className={`font-medium ${themeClasses.text || 'text-gray-900'}`}>
+                    {title}
+                  </span>
+
+                  {/* Page Number */}
+                  {page && (
+                    <span className={themeClasses.textMuted || 'text-gray-500'}>
+                      , p.{page}
+                    </span>
+                  )}
+                </div>
+
+                {/* Content Preview */}
+                {preview && (
+                  <p className={`mt-0.5 text-xs italic line-clamp-2
+                                ${themeClasses.textMuted || 'text-gray-500'}`}>
+                    — "{preview.substring(0, 100)}{preview.length > 100 ? '...' : ''}"
+                  </p>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * FormattedFootnotes - Parse and render markdown footnotes from backend
+ * Handles the footnotes string returned by citation_processor
+ */
+export function FormattedFootnotes({ footnotesMarkdown, theme }) {
+  const themeClasses = theme?.classes || {};
+
+  if (!footnotesMarkdown) return null;
+
+  // The backend returns formatted markdown like:
+  // ---
+  // **Sources:**
+  // ¹ **Title**, p.5 — "preview..."
+  // ² **Another**, p.10 — "preview..."
+
+  return (
+    <div
+      className={`mt-4 pt-4 border-t prose prose-sm max-w-none
+                  ${themeClasses.border || 'border-gray-200'}
+                  ${themeClasses.text || 'text-gray-700'}`}
+      dangerouslySetInnerHTML={{
+        __html: footnotesMarkdown
+          .replace(/\*\*Sources:\*\*/g, '<strong class="text-sm uppercase tracking-wider">Sources:</strong>')
+          .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+          .replace(/\n/g, '<br/>')
+      }}
+    />
+  );
+}
+
 export default {
   CitationNumber,
   CitationPopup,
   CitationList,
   SourcesBadge,
+  SuperscriptCitation,
+  FootnotesSection,
+  FormattedFootnotes,
+  toSuperscript,
 };

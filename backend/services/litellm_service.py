@@ -40,8 +40,9 @@ logger = logging.getLogger(__name__)
 litellm.set_verbose = False  # Set to True for debugging
 
 # Default timeout for LLM calls (in seconds)
-DEFAULT_TIMEOUT = 60
-VALIDATION_TIMEOUT = 30
+# Increased for Ollama tool calling which can be slow
+DEFAULT_TIMEOUT = 180
+VALIDATION_TIMEOUT = 60
 
 
 @dataclass

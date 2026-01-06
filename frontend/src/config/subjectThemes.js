@@ -1165,6 +1165,54 @@ export function isDarkTheme(subjectId) {
 }
 
 /**
+ * Get standardized theme classes for new components
+ * Maps existing theme class names to the standardized names expected by new components:
+ * - SearchTrailIndicator, ClarificationRequest, ManimAnimationCard, LinkPreviewCard, InlineImage
+ * - AgenticWorkflow (updated), Citation components
+ *
+ * @param {string} subjectId - The subject ID
+ * @returns {object} Standardized theme classes object
+ */
+export function getStandardizedThemeClasses(subjectId) {
+  const theme = getSubjectTheme(subjectId);
+  const classes = theme.classes || {};
+  const isDark = isDarkTheme(subjectId);
+
+  // Map existing classes to standardized component-expected names
+  return {
+    ...classes,
+
+    // Background classes (for card backgrounds, containers)
+    bgPrimary: classes.accentBg || (isDark ? 'bg-blue-600' : 'bg-indigo-600'),
+    bgSecondary: classes.aiMsgBg || (isDark ? 'bg-gray-800/60' : 'bg-gray-50'),
+    bgTertiary: classes.codeBlockBg || (isDark ? 'bg-gray-900' : 'bg-gray-100'),
+
+    // Text classes
+    text: isDark ? 'text-gray-100' : 'text-gray-700',
+    textPrimary: classes.accent || (isDark ? 'text-blue-400' : 'text-indigo-600'),
+    textMuted: isDark ? 'text-gray-400' : 'text-gray-500',
+    textOnPrimary: 'text-white',
+
+    // Border classes
+    border: isDark ? 'border-gray-700' : 'border-gray-200',
+    borderLight: isDark ? 'border-gray-600' : 'border-gray-300',
+
+    // Component-specific mappings
+    searchTrailBg: isDark ? 'bg-gray-800/50' : 'bg-gray-50',
+    searchResultSuccess: 'bg-green-100 text-green-700',
+    searchResultEmpty: 'bg-amber-100 text-amber-700',
+
+    clarificationBg: isDark ? 'bg-amber-900/30' : 'bg-amber-50',
+    clarificationBorder: 'border-amber-300',
+    clarificationText: isDark ? 'text-amber-100' : 'text-amber-900',
+
+    animationCardBg: isDark ? 'bg-gray-800' : 'bg-white',
+    linkPreviewBg: isDark ? 'bg-gray-800' : 'bg-white',
+    imageBg: isDark ? 'bg-gray-800' : 'bg-gray-50',
+  };
+}
+
+/**
  * Available particle types
  */
 export const PARTICLE_TYPES = [

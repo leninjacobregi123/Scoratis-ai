@@ -1,77 +1,108 @@
 """
-Embedding Service
-Generates embeddings using sentence-transformers (local, no API calls)
+Embedding Service (Async)
+Generates embeddings using Ollama's all-minilm model (384 dimensions)
+Fully async implementation with parallel batch processing for better performance.
 """
 
 import logging
+import asyncio
+import aiohttp
 from typing import List, Optional
-from functools import lru_cache
 import numpy as np
+
+from config import settings
 
 logger = logging.getLogger(__name__)
 
-# Lazy load to avoid slow startup
-_model = None
-_model_failed = False
+# Ollama embedding endpoint
+OLLAMA_EMBED_URL = f"{settings.OLLAMA_BASE_URL}/api/embeddings"
+OLLAMA_EMBED_MODEL = "all-minilm"  # 384 dimensions, compatible with our DB schema
 
-
-def get_model():
-    """Lazy load the embedding model"""
-    global _model, _model_failed
-    if _model_failed:
-        return None
-    if _model is None:
-        try:
-            from sentence_transformers import SentenceTransformer
-            from config import settings
-
-            logger.info(f"Loading embedding model: {settings.EMBEDDING_MODEL}")
-            # Use CPU for embeddings to avoid conflicts with Ollama using GPU
-            _model = SentenceTransformer(settings.EMBEDDING_MODEL, device='cpu')
-            logger.info("Embedding model loaded successfully on CPU")
-        except Exception as e:
-            logger.warning(f"Failed to load embedding model: {e}. Embeddings disabled.")
-            _model_failed = True
-            return None
-    return _model
+# Connection pool settings for better performance
+CONCURRENT_EMBEDDINGS = 10  # Max parallel embedding requests
 
 
 class EmbeddingService:
-    """Service for generating text embeddings"""
+    """Async service for generating text embeddings using Ollama"""
 
     def __init__(self):
-        self._model = None
+        self._ollama_available = None
+        self._semaphore = asyncio.Semaphore(CONCURRENT_EMBEDDINGS)
 
-    @property
-    def model(self):
-        """Lazy-load the model on first access"""
-        if self._model is None:
-            self._model = get_model()
-        return self._model
+    async def _check_ollama_async(self) -> bool:
+        """Async check if Ollama is available"""
+        if self._ollama_available is not None:
+            return self._ollama_available
 
-    def embed_text(self, text: str) -> List[float]:
+        try:
+            timeout = aiohttp.ClientTimeout(total=5)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(f"{settings.OLLAMA_BASE_URL}/api/tags") as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        models = [m['name'] for m in data.get('models', [])]
+                        if any(OLLAMA_EMBED_MODEL in m for m in models):
+                            self._ollama_available = True
+                            logger.info(f"Ollama embedding model '{OLLAMA_EMBED_MODEL}' available")
+                        else:
+                            logger.warning(f"Ollama model '{OLLAMA_EMBED_MODEL}' not found. Available: {models}")
+                            self._ollama_available = False
+                    else:
+                        self._ollama_available = False
+        except Exception as e:
+            logger.warning(f"Ollama not available: {e}")
+            self._ollama_available = False
+
+        return self._ollama_available
+
+    async def _get_ollama_embedding_async(self, text: str) -> Optional[List[float]]:
+        """Async get embedding from Ollama with semaphore for rate limiting"""
+        async with self._semaphore:
+            try:
+                timeout = aiohttp.ClientTimeout(total=30, connect=5)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(
+                        OLLAMA_EMBED_URL,
+                        json={"model": OLLAMA_EMBED_MODEL, "prompt": text}
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            return data.get("embedding")
+                        else:
+                            text_preview = text[:50] + "..." if len(text) > 50 else text
+                            logger.error(f"Ollama embedding failed: {resp.status} for '{text_preview}'")
+                            return None
+            except asyncio.TimeoutError:
+                logger.error(f"Ollama embedding timeout for text: {text[:50]}...")
+                return None
+            except Exception as e:
+                logger.error(f"Ollama embedding request failed: {e}")
+                return None
+
+    # ===== ASYNC METHODS (Primary) =====
+
+    async def embed_text_async(self, text: str) -> Optional[List[float]]:
         """
-        Generate embedding for a single text string.
+        Async generate embedding for a single text string.
 
         Args:
             text: The text to embed
 
         Returns:
-            List of floats representing the embedding vector
+            List of floats representing the embedding vector (384 dimensions)
         """
         if not text or not text.strip():
             return None
 
-        try:
-            embedding = self.model.encode(text, convert_to_numpy=True)
-            return embedding.tolist()
-        except Exception as e:
-            logger.error(f"Error generating embedding: {e}")
+        if not await self._check_ollama_async():
+            logger.error("Embedding service unavailable - Ollama not running")
             return None
 
-    def embed_texts(self, texts: List[str]) -> List[List[float]]:
+        return await self._get_ollama_embedding_async(text.strip())
+
+    async def embed_texts_async(self, texts: List[str]) -> List[List[float]]:
         """
-        Generate embeddings for multiple texts (batch processing).
+        Async generate embeddings for multiple texts with PARALLEL processing.
 
         Args:
             texts: List of texts to embed
@@ -83,29 +114,107 @@ class EmbeddingService:
             return []
 
         # Filter out empty texts
-        valid_texts = [t for t in texts if t and t.strip()]
+        valid_texts = [t.strip() for t in texts if t and t.strip()]
         if not valid_texts:
             return []
 
-        try:
-            embeddings = self.model.encode(valid_texts, convert_to_numpy=True)
-            return embeddings.tolist()
-        except Exception as e:
-            logger.error(f"Error generating batch embeddings: {e}")
+        if not await self._check_ollama_async():
+            logger.error("Embedding service unavailable - Ollama not running")
             return []
+
+        # Process all texts in PARALLEL using asyncio.gather
+        logger.info(f"Generating {len(valid_texts)} embeddings in parallel...")
+
+        tasks = [self._get_ollama_embedding_async(text) for text in valid_texts]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Collect successful embeddings
+        embeddings = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"Embedding failed for text {i}: {result}")
+                # Continue with other embeddings instead of failing completely
+                embeddings.append(None)
+            elif result is None:
+                embeddings.append(None)
+            else:
+                embeddings.append(result)
+
+        # Filter out None values but maintain order
+        successful = [e for e in embeddings if e is not None]
+
+        if len(successful) < len(valid_texts):
+            logger.warning(f"Only {len(successful)}/{len(valid_texts)} embeddings succeeded")
+
+        return successful
+
+    async def embed_batch_async(self, texts: List[str]) -> List[List[float]]:
+        """Async alias for embed_texts_async"""
+        return await self.embed_texts_async(texts)
+
+    # ===== SYNC METHODS (Backward Compatibility) =====
+
+    def _check_ollama(self) -> bool:
+        """Sync check if Ollama is available (for backward compatibility)"""
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If already in async context, create new loop in thread
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    future = pool.submit(asyncio.run, self._check_ollama_async())
+                    return future.result()
+            else:
+                return loop.run_until_complete(self._check_ollama_async())
+        except RuntimeError:
+            # No event loop, create one
+            return asyncio.run(self._check_ollama_async())
+
+    def embed_text(self, text: str) -> Optional[List[float]]:
+        """
+        Sync generate embedding for a single text string.
+        For backward compatibility - prefer embed_text_async.
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Already in async context - use thread pool
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    future = pool.submit(asyncio.run, self.embed_text_async(text))
+                    return future.result()
+            else:
+                return loop.run_until_complete(self.embed_text_async(text))
+        except RuntimeError:
+            return asyncio.run(self.embed_text_async(text))
+
+    def embed_texts(self, texts: List[str]) -> List[List[float]]:
+        """
+        Sync generate embeddings for multiple texts.
+        For backward compatibility - prefer embed_texts_async.
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    future = pool.submit(asyncio.run, self.embed_texts_async(texts))
+                    return future.result()
+            else:
+                return loop.run_until_complete(self.embed_texts_async(texts))
+        except RuntimeError:
+            return asyncio.run(self.embed_texts_async(texts))
+
+    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """Sync alias for embed_texts"""
+        return self.embed_texts(texts)
 
     def compute_similarity(
         self, embedding1: List[float], embedding2: List[float]
     ) -> float:
         """
         Compute cosine similarity between two embeddings.
-
-        Args:
-            embedding1: First embedding vector
-            embedding2: Second embedding vector
-
-        Returns:
-            Cosine similarity score (0-1)
+        This is CPU-bound so remains synchronous.
         """
         if not embedding1 or not embedding2:
             return 0.0
@@ -114,7 +223,6 @@ class EmbeddingService:
             vec1 = np.array(embedding1)
             vec2 = np.array(embedding2)
 
-            # Cosine similarity
             dot_product = np.dot(vec1, vec2)
             norm1 = np.linalg.norm(vec1)
             norm2 = np.linalg.norm(vec2)

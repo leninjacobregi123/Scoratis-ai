@@ -11,6 +11,26 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, '')
       },
+      '/chat': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/agent': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/subjects': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/v1': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/health': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
       '/generated_videos': {
         target: 'http://localhost:8000',
         changeOrigin: true

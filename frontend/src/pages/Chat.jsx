@@ -13,13 +13,18 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import SubjectBackground from '../components/SubjectBackground';
 import LLMSwitcher from '../components/LLMSwitcher';
-import { getSubjectTheme, DEFAULT_THEME, getSubjectImage, getSubjectTutor, isDarkTheme } from '../config/subjectThemes';
+import { getSubjectTheme, DEFAULT_THEME, getSubjectImage, getSubjectTutor, isDarkTheme, getStandardizedThemeClasses } from '../config/subjectThemes';
 import { parseCitations, buildSourceMap, hasCitations } from '../utils/citations';
-import { CitationNumber, CitationPopup, CitationList, SourcesBadge } from '../components/Citation';
+import { CitationNumber, CitationPopup, CitationList, SourcesBadge, FootnotesSection } from '../components/Citation';
 import AgenticWorkflow, { useAgenticWorkflow } from '../components/AgenticWorkflow';
 import { AttachmentButton, AttachmentPreview, UploadProgressOverlay } from '../components/ChatAttachments';
 import { ChatOptionsBar, DEFAULT_CHAT_OPTIONS } from '../components/ChatOptions';
 import { CanvasPanel, CanvasToggleButton } from '../components/CanvasPanel';
+import { SearchTrailIndicator, SearchFallbackIndicator } from '../components/SearchTrailIndicator';
+import ClarificationRequest from '../components/ClarificationRequest';
+import ManimAnimationCard from '../components/ManimAnimationCard';
+import { LinkPreviewCard, LinkPreviewGrid } from '../components/LinkPreviewCard';
+import { InlineImage, ImageGallery } from '../components/InlineImage';
 
 // ============== UI COMPONENTS ==============
 
@@ -339,7 +344,36 @@ function GuardrailCard({ message, suggestedSubject, onSwitchSubject }) {
 }
 
 // Message card - Claude.ai inspired professional design
-function MessageCard({ message, index, audioUrl, isCurrentlyPlaying, isLoadingAudio, onPlayAudio, onPauseAudio, video, generatingVideo, onRemoveVideo, videoRecommendation, onAcceptVideo, onDismissVideo, currentSubject, theme, subjectId, sources, workflow, guardrailInfo, onSwitchSubject, onCitationClick }) {
+function MessageCard({
+  message,
+  index,
+  audioUrl,
+  isCurrentlyPlaying,
+  isLoadingAudio,
+  onPlayAudio,
+  onPauseAudio,
+  video,
+  generatingVideo,
+  onRemoveVideo,
+  videoRecommendation,
+  onAcceptVideo,
+  onDismissVideo,
+  currentSubject,
+  theme,
+  subjectId,
+  sources,
+  workflow,
+  guardrailInfo,
+  onSwitchSubject,
+  onCitationClick,
+  // New props for enhanced features
+  searchTrail,
+  clarification,
+  animations,
+  linkPreviews,
+  images,
+  onSuggestionClick
+}) {
   const isUser = message.role === 'user';
   const [isVisible, setIsVisible] = useState(false);
   const [showVideoOffer, setShowVideoOffer] = useState(false);
@@ -464,9 +498,59 @@ function MessageCard({ message, index, audioUrl, isCurrentlyPlaying, isLoadingAu
                 thinking={workflow.thinking}
                 plan={workflow.plan}
                 verification={workflow.verification}
+                searchTrail={searchTrail}
                 isComplete={workflow.isComplete}
                 showDetails={false}
+                theme={theme}
               />
+            )}
+
+            {/* Search Trail Indicator - shows which sources were searched */}
+            {searchTrail && !workflow?.hasTools && (
+              <SearchTrailIndicator searchTrail={searchTrail} theme={theme} />
+            )}
+
+            {/* Clarification Request - when agent needs user help */}
+            {clarification && (
+              <ClarificationRequest
+                reason={clarification.reason}
+                suggestions={clarification.suggestions}
+                searchTrail={clarification.searchTrail}
+                onSuggestionClick={onSuggestionClick}
+                theme={theme}
+              />
+            )}
+
+            {/* Manim Animations */}
+            {animations && animations.length > 0 && (
+              <div className="space-y-3 mt-4">
+                {animations.map((anim, idx) => (
+                  <ManimAnimationCard
+                    key={idx}
+                    videoUrl={anim.videoUrl}
+                    thumbnailUrl={anim.thumbnailUrl}
+                    title={anim.title}
+                    description={anim.description}
+                    code={anim.code}
+                    status={anim.status}
+                    theme={theme}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* Link Previews */}
+            {linkPreviews && linkPreviews.length > 0 && (
+              <div className="mt-4">
+                <LinkPreviewGrid links={linkPreviews} theme={theme} />
+              </div>
+            )}
+
+            {/* Inline Images */}
+            {images && images.length > 0 && (
+              <div className="mt-4">
+                <ImageGallery images={images} theme={theme} />
+              </div>
             )}
 
             <div className="prose prose-lg max-w-none">
@@ -749,6 +833,17 @@ export default function Chat() {
   // Guardrail state - tracks messages blocked by subject guardrails
   const [guardrailMessages, setGuardrailMessages] = useState({}); // {msgId: {triggered, suggestedSubject}}
 
+  // Search trail state - tracks which sources were searched
+  const [messageSearchTrails, setMessageSearchTrails] = useState({}); // {msgId: {attempts: []}}
+
+  // Clarification request state - when agent needs user help
+  const [messageClarifications, setMessageClarifications] = useState({}); // {msgId: {reason, suggestions, searchTrail}}
+
+  // Multimedia content state
+  const [messageAnimations, setMessageAnimations] = useState({}); // {msgId: [{videoUrl, status, title, description, code}]}
+  const [messageLinkPreviews, setMessageLinkPreviews] = useState({}); // {msgId: [{url, preview, status}]}
+  const [messageImages, setMessageImages] = useState({}); // {msgId: [{src, alt, caption}]}
+
   // Attachment and options state
   const [selectedFile, setSelectedFile] = useState(null);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -796,10 +891,15 @@ export default function Chat() {
   const videoPollingRefs = useRef({}); // Store polling intervals by taskId
   const api = useApi();
 
-  // Get theme based on current subject
+  // Get theme based on current subject (with standardized classes for new components)
   const theme = useMemo(() => {
     const subjectId = currentSubject?.id || subjectFromUrl;
-    return getSubjectTheme(subjectId);
+    const baseTheme = getSubjectTheme(subjectId);
+    const standardizedClasses = getStandardizedThemeClasses(subjectId);
+    return {
+      ...baseTheme,
+      classes: standardizedClasses
+    };
   }, [currentSubject, subjectFromUrl]);
 
   // Check if current theme is dark
@@ -1316,6 +1416,80 @@ export default function Chat() {
                 continue;
               }
 
+              // Handle search trail event - shows which sources were searched
+              if (data.type === 'search_trail' && data.search_trail) {
+                setMessageSearchTrails(prev => ({
+                  ...prev,
+                  [newMessageId]: data.search_trail
+                }));
+                continue;
+              }
+
+              // Handle clarification request - when agent needs user help
+              if (data.type === 'clarification_request') {
+                setMessageClarifications(prev => ({
+                  ...prev,
+                  [newMessageId]: {
+                    reason: data.reason,
+                    suggestions: data.suggestions || [],
+                    searchTrail: data.search_trail || []
+                  }
+                }));
+                continue;
+              }
+
+              // Handle Manim animation events
+              if (data.type === 'manim_animation') {
+                setMessageAnimations(prev => ({
+                  ...prev,
+                  [newMessageId]: [
+                    ...(prev[newMessageId] || []),
+                    {
+                      videoUrl: data.video_url,
+                      thumbnailUrl: data.thumbnail_url,
+                      title: data.title,
+                      description: data.description,
+                      code: data.code,
+                      status: data.status || 'ready'
+                    }
+                  ]
+                }));
+                continue;
+              }
+
+              // Handle link preview events
+              if (data.type === 'link_preview') {
+                setMessageLinkPreviews(prev => ({
+                  ...prev,
+                  [newMessageId]: [
+                    ...(prev[newMessageId] || []),
+                    {
+                      url: data.url,
+                      preview: data.preview,
+                      status: data.status || 'ready',
+                      error: data.error
+                    }
+                  ]
+                }));
+                continue;
+              }
+
+              // Handle display image events
+              if (data.type === 'display_image') {
+                setMessageImages(prev => ({
+                  ...prev,
+                  [newMessageId]: [
+                    ...(prev[newMessageId] || []),
+                    {
+                      src: data.src,
+                      alt: data.alt,
+                      caption: data.caption
+                    }
+                  ]
+                }));
+                continue;
+              }
+
               // Handle agentic tool events
               if (data.type === 'tool_start') {
                 handleToolStart(data.tool, data.args);
@@ -1624,6 +1798,15 @@ export default function Chat() {
                 guardrailInfo={guardrailMessages[msg.id]}
                 onSwitchSubject={handleSwitchSubject}
                 onCitationClick={handleCitationClick}
+                searchTrail={messageSearchTrails[msg.id]}
+                clarification={messageClarifications[msg.id]}
+                animations={messageAnimations[msg.id]}
+                linkPreviews={messageLinkPreviews[msg.id]}
+                images={messageImages[msg.id]}
+                onSuggestionClick={(suggestion) => {
+                  setInput(suggestion);
+                  inputRef.current?.focus();
+                }}
               />
             ))}
             {loading && <TypingIndicator currentSubject={currentSubject} theme={theme} isDark={isDark} />}

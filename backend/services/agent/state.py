@@ -341,6 +341,106 @@ class VerificationState(BaseModel):
         }
 
 
+class SearchAttempt(BaseModel):
+    """
+    Records a search attempt for transparency (search trail).
+
+    Used to track which sources were searched and their results,
+    enabling the agent to show the user what was searched.
+    """
+    source: str  # "knowledge_base", "web_search", "journals", "conversations"
+    query: str
+    results_count: int = 0
+    success: bool = True
+    had_results: bool = False
+    timestamp: Optional[str] = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    error: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "source": self.source,
+            "query": self.query,
+            "results_count": self.results_count,
+            "success": self.success,
+            "had_results": self.had_results,
+            "timestamp": self.timestamp,
+            "error": self.error
+        }
+
+    @staticmethod
+    def from_tool_result(tool_name: str, result: Dict[str, Any]) -> "SearchAttempt":
+        """Create SearchAttempt from a tool result."""
+        return SearchAttempt(
+            source=tool_name,
+            query=result.get("query", ""),
+            results_count=result.get("results_count", 0),
+            success=result.get("success", True),
+            had_results=result.get("results_count", 0) > 0,
+            error=result.get("error")
+        )
+
+
+class SearchTrail(BaseModel):
+    """
+    Tracks all search attempts for transparency.
+
+    This allows the agent to inform the user about what sources were searched:
+    - "I checked your notes but didn't find anything on this topic."
+    - "Based on your saved documents [citations]..."
+    - "I found this information on the web..."
+    """
+    attempts: List[SearchAttempt] = Field(default_factory=list)
+
+    def add_attempt(self, attempt: SearchAttempt):
+        """Add a search attempt to the trail."""
+        self.attempts.append(attempt)
+
+    def add_from_tool_result(self, tool_name: str, result: Dict[str, Any]):
+        """Add a search attempt from a tool result."""
+        attempt = SearchAttempt.from_tool_result(tool_name, result)
+        self.attempts.append(attempt)
+
+    def get_summary(self) -> str:
+        """Get a human-readable summary of the search trail."""
+        if not self.attempts:
+            return ""
+
+        lines = ["**Sources searched:**"]
+        for attempt in self.attempts:
+            source_name = attempt.source.replace("_", " ").title()
+            if attempt.had_results:
+                lines.append(f"- {source_name}: {attempt.results_count} results found")
+            else:
+                lines.append(f"- {source_name}: No results found")
+
+        return "\n".join(lines)
+
+    def has_any_results(self) -> bool:
+        """Check if any search returned results."""
+        return any(a.had_results for a in self.attempts)
+
+    def all_failed(self) -> bool:
+        """Check if all searches returned no results."""
+        return len(self.attempts) > 0 and not self.has_any_results()
+
+    def kb_searched(self) -> bool:
+        """Check if knowledge base was searched."""
+        return any(a.source in ["search_knowledge_base", "knowledge_base"]
+                   for a in self.attempts)
+
+    def web_searched(self) -> bool:
+        """Check if web was searched."""
+        return any(a.source in ["web_search"] for a in self.attempts)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "attempts": [a.to_dict() for a in self.attempts],
+            "has_any_results": self.has_any_results(),
+            "all_failed": self.all_failed(),
+            "summary": self.get_summary()
+        }
+
+
 class StopCondition(BaseModel):
     """Conditions for stopping the agentic loop"""
     max_iterations: int = 7
@@ -466,6 +566,10 @@ class AgentState(TypedDict):
     # === Verification ===
     verification: Optional[Dict[str, Any]]  # VerificationState serialized
 
+    # === Search Trail (Transparency) ===
+    search_trail: Optional[Dict[str, Any]]  # SearchTrail serialized
+    query_classification: Optional[Dict[str, Any]]  # QueryClassification result
+
     # === Metadata ===
     model_used: Optional[str]
     error: Optional[str]
@@ -504,6 +608,9 @@ def create_initial_state(
         pending_delegation=None,
         # Verification
         verification=VerificationState().to_dict(),
+        # Search trail (transparency)
+        search_trail=SearchTrail().to_dict(),
+        query_classification=None,
         model_used=None,
         error=None
     )

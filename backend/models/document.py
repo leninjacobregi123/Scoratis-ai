@@ -108,6 +108,9 @@ class Document(Base):
     # Soft delete
     is_deleted = Column(Boolean, default=False, nullable=False)
 
+    # Subject for topic isolation (physics, chemistry, biology, etc.)
+    subject = Column(String(100), nullable=True, index=True)
+
     # Relationships
     user = relationship("User", back_populates="documents")
     chunks = relationship(
@@ -129,6 +132,8 @@ class Document(Base):
         ),
         # Composite index for user filtering
         Index("idx_documents_user_status", user_id, status),
+        # Composite index for subject-scoped RAG queries
+        Index("idx_documents_user_subject_status", user_id, "subject", status),
         # Index for source tracking
         Index("idx_documents_source", source_type, source_id),
         # Full-text search index
@@ -162,6 +167,7 @@ class Document(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "is_deleted": self.is_deleted,
+            "subject": self.subject,
             "chunk_count": chunk_count,  # Pass explicitly to avoid lazy loading
         }
 

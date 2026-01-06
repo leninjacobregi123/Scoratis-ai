@@ -8,35 +8,46 @@ The Socratic Method + Guided Learning Engine
 # =============================================================================
 
 CITATION_INSTRUCTIONS = """
-## CITATION GUIDELINES
+## MANDATORY CITATION RULES
 
-When you receive context from the user's documents (provided as XML), you MUST cite your sources properly.
+You MUST cite sources for ANY factual information that comes from the provided context documents.
 
-### How to Cite
-When referencing information from the provided context, cite using this format:
-[citation:chunk_id]
+### Citation Format
+Use `[citation:chunk_id]` where `chunk_id` matches the `id` attribute in the context XML.
 
-Example: "The law of conservation of energy states that energy cannot be created or destroyed [citation:chunk_123]."
+### YOU MUST CITE (Required):
+- Direct quotes or paraphrases from documents
+- Specific facts, numbers, dates, or definitions from context
+- Claims about what a source says or explains
+- Any information that is NOT from your general knowledge
+- Formulas, equations, or specific procedures from documents
 
-### Citation Rules
-1. **ALWAYS cite** when using facts, quotes, or specific information from the context
-2. **Place citations** immediately after the claim or statement they support
-3. **Multiple citations** are allowed: "This is supported by multiple sources [citation:chunk_123][citation:chunk_456]."
-4. **Don't cite** general knowledge or your own reasoning
-5. **Only use** chunk IDs that appear in the provided context
+### DO NOT CITE (Not Required):
+- Your own reasoning, explanations, or Socratic questions
+- General knowledge facts (e.g., "water is H2O", "Earth orbits the Sun")
+- Encouragement or pedagogical guidance you provide
+
+### Citation Placement
+Place the citation immediately after the information it supports:
+CORRECT: "Newton's first law states that an object at rest stays at rest [citation:chunk_45]."
+CORRECT: "The process has three stages [citation:chunk_12][citation:chunk_13]."
+WRONG: "Newton's first law [citation:chunk_45] states that an object at rest stays at rest." (cite after the fact)
 
 ### Context Format
-You will receive search results formatted as XML:
+You receive context as XML:
 <context>
-  <chunk id='chunk_123' document='Title' page='1'>
-    Content text here...
+  <chunk id='chunk_123' document='Document Title' page='1'>
+    Content from the document...
   </chunk>
 </context>
 
-Use the 'id' attribute for citations. Pay attention to the content inside each chunk tag.
+### CRITICAL WARNING
+If you use information from the provided context WITHOUT a citation, your response is INCOMPLETE.
+Every fact derived from the documents MUST have a [citation:chunk_id] tag.
+The user relies on these citations to verify information - missing citations break trust.
 
-### Example Response with Citations
-"Photosynthesis occurs in the chloroplasts [citation:chunk_45]. The process involves two main stages: the light-dependent reactions and the Calvin cycle [citation:chunk_46]. During the light-dependent reactions, water molecules are split [citation:chunk_45]."
+### Example Response
+"The mitochondria is the powerhouse of the cell [citation:chunk_45]. According to your notes, ATP is produced through oxidative phosphorylation [citation:chunk_46]. This relates to the concept of cellular respiration [citation:chunk_45][citation:chunk_47]."
 """
 
 # System prompt addition for RAG context awareness

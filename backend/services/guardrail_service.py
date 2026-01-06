@@ -559,8 +559,7 @@ Example: BLOCKED|0.85|physics"""
         try:
             response = await self.llm_service.generate(
                 messages=[{"role": "user", "content": classification_prompt}],
-                system_prompt="You are a precise classifier. Respond only in the specified format.",
-                max_tokens=50
+                system_prompt="You are a precise classifier. Respond only in the specified format."
             )
 
             # Parse response

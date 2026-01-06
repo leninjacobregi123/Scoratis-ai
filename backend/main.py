@@ -34,6 +34,7 @@ from video_service import video_service
 from conversation_analyzer import conversation_analyzer, VideoTrigger
 from coqui_tts_service import coqui_tts_service, TUTOR_VOICES
 from services import get_rag_service, get_web_search_service, get_memory_service
+from services.citation_processor import get_citation_processor
 from services.langgraph_service import initialize_langgraph_service, get_langgraph_service
 from services.video_analyzer_service import (
     VideoAnalyzerService,
@@ -905,8 +906,8 @@ async def chat(message: ChatMessage):
         if session_id not in conversation_memory:
             conversation_memory[session_id] = []
 
-        # Save user message to database with embedding
-        conversation_id = await db.add_chat_message(session_id, 'user', user_message)
+        # Save user message to database with embedding (with subject tagging)
+        conversation_id = await db.add_chat_message(session_id, 'user', user_message, subject=subject)
 
         # Add to memory service
         memory_service.add_message(session_id, "user", user_message)
@@ -1000,8 +1001,8 @@ async def chat(message: ChatMessage):
             response_text = generate_fallback(user_message, error_info)
             source = "fallback"
 
-        # Save AI response to database with embedding
-        await db.add_chat_message(session_id, 'ai', response_text)
+        # Save AI response to database with embedding (with subject tagging)
+        await db.add_chat_message(session_id, 'ai', response_text, subject=subject)
 
         # Add to memory service
         memory_service.add_message(session_id, "assistant", response_text)
@@ -1080,7 +1081,7 @@ async def chat(message: ChatMessage):
         response_text = generate_fallback(user_message, error_info)
 
         try:
-            await db.add_chat_message(session_id, 'ai', response_text)
+            await db.add_chat_message(session_id, 'ai', response_text, subject=subject)
         except:
             pass
         return {
@@ -1145,8 +1146,8 @@ async def chat_stream(message: ChatMessage):
     if session_id not in conversation_memory:
         conversation_memory[session_id] = []
 
-    # Save user message to database with embedding
-    conversation_id = await db.add_chat_message(session_id, 'user', user_message)
+    # Save user message to database with embedding (with subject tagging)
+    conversation_id = await db.add_chat_message(session_id, 'user', user_message, subject=subject)
 
     # Add to memory service
     memory_service.add_message(session_id, "user", user_message)
@@ -1161,7 +1162,7 @@ async def chat_stream(message: ChatMessage):
     if len(conversation_memory[session_id]) > 20:
         conversation_memory[session_id] = conversation_memory[session_id][-20:]
 
-    # === RAG: Get relevant context with hybrid search ===
+    # === RAG: Get relevant context with hybrid search (subject-filtered) ===
     # Only search documents if use_documents option is enabled
     rag_context_xml = ""
     rag_sources = []
@@ -1169,17 +1170,30 @@ async def chat_stream(message: ChatMessage):
     use_documents = message.use_documents if message.use_documents is not None else True
     use_web_search = message.use_web_search if message.use_web_search is not None else True
 
+    # Get conversation history for query reformulation (last 10 messages)
+    conversation_history_for_rag = conversation_memory.get(session_id, [])[-10:]
+
     if use_documents:
         try:
             async with db.get_session() as db_session:
-                # Try new hybrid search with citations first
+                # Try enhanced hybrid search with query reformulation and citations
                 try:
                     rag_result = await rag_service.get_context_with_citations(
-                        db_session, user_message
+                        db_session,
+                        user_message,
+                        subject=subject,
+                        conversation_history=conversation_history_for_rag,
+                        use_query_reformulation=True,
+                        llm_service=llm_service,
                     )
                     rag_context_xml = rag_result.get("context_xml", "")
                     rag_sources = rag_result.get("sources", [])
                     rag_chunk_mapping = rag_result.get("chunk_mapping", {})
+
+                    # Log query reformulation if it occurred
+                    reformulation_info = rag_result.get("reformulation_info")
+                    if reformulation_info:
+                        logger.info(f"Query reformulated: '{reformulation_info.get('original_query')}' -> '{reformulation_info.get('reformulated_query')}'")
                 except Exception as hybrid_error:
                     logger.warning(f"Hybrid search error, falling back to legacy: {hybrid_error}")
                     # Fallback to legacy search
@@ -1239,8 +1253,8 @@ async def chat_stream(message: ChatMessage):
                 full_response += chunk
                 yield f"data: {json.dumps({'chunk': chunk, 'done': False})}\n\n"
 
-            # Save complete response to database with embedding
-            await db.add_chat_message(session_id, 'ai', full_response)
+            # Save complete response to database with embedding (with subject tagging)
+            await db.add_chat_message(session_id, 'ai', full_response, subject=subject)
 
             # Add to memory service
             memory_service.add_message(session_id, "assistant", full_response)
@@ -1347,10 +1361,31 @@ async def chat_stream(message: ChatMessage):
             except Exception as video_err:
                 logger.warning(f"Video analysis/generation error: {video_err}")
 
+            # === Citation Processing: Convert [citation:chunk_id] to footnotes ===
+            formatted_response = full_response
+            footnotes_section = ""
+            citation_info = None
+
+            if rag_sources and rag_chunk_mapping:
+                try:
+                    citation_processor = get_citation_processor()
+                    formatted_response, footnotes_section, used_sources = citation_processor.format_response_with_footnotes(
+                        full_response, rag_sources, rag_chunk_mapping
+                    )
+                    citation_info = {
+                        "citations_used": len(used_sources),
+                        "total_sources": len(rag_sources),
+                    }
+                except Exception as citation_err:
+                    logger.warning(f"Citation processing error: {citation_err}")
+
             final_data = {
                 'chunk': '',
                 'done': True,
-                'full_response': full_response,
+                'full_response': full_response,  # Original with [citation:chunk_id] tags
+                'formatted_response': formatted_response,  # With superscript¹ numbers
+                'footnotes': footnotes_section,  # Sources section
+                'citation_info': citation_info,  # Metadata about citations
                 'context': context,
                 'conversation_id': conversation_id,
                 'model': current_config.get('model') if current_config else None,
@@ -1396,7 +1431,7 @@ async def chat_stream(message: ChatMessage):
             }
             yield f"data: {json.dumps(error_data)}\n\n"
             try:
-                await db.add_chat_message(session_id, 'ai', fallback)
+                await db.add_chat_message(session_id, 'ai', fallback, subject=subject)
                 conversation_memory[session_id].append({
                     "role": "assistant",
                     "content": fallback
@@ -1428,7 +1463,7 @@ async def chat_stream(message: ChatMessage):
             }
             yield f"data: {json.dumps(error_data)}\n\n"
             try:
-                await db.add_chat_message(session_id, 'ai', fallback)
+                await db.add_chat_message(session_id, 'ai', fallback, subject=subject)
                 conversation_memory[session_id].append({
                     "role": "assistant",
                     "content": fallback
@@ -1535,7 +1570,7 @@ async def chat_with_attachment(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
 
-        # Create document record
+        # Create document record with subject tagging
         document_title = Path(file.filename).stem
         async with db.get_session() as session:
             document = Document(
@@ -1548,6 +1583,7 @@ async def chat_with_attachment(
                 file_size=file_size,
                 document_metadata={"original_filename": file.filename, "attached_to_chat": True},
                 status=DocumentStatus.PENDING,
+                subject=subject,  # Tag with subject for subject-isolated RAG
             )
             session.add(document)
             await session.flush()
@@ -1875,16 +1911,18 @@ async def rag_search(q: str = Query(..., min_length=1)):
 async def upload_document(
     file: UploadFile = File(...),
     title: str = Form(...),
+    subject: str = Form(...),  # Required: subject for subject-isolated RAG
     folder_id: Optional[int] = Form(None),
 ):
     """
-    Upload a document for RAG processing.
+    Upload a document for RAG processing with subject tagging.
 
     Supported file types: PDF, DOCX, TXT, HTML, MD
 
     The document will be:
     1. Saved to storage
-    2. Queued for background processing (parsing, chunking, embedding)
+    2. Tagged with subject for subject-isolated retrieval
+    3. Queued for background processing (parsing, chunking, embedding)
 
     Returns document ID and task ID for status tracking.
     """
@@ -1923,7 +1961,7 @@ async def upload_document(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
 
-    # Create document record
+    # Create document record with subject tagging
     async with db.get_session() as session:
         document = Document(
             user_id=1,  # Default user
@@ -1935,6 +1973,7 @@ async def upload_document(
             file_size=file_size,
             document_metadata={"original_filename": file.filename},
             status=DocumentStatus.PENDING,
+            subject=subject.strip(),  # Tag with subject for subject-isolated RAG
         )
         session.add(document)
         await session.flush()
@@ -2034,7 +2073,8 @@ async def get_document(document_id: int):
 async def get_document_status(document_id: int):
     """Get processing status for a document"""
     async with db.get_session() as session:
-        from sqlalchemy import select
+        from sqlalchemy import select, func
+        from models.chunk import Chunk
 
         result = await session.execute(
             select(Document).where(Document.id == document_id)
@@ -2044,11 +2084,17 @@ async def get_document_status(document_id: int):
         if not document:
             raise HTTPException(status_code=404, detail="Document not found")
 
+        # Count chunks asynchronously (avoid sync relationship access in async context)
+        chunk_count_result = await session.execute(
+            select(func.count()).select_from(Chunk).where(Chunk.document_id == document_id)
+        )
+        chunk_count = chunk_count_result.scalar() or 0
+
         return {
             "document_id": document.id,
             "status": document.status.value,
             "error_message": document.error_message,
-            "chunk_count": document.chunks.count() if document.chunks else 0,
+            "chunk_count": chunk_count,
         }
 
 

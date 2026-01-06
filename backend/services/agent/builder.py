@@ -30,6 +30,11 @@ from .tools import (
     create_delegate_tool,
     create_verify_response_tool,
     create_finalize_response_tool,
+    create_request_clarification_tool,
+    # Multimedia tools
+    create_manim_animation_tool,
+    create_link_preview_tool,
+    create_display_image_tool,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,6 +57,10 @@ class ToolDependencies:
     # Agentic components
     orchestrator: Any = None
     verifier: Any = None
+    # Multimedia services (optional - tools work without them)
+    animation_service: Any = None  # For Manim animations
+    preview_service: Any = None    # For link previews
+    image_service: Any = None      # For image display
 
 
 @dataclass
@@ -132,7 +141,8 @@ class ToolBuilder:
             return create_search_knowledge_base_tool(
                 self.deps.db_session,
                 self.deps.rag_service,
-                self.deps.user_id
+                self.deps.user_id,
+                subject=self.deps.subject  # Subject-filtered RAG
             )
 
         elif name == "search_journals":
@@ -192,6 +202,22 @@ class ToolBuilder:
 
         elif name == "finalize_response":
             return create_finalize_response_tool()
+
+        elif name == "request_clarification":
+            return create_request_clarification_tool()
+
+        # === Multimedia Tools ===
+        elif name == "create_manim_animation":
+            # Animation service is optional - tool works without it (returns queued status)
+            return create_manim_animation_tool(self.deps.animation_service)
+
+        elif name == "link_preview":
+            # Preview service is optional - tool has built-in fallback
+            return create_link_preview_tool(self.deps.preview_service)
+
+        elif name == "display_image":
+            # Image service is optional - tool works without it
+            return create_display_image_tool(self.deps.image_service)
 
         else:
             logger.warning(f"Unknown tool: {name}")
@@ -253,7 +279,11 @@ def build_tools(
     user_id: int = 1,
     tool_names: Optional[List[str]] = None,
     orchestrator: Any = None,
-    verifier: Any = None
+    verifier: Any = None,
+    # Multimedia services
+    animation_service: Any = None,
+    preview_service: Any = None,
+    image_service: Any = None
 ) -> List[BuiltTool]:
     """
     Convenience function to build tools with dependencies.
@@ -270,6 +300,9 @@ def build_tools(
         tool_names: Optional list of specific tools to build (builds all if None)
         orchestrator: Sub-agent orchestrator for delegation
         verifier: Response verifier for quality checking
+        animation_service: Manim animation rendering service
+        preview_service: Link preview generation service
+        image_service: Image handling service
 
     Returns:
         List of BuiltTool objects ready for use
@@ -284,7 +317,10 @@ def build_tools(
         subject=subject,
         user_id=user_id,
         orchestrator=orchestrator,
-        verifier=verifier
+        verifier=verifier,
+        animation_service=animation_service,
+        preview_service=preview_service,
+        image_service=image_service
     )
 
     builder = ToolBuilder(deps)

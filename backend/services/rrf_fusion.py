@@ -288,6 +288,167 @@ def format_context_xml(
     return '\n'.join(xml_parts)
 
 
+def group_by_document(
+    results: List[Dict[str, Any]],
+    max_chunks_per_doc: int = 5
+) -> Dict[int, List[Dict[str, Any]]]:
+    """
+    Group search results by their parent document.
+
+    This preserves context by keeping chunks from the same document together,
+    allowing the LLM to understand the full story from each source.
+
+    Args:
+        results: List of chunk results with document_id
+        max_chunks_per_doc: Maximum chunks to keep per document
+
+    Returns:
+        Dict mapping document_id -> list of chunks from that document
+    """
+    grouped: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+
+    for result in results:
+        doc_id = result.get('document_id')
+        if doc_id is not None:
+            if len(grouped[doc_id]) < max_chunks_per_doc:
+                grouped[doc_id].append(result)
+
+    return dict(grouped)
+
+
+def format_grouped_context_xml(
+    grouped_results: Dict[int, List[Dict[str, Any]]],
+    doc_metadata: Optional[Dict[int, Dict[str, Any]]] = None
+) -> str:
+    """
+    Format grouped search results as hierarchical XML for LLM context.
+
+    Groups chunks by document for better context preservation:
+    <context>
+      <document id="1" title="Physics Notes">
+        <chunk id="chunk_1">...</chunk>
+        <chunk id="chunk_2">...</chunk>
+      </document>
+      <document id="2" title="Chemistry Notes">
+        <chunk id="chunk_5">...</chunk>
+      </document>
+    </context>
+
+    Args:
+        grouped_results: Dict of document_id -> chunks
+        doc_metadata: Optional metadata for documents (title, etc.)
+
+    Returns:
+        Hierarchical XML string
+    """
+    if not grouped_results:
+        return "<context>\n  <no_results>No relevant information found.</no_results>\n</context>"
+
+    xml_parts = ["<context>"]
+
+    for doc_id, chunks in grouped_results.items():
+        # Get document metadata
+        meta = doc_metadata.get(doc_id, {}) if doc_metadata else {}
+        doc_title = meta.get('title', chunks[0].get('document_title', f'Document {doc_id}'))
+
+        # Document element
+        xml_parts.append(f"  <document id='{doc_id}' title='{doc_title}'>")
+
+        # Sort chunks by index within document
+        sorted_chunks = sorted(chunks, key=lambda x: x.get('chunk_index', 0))
+
+        for chunk in sorted_chunks:
+            chunk_id = chunk.get('chunk_id', chunk.get('id'))
+            content = chunk.get('content', '')
+            page = chunk.get('page')
+
+            attrs = [f"id='{chunk_id}'"]
+            if page:
+                attrs.append(f"page='{page}'")
+
+            attr_str = ' '.join(attrs)
+            xml_parts.append(f"    <chunk {attr_str}>")
+            xml_parts.append(f"      {content}")
+            xml_parts.append("    </chunk>")
+
+        xml_parts.append("  </document>")
+
+    xml_parts.append("</context>")
+
+    return '\n'.join(xml_parts)
+
+
+def merge_adjacent_chunks(
+    chunks: List[Dict[str, Any]],
+    max_gap: int = 1
+) -> List[Dict[str, Any]]:
+    """
+    Merge adjacent chunks from the same document into larger context blocks.
+
+    This helps preserve continuity when relevant information spans multiple chunks.
+
+    Args:
+        chunks: List of chunks sorted by document and index
+        max_gap: Maximum gap between chunk indices to consider them adjacent
+
+    Returns:
+        List of merged chunk groups
+    """
+    if not chunks:
+        return []
+
+    # Group by document first
+    by_doc: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    for chunk in chunks:
+        doc_id = chunk.get('document_id')
+        if doc_id is not None:
+            by_doc[doc_id].append(chunk)
+
+    merged_results = []
+
+    for doc_id, doc_chunks in by_doc.items():
+        # Sort by chunk index
+        sorted_chunks = sorted(doc_chunks, key=lambda x: x.get('chunk_index', 0))
+
+        # Merge adjacent chunks
+        current_group = [sorted_chunks[0]]
+
+        for chunk in sorted_chunks[1:]:
+            prev_idx = current_group[-1].get('chunk_index', 0)
+            curr_idx = chunk.get('chunk_index', 0)
+
+            if curr_idx - prev_idx <= max_gap:
+                # Adjacent - add to current group
+                current_group.append(chunk)
+            else:
+                # Not adjacent - finalize current group and start new
+                merged_results.append(_merge_chunk_group(current_group))
+                current_group = [chunk]
+
+        # Don't forget the last group
+        if current_group:
+            merged_results.append(_merge_chunk_group(current_group))
+
+    return merged_results
+
+
+def _merge_chunk_group(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Merge a group of adjacent chunks into one"""
+    if len(chunks) == 1:
+        return chunks[0]
+
+    # Combine content
+    combined_content = "\n\n".join(c.get('content', '') for c in chunks)
+
+    # Take metadata from first chunk
+    merged = dict(chunks[0])
+    merged['content'] = combined_content
+    merged['merged_from'] = [c.get('chunk_id', c.get('id')) for c in chunks]
+    merged['chunk_count'] = len(chunks)
+
+    return merged
+
+
 def extract_citation_ids(text: str) -> List[str]:
     """
     Extract citation IDs from text.

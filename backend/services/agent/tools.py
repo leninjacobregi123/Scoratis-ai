@@ -106,41 +106,113 @@ class ToolDefinition:
 def create_search_knowledge_base_tool(
     db_session: AsyncSession,
     rag_service: Any,
-    user_id: int = 1
+    user_id: int = 1,
+    subject: Optional[str] = None
 ) -> Callable[..., Awaitable[Dict[str, Any]]]:
     """
     Factory for the knowledge base search tool.
     Searches journals, documents, and past conversations.
+
+    Enhanced with:
+    - Subject filtering (subject-isolated knowledge spaces)
+    - Query reformulation (automatic query optimization)
+    - Cross-encoder re-ranking (improved relevance)
+    - Contextual grouping (chunks grouped by document)
     """
-    async def search_knowledge_base(query: str, limit: int = 5) -> Dict[str, Any]:
-        """Search the user's knowledge base for relevant information."""
+    async def search_knowledge_base(
+        query: str,
+        limit: int = 5,
+        use_enhanced: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Search the user's knowledge base for relevant information.
+
+        Args:
+            query: Search query
+            limit: Maximum results to return
+            use_enhanced: Whether to use enhanced RAG pipeline with re-ranking
+        """
         try:
             # Ensure limit is an integer
             limit_int = int(limit) if limit else 5
 
-            # Use hybrid search with citations
-            results = await rag_service.get_context_with_citations(
-                db_session, query, user_id
-            )
+            # Try enhanced search if available
+            if use_enhanced and hasattr(rag_service, 'enhanced_search'):
+                from services.rag_service import SearchFilters
 
-            sources = results.get("sources", [])[:limit_int]
+                filters = SearchFilters(subject=subject)
+                results = await rag_service.enhanced_search(
+                    db_session,
+                    query,
+                    user_id,
+                    filters=filters,
+                    use_query_reformulation=True,
+                    use_reranker=True,
+                    use_contextual_grouping=True,
+                    limit=limit_int * 2  # Get more candidates for re-ranking
+                )
 
-            return {
-                "success": True,
-                "query": query,
-                "results_count": len(sources),
-                "sources": [
-                    {
-                        "citation_number": s.get("citation_number"),
-                        "document_title": s.get("document_title"),
-                        "content_preview": str(s.get("content_preview", "") or "")[:300],
-                        "source_type": s.get("source_type"),
-                        "chunk_id": s.get("chunk_id")
-                    }
-                    for s in sources
-                ],
-                "context_xml": results.get("context_xml", "")
-            }
+                sources = results.get("sources", [])[:limit_int]
+                search_info = results.get("search_info", {})
+
+                result = {
+                    "success": True,
+                    "query": query,
+                    "reformulated_query": search_info.get("reformulated_query"),
+                    "results_count": len(sources),
+                    "reranked": search_info.get("reranked", False),
+                    "grouped": search_info.get("grouped", False),
+                    "sources": [
+                        {
+                            "citation_number": s.get("citation_number"),
+                            "document_title": s.get("document_title"),
+                            "content_preview": str(s.get("content_preview", "") or "")[:300],
+                            "source_type": s.get("source_type"),
+                            "chunk_id": s.get("chunk_id"),
+                            "relevance_score": s.get("rrf_score", 0)
+                        }
+                        for s in sources
+                    ],
+                    "context_xml": results.get("context_xml", "")
+                }
+
+                # Add explicit NO_RESULTS message if empty
+                if len(sources) == 0:
+                    result["message"] = "NO_RESULTS: No matching documents found in knowledge base."
+                    result["suggestion"] = "Consider using web_search to find public information on this topic."
+
+                return result
+            else:
+                # Fallback to basic search
+                results = await rag_service.get_context_with_citations(
+                    db_session, query, user_id, subject=subject
+                )
+
+                sources = results.get("sources", [])[:limit_int]
+
+                result = {
+                    "success": True,
+                    "query": query,
+                    "results_count": len(sources),
+                    "sources": [
+                        {
+                            "citation_number": s.get("citation_number"),
+                            "document_title": s.get("document_title"),
+                            "content_preview": str(s.get("content_preview", "") or "")[:300],
+                            "source_type": s.get("source_type"),
+                            "chunk_id": s.get("chunk_id")
+                        }
+                        for s in sources
+                    ],
+                    "context_xml": results.get("context_xml", "")
+                }
+
+                # Add explicit NO_RESULTS message if empty
+                if len(sources) == 0:
+                    result["message"] = "NO_RESULTS: No matching documents found in knowledge base."
+                    result["suggestion"] = "Consider using web_search to find public information on this topic."
+
+                return result
 
         except Exception as e:
             logger.error(f"Knowledge base search error: {e}")
@@ -255,13 +327,21 @@ def create_web_search_tool(
         """
         try:
             results = await web_search_service.search(query, max_results=max_results)
+            results_count = len(results) if results else 0
 
-            return {
+            result = {
                 "success": True,
                 "query": query,
-                "results_count": len(results) if results else 0,
+                "results_count": results_count,
                 "results": results or []
             }
+
+            # Add explicit NO_RESULTS message if empty
+            if results_count == 0:
+                result["message"] = "NO_RESULTS: No matching results found on the web."
+                result["suggestion"] = "Consider asking the user for clarification or more context."
+
+            return result
 
         except Exception as e:
             logger.error(f"Web search error: {e}")
@@ -270,7 +350,9 @@ def create_web_search_tool(
                 "error": str(e),
                 "query": query,
                 "results_count": 0,
-                "results": []
+                "results": [],
+                "message": f"WEB_SEARCH_ERROR: {str(e)}",
+                "suggestion": "Consider asking the user for clarification or trying a different query."
             }
 
     return web_search
@@ -598,6 +680,41 @@ def create_verify_response_tool(
     return verify_response
 
 
+def create_request_clarification_tool() -> Callable[..., Awaitable[Dict[str, Any]]]:
+    """Factory for the clarification request tool."""
+    async def request_clarification(
+        reason: str,
+        suggestions: List[str] = None,
+        search_trail: List[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Request clarification from the user when you cannot find information.
+
+        Use this when:
+        - Both knowledge base AND web search returned no results
+        - The query is ambiguous and needs more context
+        - You're uncertain how to proceed
+
+        Args:
+            reason: Why you need clarification
+            suggestions: Suggested ways to rephrase or clarify
+            search_trail: List of sources that were searched
+
+        Returns:
+            Clarification request formatted for user
+        """
+        return {
+            "success": True,
+            "action": "clarification_requested",
+            "reason": reason,
+            "suggestions": suggestions or [],
+            "search_trail": search_trail or [],
+            "instruction": "Ask the user to clarify or provide more context."
+        }
+
+    return request_clarification
+
+
 def create_finalize_response_tool() -> Callable[..., Awaitable[Dict[str, Any]]]:
     """Factory for the response finalization tool."""
     async def finalize_response(
@@ -628,6 +745,280 @@ def create_finalize_response_tool() -> Callable[..., Awaitable[Dict[str, Any]]]:
         }
 
     return finalize_response
+
+
+# =============================================================================
+# Multimedia Tools (Manim, Links, Images)
+# =============================================================================
+
+def create_manim_animation_tool(
+    animation_service: Any = None
+) -> Callable[..., Awaitable[Dict[str, Any]]]:
+    """Factory for the Manim animation creation tool."""
+    async def create_manim_animation(
+        manim_code: str,
+        title: str,
+        description: str = "",
+        quality: str = "medium"
+    ) -> Dict[str, Any]:
+        """
+        Generate a mathematical animation using Manim library.
+
+        Use this to create explanatory visualizations for:
+        - Mathematical concepts (graphs, functions, transformations)
+        - Physics simulations (motion, waves, fields)
+        - Geometric proofs and constructions
+        - Algorithm visualizations
+
+        Args:
+            manim_code: Python code using Manim library (must define a Scene class)
+            title: Title for the animation
+            description: Brief description of what the animation shows
+            quality: Video quality - "low", "medium", "high" (default: medium)
+
+        Returns:
+            Dict with animation URL or generation status
+        """
+        try:
+            if animation_service:
+                # Use the actual animation service if available
+                result = await animation_service.create_animation(
+                    code=manim_code,
+                    title=title,
+                    description=description,
+                    quality=quality
+                )
+                return {
+                    "success": True,
+                    "animation_id": result.get("id"),
+                    "video_url": result.get("video_url"),
+                    "thumbnail_url": result.get("thumbnail_url"),
+                    "title": title,
+                    "description": description,
+                    "status": "completed"
+                }
+            else:
+                # Return pending status for async processing
+                import hashlib
+                animation_id = hashlib.md5(manim_code.encode()).hexdigest()[:12]
+                return {
+                    "success": True,
+                    "animation_id": animation_id,
+                    "manim_code": manim_code,
+                    "title": title,
+                    "description": description,
+                    "quality": quality,
+                    "status": "queued",
+                    "message": "Animation queued for rendering. Will be available shortly."
+                }
+
+        except Exception as e:
+            logger.error(f"Manim animation error: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "title": title,
+                "status": "failed"
+            }
+
+    return create_manim_animation
+
+
+def create_link_preview_tool(
+    preview_service: Any = None
+) -> Callable[..., Awaitable[Dict[str, Any]]]:
+    """Factory for the link preview tool."""
+    async def link_preview(
+        url: str,
+        include_screenshot: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Generate a rich preview card for a URL.
+
+        Automatically use this when:
+        - A URL is mentioned in the conversation
+        - Providing reference links to the student
+        - Sharing educational resources
+
+        Args:
+            url: The URL to preview
+            include_screenshot: Whether to include a page screenshot
+
+        Returns:
+            Rich preview data including title, description, image
+        """
+        try:
+            import aiohttp
+            from urllib.parse import urlparse
+
+            # Validate URL
+            parsed = urlparse(url)
+            if not parsed.scheme or not parsed.netloc:
+                return {
+                    "success": False,
+                    "error": "Invalid URL format",
+                    "url": url
+                }
+
+            if preview_service:
+                # Use actual preview service if available
+                result = await preview_service.get_preview(url, include_screenshot)
+                return {
+                    "success": True,
+                    "url": url,
+                    "title": result.get("title"),
+                    "description": result.get("description"),
+                    "image_url": result.get("image"),
+                    "favicon_url": result.get("favicon"),
+                    "domain": parsed.netloc,
+                    "screenshot_url": result.get("screenshot") if include_screenshot else None
+                }
+            else:
+                # Fallback: basic URL metadata extraction
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            html = await response.text()
+
+                            # Extract basic metadata
+                            title = ""
+                            description = ""
+                            image = ""
+
+                            # Simple regex extraction (fallback)
+                            import re
+                            title_match = re.search(r'<title[^>]*>([^<]+)</title>', html, re.IGNORECASE)
+                            if title_match:
+                                title = title_match.group(1).strip()
+
+                            og_title = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+                            if og_title:
+                                title = og_title.group(1).strip()
+
+                            og_desc = re.search(r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+                            if og_desc:
+                                description = og_desc.group(1).strip()
+
+                            og_image = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+                            if og_image:
+                                image = og_image.group(1).strip()
+
+                            return {
+                                "success": True,
+                                "url": url,
+                                "title": title or parsed.netloc,
+                                "description": description[:200] if description else "",
+                                "image_url": image,
+                                "domain": parsed.netloc,
+                                "favicon_url": f"{parsed.scheme}://{parsed.netloc}/favicon.ico"
+                            }
+                        else:
+                            return {
+                                "success": False,
+                                "error": f"HTTP {response.status}",
+                                "url": url,
+                                "domain": parsed.netloc
+                            }
+
+        except Exception as e:
+            logger.error(f"Link preview error: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "url": url
+            }
+
+    return link_preview
+
+
+def create_display_image_tool(
+    image_service: Any = None
+) -> Callable[..., Awaitable[Dict[str, Any]]]:
+    """Factory for the image display tool."""
+    async def display_image(
+        image_url: str,
+        alt_text: str = "",
+        caption: str = "",
+        size: str = "medium"
+    ) -> Dict[str, Any]:
+        """
+        Display an image directly in the chat interface.
+
+        Use this when:
+        - You find a relevant diagram or visualization during research
+        - The student would benefit from seeing an image
+        - Explaining concepts that have useful visual representations
+
+        Args:
+            image_url: URL of the image to display
+            alt_text: Accessibility text describing the image
+            caption: Caption to display below the image
+            size: Display size - "small", "medium", "large" (default: medium)
+
+        Returns:
+            Image display configuration for the frontend
+        """
+        try:
+            import aiohttp
+            from urllib.parse import urlparse
+
+            # Validate URL
+            parsed = urlparse(image_url)
+            if not parsed.scheme or not parsed.netloc:
+                return {
+                    "success": False,
+                    "error": "Invalid image URL format",
+                    "image_url": image_url
+                }
+
+            # Validate it's actually an image (check content-type)
+            valid_image = False
+            content_type = None
+
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.head(image_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                        content_type = response.headers.get("content-type", "")
+                        valid_image = any(t in content_type.lower() for t in ["image/", "png", "jpg", "jpeg", "gif", "webp", "svg"])
+            except:
+                # If HEAD fails, assume it might still be valid
+                valid_image = any(ext in image_url.lower() for ext in [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"])
+
+            if not valid_image and content_type:
+                return {
+                    "success": False,
+                    "error": f"URL does not appear to be an image (content-type: {content_type})",
+                    "image_url": image_url
+                }
+
+            # Map size to dimensions
+            size_map = {
+                "small": {"max_width": 300, "max_height": 200},
+                "medium": {"max_width": 500, "max_height": 400},
+                "large": {"max_width": 800, "max_height": 600}
+            }
+            dimensions = size_map.get(size, size_map["medium"])
+
+            return {
+                "success": True,
+                "type": "image_display",
+                "image_url": image_url,
+                "alt_text": alt_text or "Educational image",
+                "caption": caption,
+                "size": size,
+                "dimensions": dimensions,
+                "instruction": "Display this image in the chat interface"
+            }
+
+        except Exception as e:
+            logger.error(f"Display image error: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "image_url": image_url
+            }
+
+    return display_image
 
 
 # =============================================================================
@@ -837,17 +1228,65 @@ This signals that the agentic loop should end and deliver the response.""",
         ]
     ),
 
+    ToolDefinition(
+        name="request_clarification",
+        description="""Request clarification from the user when you cannot find information.
+
+Use this tool when:
+- BOTH knowledge base AND web search returned NO RESULTS
+- The query is ambiguous and needs more context
+- You're uncertain how to proceed after exhausting search options
+
+This signals that you need user input to continue effectively.
+IMPORTANT: Only use after both search tools have been tried and returned empty.""",
+        category=ToolCategory.UTILITY,
+        parameters=[
+            ToolParameter(
+                name="reason",
+                type="string",
+                description="Why you need clarification from the user",
+                required=True
+            ),
+            ToolParameter(
+                name="suggestions",
+                type="array",
+                description="Suggested ways to rephrase or clarify the query",
+                required=False
+            ),
+            ToolParameter(
+                name="search_trail",
+                type="array",
+                description="List of sources that were searched (for transparency)",
+                required=False
+            )
+        ],
+        factory=create_request_clarification_tool,
+        examples=[
+            "request_clarification(reason='I could not find information on this topic in your notes or on the web.', suggestions=['Could you provide more context?', 'What specific aspect interests you?'])",
+            "request_clarification(reason='The query is ambiguous', suggestions=['Are you asking about X or Y?'], search_trail=['knowledge_base: 0 results', 'web_search: 0 results'])"
+        ]
+    ),
+
     # === Knowledge Tools ===
     ToolDefinition(
         name="search_knowledge_base",
-        description="""Search the user's personal knowledge base including journals, uploaded documents, and notes.
-Use this tool when:
-- The user asks about something they may have written about before
-- You need context from their previous learning or notes
-- Looking for information from uploaded PDFs, documents, or notes
-- The user references "my notes" or "what I wrote"
+        description="""Search the user's PRIVATE knowledge base including journals, uploaded documents, and notes.
 
-Returns relevant chunks with citation numbers for reference.""",
+**THIS IS YOUR PRIMARY INFORMATION SOURCE - ALWAYS TRY FIRST**
+
+Use this tool when:
+- User asks about ANY topic that could be in their notes
+- Looking for personalized context or previous learning
+- The query is substantive enough to warrant a search
+- The user references "my notes" or "what I wrote"
+- Looking for information from uploaded PDFs, documents, or notes
+
+**IMPORTANT**:
+- If this returns NO RESULTS (results_count=0), you should then try web_search
+  to find public information on the topic.
+- Always check this source BEFORE web_search for substantive queries.
+
+Returns: Relevant chunks with citation numbers for reference. May be empty if no matches found.""",
         category=ToolCategory.KNOWLEDGE,
         parameters=[
             ToolParameter(
@@ -944,15 +1383,23 @@ Returns relevant past exchanges with context.""",
 
     ToolDefinition(
         name="web_search",
-        description="""Search the web for current information and facts.
-Use this when:
-- The knowledge base doesn't have the needed information
+        description="""Search the PUBLIC web for current information and facts.
+
+**THIS IS YOUR SECONDARY/FALLBACK SOURCE**
+
+Use this tool when:
+- search_knowledge_base returned NO RESULTS (results_count=0)
+- User explicitly asks to "search the web" or "look online"
+- Topic requires current/recent information not in notes
 - You need up-to-date information (news, current events)
 - Looking for authoritative sources on a topic
-- The user asks about recent developments
-- Verifying or supplementing information
+- Verifying or supplementing information from knowledge base
 
-Returns web search results with titles and snippets.""",
+**IMPORTANT**:
+- Only use AFTER knowledge base search returns empty, unless user explicitly requests web search.
+- If both knowledge base AND web search return no results, consider asking for clarification.
+
+Returns: Web search results with titles and snippets. May be empty if no matches found.""",
         category=ToolCategory.SEARCH,
         parameters=[
             ToolParameter(
@@ -1023,6 +1470,156 @@ This helps track learning progress and can be referenced later.""",
         factory=create_remember_discovery_tool,
         examples=[
             "remember_discovery(discovery='Understood that force equals mass times acceleration', topic='Newton laws')"
+        ]
+    ),
+
+    # === Multimedia Tools ===
+    ToolDefinition(
+        name="create_manim_animation",
+        description="""Generate a mathematical animation using Manim library to visualize concepts.
+
+**PROACTIVE USE**: Create animations when explaining complex visual concepts!
+
+Use this tool when:
+- Explaining mathematical transformations or functions
+- Visualizing physics concepts (motion, waves, fields)
+- Demonstrating geometric proofs or constructions
+- Showing algorithm step-by-step execution
+- The student would benefit from seeing a concept in motion
+
+The Manim code must define a Scene class with a construct() method.
+The animation will be rendered and displayed to the student.""",
+        category=ToolCategory.UTILITY,
+        parameters=[
+            ToolParameter(
+                name="manim_code",
+                type="string",
+                description="Python code using Manim library (must define a Scene class with construct method)",
+                required=True
+            ),
+            ToolParameter(
+                name="title",
+                type="string",
+                description="Title for the animation",
+                required=True
+            ),
+            ToolParameter(
+                name="description",
+                type="string",
+                description="Brief description of what the animation demonstrates",
+                required=False,
+                default=""
+            ),
+            ToolParameter(
+                name="quality",
+                type="string",
+                description="Video quality: 'low', 'medium', 'high'",
+                required=False,
+                default="medium",
+                enum=["low", "medium", "high"]
+            )
+        ],
+        factory=create_manim_animation_tool,
+        examples=[
+            """create_manim_animation(
+    manim_code='''
+from manim import *
+class SineWave(Scene):
+    def construct(self):
+        axes = Axes(x_range=[-3, 3], y_range=[-2, 2])
+        sine_curve = axes.plot(lambda x: np.sin(x), color=BLUE)
+        self.play(Create(axes), Create(sine_curve))
+''',
+    title='Sine Wave Visualization',
+    description='Shows the sine function graphed on coordinate axes'
+)"""
+        ]
+    ),
+
+    ToolDefinition(
+        name="link_preview",
+        description="""Generate a rich preview card for a URL with title, description, and image.
+
+**AUTOMATIC USE**: Use this whenever you mention or share a URL with the student!
+
+Use this tool when:
+- Sharing a reference link with the student
+- A URL is mentioned in the conversation
+- Providing links to educational resources
+- Citing sources from the web
+
+Returns a rich preview with title, description, image, and domain info.""",
+        category=ToolCategory.UTILITY,
+        parameters=[
+            ToolParameter(
+                name="url",
+                type="string",
+                description="The URL to generate a preview for",
+                required=True
+            ),
+            ToolParameter(
+                name="include_screenshot",
+                type="boolean",
+                description="Whether to include a page screenshot",
+                required=False,
+                default=False
+            )
+        ],
+        factory=create_link_preview_tool,
+        examples=[
+            "link_preview(url='https://en.wikipedia.org/wiki/Quantum_mechanics')",
+            "link_preview(url='https://www.khanacademy.org/math/calculus', include_screenshot=True)"
+        ]
+    ),
+
+    ToolDefinition(
+        name="display_image",
+        description="""Display an image directly in the chat interface.
+
+**PROACTIVE USE**: Show images when they would help explain a concept!
+
+Use this tool when:
+- You find a relevant diagram during research
+- A visual would help explain the concept
+- The student asks about something with useful visual representations
+- Showing scientific diagrams, charts, or illustrations
+
+The image will be displayed inline in the chat with optional caption.""",
+        category=ToolCategory.UTILITY,
+        parameters=[
+            ToolParameter(
+                name="image_url",
+                type="string",
+                description="URL of the image to display",
+                required=True
+            ),
+            ToolParameter(
+                name="alt_text",
+                type="string",
+                description="Accessibility text describing the image",
+                required=False,
+                default=""
+            ),
+            ToolParameter(
+                name="caption",
+                type="string",
+                description="Caption to display below the image",
+                required=False,
+                default=""
+            ),
+            ToolParameter(
+                name="size",
+                type="string",
+                description="Display size: 'small', 'medium', 'large'",
+                required=False,
+                default="medium",
+                enum=["small", "medium", "large"]
+            )
+        ],
+        factory=create_display_image_tool,
+        examples=[
+            "display_image(image_url='https://example.com/diagram.png', caption='Cell structure diagram', size='large')",
+            "display_image(image_url='https://example.com/graph.svg', alt_text='Graph showing exponential growth')"
         ]
     ),
 ]

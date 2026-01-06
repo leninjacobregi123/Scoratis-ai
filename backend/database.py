@@ -374,14 +374,19 @@ class DatabaseManager:
     # ==================== Conversation Operations ====================
 
     async def create_conversation(
-        self, session_id: str, user_id: int = 1, title: Optional[str] = None
+        self,
+        session_id: str,
+        user_id: int = 1,
+        title: Optional[str] = None,
+        subject: Optional[str] = None,
     ) -> int:
-        """Create a new conversation record"""
+        """Create a new conversation record with optional subject"""
         async with self.get_session() as session:
             conv = Conversation(
                 session_id=session_id,
                 title=title,
                 user_id=user_id,
+                subject=subject,
             )
             session.add(conv)
             await session.flush()
@@ -414,8 +419,9 @@ class DatabaseManager:
         sender: str,
         message: str,
         user_id: int = 1,
+        subject: Optional[str] = None,
     ) -> int:
-        """Add a message to the conversation with embedding"""
+        """Add a message to the conversation with embedding and subject tagging"""
         async with self.get_session() as session:
             # Get or create conversation
             stmt = select(Conversation).where(
@@ -426,9 +432,16 @@ class DatabaseManager:
             conv = result.scalar_one_or_none()
 
             if not conv:
-                conv = Conversation(session_id=session_id, user_id=user_id)
+                conv = Conversation(
+                    session_id=session_id,
+                    user_id=user_id,
+                    subject=subject,
+                )
                 session.add(conv)
                 await session.flush()
+            elif subject and not conv.subject:
+                # Update subject if not already set
+                conv.subject = subject
 
             # Generate embedding (if service available)
             embedding = None
@@ -534,6 +547,7 @@ class DatabaseManager:
                     "id": conv.id,
                     "session_id": conv.session_id,
                     "title": conv.title,
+                    "subject": conv.subject,
                     "message_count": row.message_count,
                     "created_at": str(conv.created_at),
                     "updated_at": str(conv.updated_at),

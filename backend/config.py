@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     SEARCH_DOCUMENT_LIMIT: int = 10  # Max documents for document-level search
 
     # Upload settings
-    UPLOAD_DIR: str = "/app/uploads"
+    UPLOAD_DIR: str = os.path.join(os.path.dirname(__file__), "uploads")
     MAX_UPLOAD_SIZE_MB: int = 50
     ALLOWED_FILE_TYPES: list = ["pdf", "docx", "txt", "html", "md"]
 

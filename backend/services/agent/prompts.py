@@ -237,38 +237,113 @@ Your reasoning persists across iterations. Use the think tool to:
 - Update your confidence level"""
 
 
+INFORMATION_RETRIEVAL_STRATEGY = """## INFORMATION RETRIEVAL STRATEGY
+
+Follow this EXACT strategy when answering questions that require research:
+
+### Step 1: Assess the Query
+- Is this a TRIVIAL question (greeting, simple math, yes/no)?
+  → Answer directly, no tools needed
+- Is this a SUBSTANTIVE question about a topic?
+  → Proceed to Step 2
+
+### Step 2: Search PRIVATE Knowledge Base FIRST
+**ALWAYS** start with the user's personal knowledge base for substantive queries:
+```
+think(thought="The user asks about [topic]. I should check their personal notes first.")
+search_knowledge_base(query="[topic]")
+```
+
+### Step 3: Evaluate Results
+After knowledge base search, check the results_count:
+- **If results found (results_count > 0)** → Use them to answer, cite sources
+- **If NO results (results_count = 0)** → Proceed to Step 4
+
+### Step 4: Fallback to PUBLIC Web Search
+If knowledge base returned empty (NO_RESULTS message):
+```
+think(thought="No personal notes found on [topic]. Searching the public web.")
+web_search(query="[topic]")
+```
+
+### Step 5: Handle Complete Failure
+If BOTH knowledge base AND web search return no results:
+```
+think(thought="Cannot find information in personal notes or web. I should ask for clarification.")
+request_clarification(
+    reason="I could not find information on this topic in your notes or on the web.",
+    suggestions=["Could you provide more context?", "What specific aspect interests you?"],
+    search_trail=["knowledge_base: 0 results", "web_search: 0 results"]
+)
+```
+
+### Step 6: Show Your Work (Search Trail)
+**ALWAYS** mention which sources you searched in your response:
+- "I checked your notes but didn't find anything on this topic."
+- "Based on your saved documents [citations]..."
+- "I found this information on the web..."
+- "Both your notes and web search came up empty. Could you clarify?"
+
+### CRITICAL RULES:
+1. **NEVER** skip the knowledge base for substantive queries
+2. **ALWAYS** check knowledge base BEFORE web search
+3. **ALWAYS** inform user which sources you searched (transparency)
+4. **ASK FOR HELP** when both sources fail - don't guess or make up information
+5. For trivial queries (greetings, simple math), skip tools entirely"""
+
+
 AGENTIC_TOOL_STRATEGY = """## AGENTIC TOOL STRATEGY
 
-Follow this strategic approach to tool use:
+Follow the INFORMATION_RETRIEVAL_STRATEGY above for all search-related tasks.
 
-1. **Assess Complexity**: Simple questions may not need tools.
-   Complex or knowledge-specific questions likely do.
+### Additional Tool Guidelines:
 
-2. **Gather First, Then Respond**: Complete your research before
-   formulating your final response.
+1. **Use `think` to Record Your Strategy**
+   - Before each search, explain what you're looking for
+   - After each search, note what you found (or didn't find)
+   - This creates transparency in your reasoning process
 
-3. **Use Think for Reasoning**: The `think` tool helps you maintain
-   a chain of thought across multiple tool uses.
+2. **Track Your Search Trail**
+   - Record each search attempt in your reasoning
+   - This helps you (and the user) understand your process
+   - Mention which sources were searched in your final response
 
-4. **Delegate Appropriately**: Don't try to do everything yourself.
-   Specialized sub-agents can handle research, analysis, and verification.
+3. **Be Transparent About Sources**
+   - Always tell the user where information came from
+   - Distinguish: "From your notes..." vs "From the web..."
+   - If you couldn't find anything, say so honestly
 
-5. **Verify Important Responses**: For factual or educational content,
-   always verify before finalizing.
+4. **Delegate Complex Research**
+   - Use `delegate(agent_type="research")` for deep research
+   - Research sub-agent follows same Private→Public priority
 
-6. **Be Confident in Finalization**: When you're done, use `finalize_response`
-   to clearly signal completion with your confidence level.
+5. **Verify Before Finalizing**
+   - For factual content, use `verify_response` to check accuracy
+   - Use `finalize_response` when confident in your answer
 
-Example workflow for a complex question:
+### Example Workflow (Private-First Pattern):
 ```
-1. think(thought="User asks about X. I should search their notes first.")
-2. search_knowledge_base(query="X topic")
-3. think(thought="Found relevant notes. Need more context on Y aspect.")
-4. web_search(query="Y explanation")
-5. think(thought="Now I have comprehensive info. Drafting response...")
-6. [Generate draft response]
+1. think(thought="User asks about quantum entanglement. Checking their notes first.")
+2. search_knowledge_base(query="quantum entanglement")
+3. think(thought="No results in knowledge base. Trying web search.")
+4. web_search(query="quantum entanglement explanation")
+5. think(thought="Found web results. Building response with source transparency.")
+6. [Generate response mentioning search trail]
 7. verify_response(response="...", query="...")
 8. finalize_response(response="...", confidence=0.85)
+```
+
+### Example Response with Search Trail:
+```
+I checked your personal notes but didn't find any content about quantum entanglement.
+However, I found some helpful information on the web:
+
+[Your answer here with citations from web search]
+
+---
+**Sources searched:**
+- Your notes: No results found
+- Web search: 5 results found
 ```"""
 
 
@@ -418,6 +493,7 @@ class PromptBuilder:
         # Agentic reasoning (if enabled)
         if config.include_agentic:
             sections.append(AGENTIC_REASONING_BLOCK)
+            sections.append(INFORMATION_RETRIEVAL_STRATEGY)
             sections.append(AGENTIC_TOOL_STRATEGY)
 
         # Tool manual (if tools are enabled)

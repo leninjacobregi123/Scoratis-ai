@@ -1,38 +1,72 @@
 import { useState, useEffect } from 'react';
 import {
   Brain, Search, BookOpen, Globe, CheckCircle, AlertCircle,
-  Loader2, Lightbulb, ListTodo, Users, Shield, Send
+  Loader2, Lightbulb, ListTodo, Users, Shield, Send,
+  Film, Link2, Image, HelpCircle, Database, MessageSquare
 } from 'lucide-react';
 
 // Tool icons mapping
 const TOOL_ICONS = {
+  // Reasoning tools
   think: Brain,
   plan: ListTodo,
-  search_knowledge_base: BookOpen,
+
+  // Search tools (Private-First)
+  search_knowledge_base: Database,
+  knowledge_base: Database,
   search_journals: BookOpen,
-  search_past_conversations: BookOpen,
+  search_past_conversations: MessageSquare,
   web_search: Globe,
+
+  // Delegation & verification
   delegate: Users,
   verify_response: Shield,
   finalize_response: Send,
+
+  // Learning context
   get_learning_context: Lightbulb,
   remember_discovery: Lightbulb,
+
+  // Multimedia tools (NEW)
+  create_manim_animation: Film,
+  link_preview: Link2,
+  display_image: Image,
+
+  // Clarification (NEW)
+  request_clarification: HelpCircle,
+
   default: Search
 };
 
 // Tool display names
 const TOOL_NAMES = {
+  // Reasoning
   think: 'Thinking',
   plan: 'Planning',
-  search_knowledge_base: 'Searching Knowledge',
+
+  // Search (Private-First)
+  search_knowledge_base: 'Searching Your Notes',
+  knowledge_base: 'Searching Your Notes',
   search_journals: 'Searching Journals',
-  search_past_conversations: 'Checking History',
-  web_search: 'Web Search',
+  search_past_conversations: 'Checking Past Chats',
+  web_search: 'Web Search (Fallback)',
+
+  // Delegation & verification
   delegate: 'Delegating Task',
   verify_response: 'Verifying Response',
   finalize_response: 'Finalizing',
+
+  // Learning context
   get_learning_context: 'Getting Context',
-  remember_discovery: 'Recording Discovery'
+  remember_discovery: 'Recording Discovery',
+
+  // Multimedia (NEW)
+  create_manim_animation: 'Creating Animation',
+  link_preview: 'Fetching Link Preview',
+  display_image: 'Displaying Image',
+
+  // Clarification (NEW)
+  request_clarification: 'Asking for Help'
 };
 
 // Sub-agent type labels
@@ -45,28 +79,47 @@ const SUBAGENT_LABELS = {
 };
 
 // Single workflow step component
-function WorkflowStep({ step, isActive, isComplete }) {
+function WorkflowStep({ step, isActive, isComplete, theme }) {
+  const themeClasses = theme?.classes || {};
   const Icon = TOOL_ICONS[step.tool] || TOOL_ICONS.default;
   const displayName = TOOL_NAMES[step.tool] || step.tool;
+
+  // Check if this is a search tool to show result count
+  const isSearchTool = ['search_knowledge_base', 'web_search', 'search_journals', 'search_past_conversations'].includes(step.tool);
+  const hasResults = step.result?.results_count > 0 || step.result?.sources?.length > 0;
 
   return (
     <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-all ${
       isActive
-        ? 'bg-blue-50 border border-blue-200 text-blue-700'
+        ? `${themeClasses.bgSecondary || 'bg-blue-50'} border ${themeClasses.border || 'border-blue-200'} ${themeClasses.textPrimary || 'text-blue-700'}`
         : isComplete
-          ? 'bg-green-50 border border-green-200 text-green-700'
-          : 'bg-gray-50 border border-gray-200 text-gray-600'
+          ? isSearchTool && !hasResults
+            ? 'bg-amber-50 border border-amber-200 text-amber-700'
+            : 'bg-green-50 border border-green-200 text-green-700'
+          : `${themeClasses.bgSecondary || 'bg-gray-50'} border ${themeClasses.border || 'border-gray-200'} ${themeClasses.textMuted || 'text-gray-600'}`
     }`}>
       <div className="flex-shrink-0">
         {isActive ? (
           <Loader2 className="w-4 h-4 animate-spin" />
         ) : isComplete ? (
-          <CheckCircle className="w-4 h-4" />
+          isSearchTool && !hasResults ? (
+            <AlertCircle className="w-4 h-4" />
+          ) : (
+            <CheckCircle className="w-4 h-4" />
+          )
         ) : (
           <Icon className="w-4 h-4" />
         )}
       </div>
       <span className="truncate">{displayName}</span>
+
+      {/* Show result count for search tools */}
+      {isComplete && isSearchTool && (
+        <span className="text-xs opacity-75">
+          ({step.result?.results_count || 0} results)
+        </span>
+      )}
+
       {step.args?.agent_type && (
         <span className="text-xs opacity-75">
           ({SUBAGENT_LABELS[step.args.agent_type] || step.args.agent_type})
@@ -77,21 +130,27 @@ function WorkflowStep({ step, isActive, isComplete }) {
 }
 
 // Thinking bubble component
-function ThinkingBubble({ thought, confidence }) {
+function ThinkingBubble({ thought, confidence, theme }) {
+  const themeClasses = theme?.classes || {};
+
   return (
-    <div className="flex items-start gap-2 px-3 py-2 bg-purple-50 border border-purple-200 rounded-lg text-sm">
-      <Brain className="w-4 h-4 text-purple-600 flex-shrink-0 mt-0.5" />
+    <div className={`flex items-start gap-2 px-3 py-2 rounded-lg text-sm border
+                     ${themeClasses.bgTertiary || 'bg-purple-50'}
+                     ${themeClasses.border || 'border-purple-200'}`}>
+      <Brain className={`w-4 h-4 flex-shrink-0 mt-0.5 ${themeClasses.textPrimary || 'text-purple-600'}`} />
       <div className="flex-1 min-w-0">
-        <p className="text-purple-800 italic">{thought}</p>
+        <p className={`italic ${themeClasses.text || 'text-purple-800'}`}>{thought}</p>
         {confidence !== undefined && (
           <div className="flex items-center gap-2 mt-1">
-            <div className="flex-1 h-1.5 bg-purple-200 rounded-full overflow-hidden">
+            <div className={`flex-1 h-1.5 rounded-full overflow-hidden ${themeClasses.bgSecondary || 'bg-purple-200'}`}>
               <div
-                className="h-full bg-purple-500 rounded-full transition-all"
+                className={`h-full rounded-full transition-all ${themeClasses.bgPrimary || 'bg-purple-500'}`}
                 style={{ width: `${(confidence * 100).toFixed(0)}%` }}
               />
             </div>
-            <span className="text-xs text-purple-600">{(confidence * 100).toFixed(0)}%</span>
+            <span className={`text-xs ${themeClasses.textMuted || 'text-purple-600'}`}>
+              {(confidence * 100).toFixed(0)}%
+            </span>
           </div>
         )}
       </div>
@@ -100,19 +159,23 @@ function ThinkingBubble({ thought, confidence }) {
 }
 
 // Plan display component
-function PlanDisplay({ goal, steps, currentStep }) {
+function PlanDisplay({ goal, steps, currentStep, theme }) {
+  const themeClasses = theme?.classes || {};
+
   return (
-    <div className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-sm">
+    <div className={`px-3 py-2 rounded-lg text-sm border
+                     ${themeClasses.bgTertiary || 'bg-amber-50'}
+                     ${themeClasses.border || 'border-amber-200'}`}>
       <div className="flex items-center gap-2 mb-2">
-        <ListTodo className="w-4 h-4 text-amber-600" />
-        <span className="font-medium text-amber-800">Plan: {goal}</span>
+        <ListTodo className={`w-4 h-4 ${themeClasses.textPrimary || 'text-amber-600'}`} />
+        <span className={`font-medium ${themeClasses.text || 'text-amber-800'}`}>Plan: {goal}</span>
       </div>
       <div className="space-y-1 pl-6">
         {steps.map((step, idx) => (
           <div key={idx} className={`flex items-center gap-2 ${
             idx < currentStep ? 'text-green-600' :
-            idx === currentStep ? 'text-amber-700 font-medium' :
-            'text-gray-500'
+            idx === currentStep ? `${themeClasses.textPrimary || 'text-amber-700'} font-medium` :
+            `${themeClasses.textMuted || 'text-gray-500'}`
           }`}>
             <span className="w-4 text-center">
               {idx < currentStep ? '✓' : idx === currentStep ? '→' : `${idx + 1}.`}
@@ -126,7 +189,8 @@ function PlanDisplay({ goal, steps, currentStep }) {
 }
 
 // Verification result component
-function VerificationResult({ result, issues, suggestions }) {
+function VerificationResult({ result, issues, suggestions, theme }) {
+  const themeClasses = theme?.classes || {};
   const isApproved = result === 'approved';
 
   return (
@@ -156,6 +220,49 @@ function VerificationResult({ result, issues, suggestions }) {
   );
 }
 
+// Search Trail Summary component
+function SearchTrailSummary({ searchTrail, theme }) {
+  const themeClasses = theme?.classes || {};
+
+  if (!searchTrail?.attempts?.length) return null;
+
+  const attempts = searchTrail.attempts;
+  const hasAnyResults = attempts.some(a => a.had_results || a.results_count > 0);
+
+  return (
+    <div className={`flex flex-wrap items-center gap-2 px-3 py-2 rounded-lg text-xs border
+                     ${themeClasses.bgSecondary || 'bg-gray-50'}
+                     ${themeClasses.border || 'border-gray-200'}`}>
+      <span className={`font-medium ${themeClasses.textMuted || 'text-gray-500'}`}>
+        <Search className="w-3 h-3 inline mr-1" />
+        Sources:
+      </span>
+      {attempts.map((attempt, idx) => {
+        const hasResults = attempt.had_results || attempt.results_count > 0;
+        const Icon = TOOL_ICONS[attempt.source] || Database;
+        const label = TOOL_NAMES[attempt.source] || attempt.source.replace(/_/g, ' ');
+
+        return (
+          <span
+            key={idx}
+            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full
+                        ${hasResults
+                          ? 'bg-green-100 text-green-700'
+                          : 'bg-gray-100 text-gray-500'
+                        }`}
+          >
+            <Icon className="w-3 h-3" />
+            <span>{attempt.results_count || 0}</span>
+          </span>
+        );
+      })}
+      {!hasAnyResults && (
+        <span className="text-amber-600 ml-1">No results found</span>
+      )}
+    </div>
+  );
+}
+
 // Main Agentic Workflow component
 export default function AgenticWorkflow({
   steps = [],
@@ -163,14 +270,17 @@ export default function AgenticWorkflow({
   thinking = null,
   plan = null,
   verification = null,
+  searchTrail = null,
   isComplete = false,
-  showDetails = false
+  showDetails = false,
+  theme
 }) {
+  const themeClasses = theme?.classes || {};
   const [expanded, setExpanded] = useState(showDetails);
 
   // Count completed steps
   const completedCount = steps.filter(s => s.complete).length;
-  const hasActivity = steps.length > 0 || thinking || plan || verification;
+  const hasActivity = steps.length > 0 || thinking || plan || verification || searchTrail;
 
   if (!hasActivity && !isComplete) return null;
 
@@ -178,18 +288,21 @@ export default function AgenticWorkflow({
     <div className="mb-3 animate-fade-in">
       {/* Compact view - shows progress bar and current action */}
       <div
-        className="flex items-center gap-3 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-100 transition-colors"
+        className={`flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-colors
+                    ${themeClasses.bgSecondary || 'bg-gray-50'}
+                    border ${themeClasses.border || 'border-gray-200'}
+                    hover:opacity-90`}
         onClick={() => setExpanded(!expanded)}
       >
         {!isComplete ? (
-          <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />
+          <Loader2 className={`w-4 h-4 animate-spin ${themeClasses.textPrimary || 'text-blue-500'}`} />
         ) : (
           <CheckCircle className="w-4 h-4 text-green-500" />
         )}
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-700">
+            <span className={`text-sm ${themeClasses.text || 'text-gray-700'}`}>
               {isComplete
                 ? 'Response ready'
                 : activeStep
@@ -197,7 +310,7 @@ export default function AgenticWorkflow({
                   : 'Processing...'}
             </span>
             {steps.length > 0 && (
-              <span className="text-xs text-gray-500">
+              <span className={`text-xs ${themeClasses.textMuted || 'text-gray-500'}`}>
                 ({completedCount}/{steps.length} steps)
               </span>
             )}
@@ -205,24 +318,26 @@ export default function AgenticWorkflow({
 
           {/* Mini progress bar */}
           {steps.length > 0 && (
-            <div className="h-1 mt-1 bg-gray-200 rounded-full overflow-hidden">
+            <div className={`h-1 mt-1 rounded-full overflow-hidden ${themeClasses.bgTertiary || 'bg-gray-200'}`}>
               <div
-                className="h-full bg-blue-500 rounded-full transition-all"
+                className={`h-full rounded-full transition-all ${themeClasses.bgPrimary || 'bg-blue-500'}`}
                 style={{ width: `${(completedCount / steps.length) * 100}%` }}
               />
             </div>
           )}
         </div>
 
-        <span className="text-xs text-gray-400">{expanded ? '▲' : '▼'}</span>
+        <span className={`text-xs ${themeClasses.textMuted || 'text-gray-400'}`}>
+          {expanded ? '▲' : '▼'}
+        </span>
       </div>
 
       {/* Expanded view - shows all details */}
       {expanded && (
-        <div className="mt-2 space-y-2 pl-2 border-l-2 border-gray-200">
+        <div className={`mt-2 space-y-2 pl-2 border-l-2 ${themeClasses.border || 'border-gray-200'}`}>
           {/* Thinking */}
           {thinking && (
-            <ThinkingBubble thought={thinking.thought} confidence={thinking.confidence} />
+            <ThinkingBubble thought={thinking.thought} confidence={thinking.confidence} theme={theme} />
           )}
 
           {/* Plan */}
@@ -231,6 +346,7 @@ export default function AgenticWorkflow({
               goal={plan.goal}
               steps={plan.steps || []}
               currentStep={plan.currentStep || 0}
+              theme={theme}
             />
           )}
 
@@ -243,9 +359,15 @@ export default function AgenticWorkflow({
                   step={step}
                   isActive={activeStep?.tool === step.tool && !step.complete}
                   isComplete={step.complete}
+                  theme={theme}
                 />
               ))}
             </div>
+          )}
+
+          {/* Search Trail */}
+          {searchTrail && (
+            <SearchTrailSummary searchTrail={searchTrail} theme={theme} />
           )}
 
           {/* Verification */}
@@ -254,6 +376,7 @@ export default function AgenticWorkflow({
               result={verification.result}
               issues={verification.issues}
               suggestions={verification.suggestions}
+              theme={theme}
             />
           )}
         </div>
@@ -270,6 +393,7 @@ export function useAgenticWorkflow() {
     thinking: null,
     plan: null,
     verification: null,
+    searchTrail: null,
     isComplete: false
   });
 
@@ -280,6 +404,7 @@ export function useAgenticWorkflow() {
       thinking: null,
       plan: null,
       verification: null,
+      searchTrail: null,
       isComplete: false
     });
   };
@@ -335,6 +460,28 @@ export function useAgenticWorkflow() {
         }
       }));
     }
+
+    // Track search attempts in search trail
+    const searchTools = ['search_knowledge_base', 'web_search', 'search_journals', 'search_past_conversations'];
+    if (searchTools.includes(tool)) {
+      setWorkflowState(prev => {
+        const currentTrail = prev.searchTrail || { attempts: [] };
+        return {
+          ...prev,
+          searchTrail: {
+            attempts: [
+              ...currentTrail.attempts,
+              {
+                source: tool,
+                query: result?.query || '',
+                results_count: result?.results_count || result?.sources?.length || 0,
+                had_results: (result?.results_count || result?.sources?.length || 0) > 0
+              }
+            ]
+          }
+        };
+      });
+    }
   };
 
   const handleComplete = () => {
@@ -345,11 +492,20 @@ export function useAgenticWorkflow() {
     }));
   };
 
+  // Update search trail from response data
+  const updateSearchTrail = (trail) => {
+    setWorkflowState(prev => ({
+      ...prev,
+      searchTrail: trail
+    }));
+  };
+
   return {
     workflowState,
     resetWorkflow,
     handleToolStart,
     handleToolEnd,
-    handleComplete
+    handleComplete,
+    updateSearchTrail
   };
 }

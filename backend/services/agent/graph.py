@@ -38,7 +38,10 @@ from .state import (
     VerificationState,
     AgentPhase,
     SubAgentResult,
+    SearchTrail,
+    SearchAttempt,
 )
+from .query_classifier import get_query_classifier, QueryClassification
 from .builder import build_tools, BuiltTool, ToolDependencies, ToolBuilder
 from .prompts import build_system_prompt, TOOL_REGISTRY
 from .tools import get_all_tool_schemas
@@ -254,6 +257,7 @@ class ScoratisAgent:
             """
             The agent's brain - decides what to do next.
             Enhanced with:
+            - Query classification (trivial detection)
             - Scratchpad for reasoning persistence
             - Stop condition tracking
             - Phase management
@@ -263,6 +267,20 @@ class ScoratisAgent:
             rag_context = state.get("rag_context")
             learning = state.get("learning", {})
             current_input = state.get("current_input", "")
+
+            # Check if query classification was already done
+            query_classification = state.get("query_classification")
+            if query_classification is None and current_input:
+                # Classify the query to check if it's trivial
+                classifier = get_query_classifier()
+                classification = classifier.classify(current_input, subject)
+                query_classification = {
+                    "is_trivial": classification.is_trivial,
+                    "query_type": classification.query_type,
+                    "skip_tools": classification.skip_tools,
+                    "reason": classification.reason,
+                    "confidence": classification.confidence
+                }
 
             # Clean messages - convert LangChain objects to dicts
             messages = []
@@ -301,19 +319,25 @@ class ScoratisAgent:
                         "stop_condition": stop_condition.to_dict()
                     }
 
+            # Determine if tools should be used based on query classification
+            should_use_tools = bool(tool_map)
+            if query_classification and query_classification.get("skip_tools"):
+                should_use_tools = False
+                logger.debug(f"Skipping tools for trivial query: {query_classification.get('reason')}")
+
             # Build enhanced system prompt with scratchpad context
             scratchpad_context = scratchpad.to_context_string()
             system_prompt = build_system_prompt(
                 subject=subject,
-                include_tools=bool(tool_map),
+                include_tools=should_use_tools,
                 include_citations=True,
                 rag_context_xml=rag_context.get("context_xml", "") if rag_context else "",
                 learning_state=learning,
                 custom_instructions=f"\n\n## YOUR REASONING STATE\n{scratchpad_context}" if scratchpad_context else ""
             )
 
-            # Get tool schemas
-            tool_schemas = get_all_tool_schemas() if tool_map else []
+            # Get tool schemas (only if tools are needed)
+            tool_schemas = get_all_tool_schemas() if should_use_tools else []
 
             try:
                 # Call LLM with tools
@@ -358,6 +382,7 @@ class ScoratisAgent:
                                 "phase": AgentPhase.COMPLETE.value,
                                 "scratchpad": scratchpad.to_dict(),
                                 "stop_condition": stop_condition.to_dict(),
+                                "query_classification": query_classification,
                                 "model_used": self.llm_service.get_current_config().get("model")
                             }
 
@@ -367,6 +392,7 @@ class ScoratisAgent:
                         "phase": AgentPhase.RESEARCHING.value,
                         "scratchpad": scratchpad.to_dict(),
                         "stop_condition": stop_condition.to_dict(),
+                        "query_classification": query_classification,
                         "messages": [{
                             "role": "assistant",
                             "content": content,
@@ -383,6 +409,7 @@ class ScoratisAgent:
                             "phase": AgentPhase.DRAFTING.value,
                             "scratchpad": scratchpad.to_dict(),
                             "stop_condition": stop_condition.to_dict(),
+                            "query_classification": query_classification,
                             "messages": [{
                                 "role": "assistant",
                                 "content": content
@@ -395,6 +422,7 @@ class ScoratisAgent:
                             "phase": AgentPhase.COMPLETE.value,
                             "scratchpad": scratchpad.to_dict(),
                             "stop_condition": stop_condition.to_dict(),
+                            "query_classification": query_classification,
                             "messages": [{
                                 "role": "assistant",
                                 "content": content
@@ -416,12 +444,27 @@ class ScoratisAgent:
         return agent_node
 
     def _create_tools_node(self, tool_map: Dict[str, Callable]):
-        """Create the tool execution node"""
+        """Create the tool execution node with search trail tracking"""
+        # Search tools that should be tracked
+        SEARCH_TOOLS = {
+            "search_knowledge_base", "web_search",
+            "search_journals", "search_past_conversations"
+        }
+
         async def tools_node(state: AgentState) -> Dict[str, Any]:
             """Execute pending tool calls and return results"""
             pending_calls = state.get("pending_tool_calls", [])
             results = []
             tool_messages = []
+
+            # Get or create search trail
+            search_trail_dict = state.get("search_trail", {})
+            if search_trail_dict and "attempts" in search_trail_dict:
+                search_trail = SearchTrail(
+                    attempts=[SearchAttempt(**a) for a in search_trail_dict.get("attempts", [])]
+                )
+            else:
+                search_trail = SearchTrail()
 
             for call in pending_calls:
                 tool_name = call.get("function", {}).get("name") or call.get("name")
@@ -447,6 +490,10 @@ class ScoratisAgent:
                         "result": result
                     })
 
+                    # Track search attempts in search trail
+                    if tool_name in SEARCH_TOOLS:
+                        search_trail.add_from_tool_result(tool_name, result)
+
                     # Add tool message
                     tool_messages.append({
                         "role": "tool",
@@ -464,6 +511,18 @@ class ScoratisAgent:
                         "result": error_result,
                         "error": str(e)
                     })
+
+                    # Track failed search attempts too
+                    if tool_name in SEARCH_TOOLS:
+                        search_trail.add_attempt(SearchAttempt(
+                            source=tool_name,
+                            query=args.get("query", "") if 'args' in dir() else "",
+                            results_count=0,
+                            success=False,
+                            had_results=False,
+                            error=str(e)
+                        ))
+
                     tool_messages.append({
                         "role": "tool",
                         "tool_call_id": tool_id,
@@ -477,7 +536,12 @@ class ScoratisAgent:
                 scratchpad = Scratchpad(**scratchpad_dict)
                 for r in results:
                     if r.get("result") and not r.get("error"):
-                        scratchpad.add_observation(f"{r['name']}: success")
+                        result_info = r.get("result", {})
+                        if r["name"] in SEARCH_TOOLS:
+                            count = result_info.get("results_count", 0)
+                            scratchpad.add_observation(f"{r['name']}: {count} results")
+                        else:
+                            scratchpad.add_observation(f"{r['name']}: success")
                     else:
                         scratchpad.add_observation(f"{r['name']}: {r.get('error', 'failed')}")
 
@@ -485,13 +549,15 @@ class ScoratisAgent:
                     "tool_results": results,
                     "pending_tool_calls": [],  # Clear pending
                     "messages": tool_messages,
-                    "scratchpad": scratchpad.to_dict()
+                    "scratchpad": scratchpad.to_dict(),
+                    "search_trail": search_trail.to_dict()
                 }
 
             return {
                 "tool_results": results,
                 "pending_tool_calls": [],  # Clear pending
-                "messages": tool_messages
+                "messages": tool_messages,
+                "search_trail": search_trail.to_dict()
             }
 
         return tools_node
@@ -664,12 +730,12 @@ class ScoratisAgent:
         )
         tool_map = {t.name: t.function for t in tools}
 
-        # Get RAG context first
+        # Get RAG context first (subject-filtered)
         rag_context = None
         if db_session and self.rag_service:
             try:
                 rag_result = await self.rag_service.get_context_with_citations(
-                    db_session, message, user_id
+                    db_session, message, user_id, subject=subject
                 )
                 rag_context = {
                     "context_xml": rag_result.get("context_xml", ""),
@@ -743,12 +809,12 @@ class ScoratisAgent:
         )
         tool_map = {t.name: t.function for t in tools}
 
-        # Get RAG context
+        # Get RAG context (subject-filtered)
         rag_context = None
         if db_session and self.rag_service:
             try:
                 rag_result = await self.rag_service.get_context_with_citations(
-                    db_session, message, user_id
+                    db_session, message, user_id, subject=subject
                 )
                 rag_context = {
                     "context_xml": rag_result.get("context_xml", ""),
@@ -971,6 +1037,10 @@ class ScoratisAgent:
         rag_context: Optional[Dict]
     ) -> Dict[str, Any]:
         """Format the graph result for API response"""
+        # Get search trail for transparency
+        search_trail = state.get("search_trail", {})
+        search_summary = search_trail.get("summary", "") if search_trail else ""
+
         return {
             "response": state.get("final_response", ""),
             "sources": rag_context.get("sources", []) if rag_context else [],
@@ -979,6 +1049,9 @@ class ScoratisAgent:
             "learning_state": state.get("learning", {}),
             "video_analysis": state.get("video_analysis"),
             "video_eligible": state.get("video_eligible", False),
+            "search_trail": search_trail,
+            "search_summary": search_summary,
+            "query_classification": state.get("query_classification"),
             "mode": "langgraph"
         }
 

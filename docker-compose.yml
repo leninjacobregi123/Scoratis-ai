@@ -1,3 +1,6 @@
+# Scoratis - Development Docker Compose
+# Only PostgreSQL and Redis - Frontend/Backend run locally
+
 services:
   # PostgreSQL with pgvector for RAG
   postgres:
@@ -18,8 +21,6 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
-    networks:
-      - scoratis-network
 
   # Redis for Celery task queue and caching
   redis:
@@ -36,123 +37,7 @@ services:
       timeout: 3s
       retries: 5
     restart: unless-stopped
-    networks:
-      - scoratis-network
-
-  # FastAPI Backend with RAG + Web Search (GPU-enabled)
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: scoratis-backend
-    environment:
-      - DATABASE_URL=postgresql://scoratis:scoratis_password@postgres:5432/scoratis
-      - DATABASE_URL_ASYNC=postgresql+asyncpg://scoratis:scoratis_password@postgres:5432/scoratis
-      - REDIS_URL=redis://redis:6379/0
-      - OLLAMA_BASE_URL=http://host.docker.internal:11434
-      - EMBEDDING_MODEL=all-MiniLM-L6-v2
-      - WEB_SEARCH_ENABLED=true
-      - NVIDIA_VISIBLE_DEVICES=all
-      - MAESTRO_PATH=/maestro-studio
-      # LangSmith Observability (set your API key to enable tracing)
-      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
-      - LANGCHAIN_ENDPOINT=${LANGCHAIN_ENDPOINT:-https://api.smith.langchain.com}
-      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
-      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-scoratis-production}
-    volumes:
-      - ~/maestro-studio:/maestro-studio
-      - ./backend/generated_videos:/app/generated_videos
-      - uploads_data:/app/uploads
-    ports:
-      - "8000:8000"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      start_period: 60s
-      retries: 3
-    restart: unless-stopped
-    networks:
-      - scoratis-network
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-
-  # React Frontend with Nginx
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: scoratis-frontend
-    ports:
-      - "3001:80"
-    depends_on:
-      backend:
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - scoratis-network
-
-  # Celery Worker for background document processing
-  celery-worker:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: scoratis-celery-worker
-    command: celery -A celery_app worker --loglevel=info --concurrency=2 -Q default,ingestion
-    healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'celery.*worker' > /dev/null || exit 1"]
-      interval: 30s
-      timeout: 10s
-      start_period: 30s
-      retries: 3
-    environment:
-      - DATABASE_URL=postgresql://scoratis:scoratis_password@postgres:5432/scoratis
-      - DATABASE_URL_ASYNC=postgresql+asyncpg://scoratis:scoratis_password@postgres:5432/scoratis
-      - REDIS_URL=redis://redis:6379/0
-      - OLLAMA_BASE_URL=http://host.docker.internal:11434
-      - EMBEDDING_MODEL=all-MiniLM-L6-v2
-      - NVIDIA_VISIBLE_DEVICES=all
-      # LangSmith Observability for Celery tasks
-      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
-      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
-      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-scoratis-production}
-    volumes:
-      - uploads_data:/app/uploads
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - scoratis-network
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
 
 volumes:
   postgres_data:
   redis_data:
-  uploads_data:
-
-networks:
-  scoratis-network:
-    driver: bridge

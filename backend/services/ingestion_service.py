@@ -1,16 +1,28 @@
 """
 Ingestion Service for RAG System
 Handles document parsing, chunking, and embedding generation
+
+Enhanced with:
+- Async file I/O using aiofiles
+- Parallel batch embedding
 """
 
 import logging
 import hashlib
+import asyncio
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
 from dataclasses import dataclass
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from config import settings
+
+# Try to import aiofiles for async file I/O
+try:
+    import aiofiles
+    AIOFILES_AVAILABLE = True
+except ImportError:
+    AIOFILES_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +215,55 @@ class IngestionService:
             word_count=len(content.split()),
         )
 
+    async def _parse_text_async(self, file_path: Path) -> ParsedDocument:
+        """Parse plain text or markdown file ASYNCHRONOUSLY"""
+        if AIOFILES_AVAILABLE:
+            async with aiofiles.open(file_path, mode='r', encoding='utf-8') as f:
+                content = await f.read()
+        else:
+            # Fallback to sync in thread pool
+            content = await asyncio.to_thread(file_path.read_text, encoding="utf-8")
+
+        return ParsedDocument(
+            content=content,
+            metadata={
+                "file_type": file_path.suffix.lstrip("."),
+                "file_name": file_path.name,
+                "file_size": file_path.stat().st_size,
+            },
+            word_count=len(content.split()),
+        )
+
+    async def parse_file_async(self, file_path: str, file_type: str) -> ParsedDocument:
+        """
+        Parse a file ASYNCHRONOUSLY and extract its content.
+        Uses async file I/O for text files, thread pool for others.
+
+        Args:
+            file_path: Path to the file
+            file_type: File extension (pdf, docx, txt, html, md)
+
+        Returns:
+            ParsedDocument with content and metadata
+        """
+        file_path = Path(file_path)
+
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        file_type = file_type.lower().strip(".")
+
+        try:
+            if file_type in ["txt", "md"]:
+                # Use async file reading
+                return await self._parse_text_async(file_path)
+            else:
+                # Use sync parsing in thread pool for complex formats
+                return await asyncio.to_thread(self.parse_file, str(file_path), file_type)
+        except Exception as e:
+            logger.error(f"Error parsing file {file_path}: {e}")
+            raise
+
     def _parse_html(self, file_path: Path) -> ParsedDocument:
         """Parse HTML file"""
         try:
@@ -332,7 +393,8 @@ class IngestionService:
 
     def batch_embed(self, texts: List[str]) -> List[List[float]]:
         """
-        Generate embeddings for a batch of texts.
+        Generate embeddings for a batch of texts (sync wrapper).
+        For async usage, prefer batch_embed_async.
 
         Args:
             texts: List of text strings
@@ -343,18 +405,24 @@ class IngestionService:
         if not texts:
             return []
 
-        embeddings = []
-        batch_size = 32  # Process in batches to avoid memory issues
+        # Use the sync method from embedding service
+        return self.embedding_service.embed_texts(texts)
 
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
-            batch_embeddings = [
-                self.embedding_service.embed_text(text)
-                for text in batch
-            ]
-            embeddings.extend(batch_embeddings)
+    async def batch_embed_async(self, texts: List[str]) -> List[List[float]]:
+        """
+        Generate embeddings for a batch of texts ASYNCHRONOUSLY with parallel processing.
 
-        return embeddings
+        Args:
+            texts: List of text strings
+
+        Returns:
+            List of embedding vectors
+        """
+        if not texts:
+            return []
+
+        # Use async parallel embedding
+        return await self.embedding_service.embed_texts_async(texts)
 
     def compute_content_hash(self, content: str) -> str:
         """

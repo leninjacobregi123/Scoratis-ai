@@ -31,7 +31,7 @@ class OllamaVideoClient:
     """
 
     def __init__(self, base_url: str = None, model: str = "llama3.2"):
-        self.base_url = base_url or os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
+        self.base_url = base_url or os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
         self.model = model
         logger.info(f"OllamaVideoClient initialized: {self.base_url} with model {self.model}")
 
@@ -96,7 +96,7 @@ class ManimCodeClient:
     CODE_MODELS = ["deepseek-coder", "codellama", "llama3.2", "mistral"]
 
     def __init__(self, base_url: str = None):
-        self.base_url = base_url or os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
+        self.base_url = base_url or os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
         self.model = self._detect_best_model()
         logger.info(f"ManimCodeClient initialized: {self.base_url} with model {self.model}")
 
