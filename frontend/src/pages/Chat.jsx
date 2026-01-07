@@ -1213,6 +1213,17 @@ export default function Chat() {
         }
       } catch (error) {
         console.error('Failed to poll video status:', error);
+        // Stop polling on error (e.g., 404 Not Found means task doesn't exist)
+        if (error.response?.status === 404 || error.message?.includes('404')) {
+          clearInterval(videoPollingRefs.current[taskId]);
+          delete videoPollingRefs.current[taskId];
+          // Remove from generating state
+          setGeneratingVideos(prev => {
+            const updated = { ...prev };
+            delete updated[messageId];
+            return updated;
+          });
+        }
       }
     }, 2000);
   };

@@ -451,11 +451,30 @@ async def configure_llm(config: LLMConfigUpdate):
     """
     provider = config.provider or "ollama"
 
+    # Fetch API key from database for cloud providers FIRST (needed for validation)
+    api_key_encrypted = None
+    try:
+        provider_type = ProviderType(provider.lower())
+        if PROVIDER_INFO.get(provider_type, {}).get("requires_api_key"):
+            async with db.get_session() as session:
+                from sqlalchemy import select
+                stmt = select(LLMProviderConfig).where(
+                    LLMProviderConfig.user_id == 1,
+                    LLMProviderConfig.provider == provider_type
+                )
+                result = await session.execute(stmt)
+                provider_config = result.scalar_one_or_none()
+                if provider_config:
+                    api_key_encrypted = provider_config.api_key_encrypted
+    except Exception as e:
+        logger.warning(f"Could not fetch API key from database: {e}")
+
     # Validate model before accepting (unless explicitly skipped)
     if config.validate and not config.skip_validation:
         validation_result = await llm_service.validate_model_config(
             provider=provider,
             model=config.model,
+            api_key_encrypted=api_key_encrypted,
             base_url=config.base_url,
             timeout_seconds=30,
         )
@@ -473,14 +492,24 @@ async def configure_llm(config: LLMConfigUpdate):
             )
 
     try:
+        # API key already fetched above, just set the provider
         llm_service.set_provider(
             model=config.model,
             provider=provider,
             base_url=config.base_url,
+            api_key_encrypted=api_key_encrypted,
             max_tokens=config.max_tokens or 2048,
             temperature=config.temperature or 0.7,
             context_length=config.context_length or 4096
         )
+
+        # Reset video clients to pick up the new LLM configuration
+        try:
+            from video_service import reset_video_clients
+            reset_video_clients()
+        except Exception as e:
+            logger.warning(f"Could not reset video clients: {e}")
+
         return {
             "success": True,
             "message": f"LLM configured to {provider}/{config.model}",

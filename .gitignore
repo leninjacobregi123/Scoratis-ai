@@ -95,4 +95,4 @@ htmlcov/
 # ----- Misc -----
 *.pid
 *.seed
-*.pid.lock
+*.pid.lockbackend/uploads/
