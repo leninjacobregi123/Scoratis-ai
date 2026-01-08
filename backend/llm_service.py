@@ -279,10 +279,20 @@ class LLMService:
     async def generate_stream(
         self,
         messages: List[Dict[str, str]],
-        system_prompt: str
+        system_prompt: str,
+        provider: Optional[ProviderType] = None,
+        model: Optional[str] = None,
+        api_key_encrypted: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Generate a streaming response using LiteLLM.
+
+        Args:
+            messages: Conversation messages
+            system_prompt: System prompt to use
+            provider: Optional provider override (uses current_config if not specified)
+            model: Optional model override (uses current_config if not specified)
+            api_key_encrypted: Optional API key for cloud providers
 
         Raises:
             LLMGenerationError: On any LLM failure with structured error info
@@ -290,13 +300,27 @@ class LLMService:
         if not self.current_config:
             raise Exception("LLM provider not configured")
 
+        # Use provided provider/model or fall back to current_config
+        use_provider = provider if provider else self._get_provider_type()
+        use_model = model if model else self.current_config.model
+
+        # Get API key - use provided one, or fall back to current_config
+        api_key = api_key_encrypted or self.current_config.api_key_encrypted
+        base_url = self.current_config.base_url
+
+        # If using a different provider, log it
+        if provider and provider != self._get_provider_type():
+            logger.info(f"Using override provider: {use_provider.value}/{use_model}")
+
+        logger.info(f"Streaming with {use_provider.value}/{use_model}")
+
         async for chunk in self.litellm.generate_stream(
             messages=messages,
             system_prompt=system_prompt,
-            provider=self._get_provider_type(),
-            model=self.current_config.model,
-            api_key_encrypted=self.current_config.api_key_encrypted,
-            base_url=self.current_config.base_url,
+            provider=use_provider,
+            model=use_model,
+            api_key_encrypted=api_key,
+            base_url=base_url,
             max_tokens=self.current_config.max_tokens,
             temperature=self.current_config.temperature,
         ):

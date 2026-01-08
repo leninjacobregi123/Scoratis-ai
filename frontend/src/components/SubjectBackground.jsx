@@ -589,7 +589,7 @@ export default function SubjectBackground({ subjectId, children }) {
     >
       {/* Background gradient overlay for depth */}
       <div
-        className="fixed inset-0 pointer-events-none transition-opacity duration-700"
+        className="absolute inset-0 pointer-events-none transition-opacity duration-700"
         style={{
           background: backgroundConfig?.gradient,
           opacity: 0.9,
@@ -598,7 +598,7 @@ export default function SubjectBackground({ subjectId, children }) {
 
       {/* Subtle texture overlay - lighter for light themes, darker for dark */}
       <div
-        className={`fixed inset-0 pointer-events-none transition-opacity duration-700 ${
+        className={`absolute inset-0 pointer-events-none transition-opacity duration-700 ${
           isDark ? 'opacity-[0.03]' : 'opacity-[0.015]'
         }`}
         style={{
@@ -610,7 +610,7 @@ export default function SubjectBackground({ subjectId, children }) {
 
       {/* Particle effects layer */}
       {particleConfig && (
-        <div className="fixed inset-0 pointer-events-none z-0 transition-opacity duration-700">
+        <div className="absolute inset-0 pointer-events-none z-0 transition-opacity duration-700">
           <ParticleRenderer type={particleConfig.type} config={particleConfig} />
         </div>
       )}
@@ -618,7 +618,7 @@ export default function SubjectBackground({ subjectId, children }) {
       {/* Vignette effect for immersion (dark themes only) */}
       {isDark && (
         <div
-          className="fixed inset-0 pointer-events-none transition-opacity duration-700"
+          className="absolute inset-0 pointer-events-none transition-opacity duration-700"
           style={{
             background: 'radial-gradient(ellipse at center, transparent 0%, rgba(0,0,0,0.3) 100%)',
           }}

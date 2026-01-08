@@ -268,14 +268,40 @@ class LiteLLMService:
     def _prepare_litellm_kwargs(
         self,
         config: LiteLLMConfig,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         system_prompt: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Prepare kwargs for LiteLLM completion call"""
+        """Prepare kwargs for LiteLLM completion call.
+
+        IMPORTANT: Preserves tool_calls and tool_call_id fields for Groq/OpenAI compatibility.
+        """
         api_messages = []
         if system_prompt:
             api_messages.append({"role": "system", "content": system_prompt})
-        api_messages.extend(messages)
+
+        # Process messages, preserving tool-related fields
+        for msg in messages:
+            processed_msg = {"role": msg.get("role", "user")}
+
+            # Always include content (can be empty string for tool-calling assistant messages)
+            if "content" in msg:
+                processed_msg["content"] = msg["content"]
+
+            # Preserve tool_calls for assistant messages (required by Groq/OpenAI)
+            if msg.get("role") == "assistant" and "tool_calls" in msg:
+                processed_msg["tool_calls"] = msg["tool_calls"]
+                # Groq requires content to be null or omitted when tool_calls present
+                if not msg.get("content"):
+                    processed_msg["content"] = None
+
+            # Preserve tool_call_id and name for tool response messages (required by Groq)
+            if msg.get("role") == "tool":
+                if "tool_call_id" in msg:
+                    processed_msg["tool_call_id"] = msg["tool_call_id"]
+                if "name" in msg:
+                    processed_msg["name"] = msg["name"]
+
+            api_messages.append(processed_msg)
 
         model_string = self._get_model_string(config.provider, config.model)
 

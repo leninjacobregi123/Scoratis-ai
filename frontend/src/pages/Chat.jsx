@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useOutletContext, useSearchParams } from 'react-router-dom';
 import {
-  ArrowUp, MessageSquare, Plus, PanelLeftClose, PanelLeft,
+  ArrowUp, MessageSquare, Plus,
   MoreVertical, Trash2, Edit2, Check, X,
   Play, Loader2, Download, Film, Pause, Volume2, VolumeX, Mic, MicOff, FileText,
   Globe, Brain
@@ -21,6 +21,7 @@ import { AttachmentButton, AttachmentPreview, UploadProgressOverlay } from '../c
 import { ChatOptionsBar, DEFAULT_CHAT_OPTIONS } from '../components/ChatOptions';
 import { CanvasPanel, CanvasToggleButton } from '../components/CanvasPanel';
 import { SearchTrailIndicator, SearchFallbackIndicator } from '../components/SearchTrailIndicator';
+import WebSearchProgress, { WebSearchProgressLight } from '../components/WebSearchProgress';
 import ClarificationRequest from '../components/ClarificationRequest';
 import ManimAnimationCard from '../components/ManimAnimationCard';
 import { LinkPreviewCard, LinkPreviewGrid } from '../components/LinkPreviewCard';
@@ -804,14 +805,13 @@ function ConversationItem({ conversation, isActive, onClick, onDelete, onRename,
 // ============== MAIN COMPONENT ==============
 
 export default function Chat() {
-  const { initialSessionId } = useOutletContext();
+  const { initialSessionId, onConversationCreated, setActiveSessionId: setParentActiveSessionId } = useOutletContext();
   const [searchParams] = useSearchParams();
   const [conversations, setConversations] = useState([]);
   const [activeConversationId, setActiveConversationId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sessionId, setSessionId] = useState(() => initialSessionId || 'session_' + Date.now());
 
   // Subject channel state (from Gallery)
@@ -835,6 +835,10 @@ export default function Chat() {
 
   // Search trail state - tracks which sources were searched
   const [messageSearchTrails, setMessageSearchTrails] = useState({}); // {msgId: {attempts: []}}
+
+  // Web search progress state - shows Perplexity-style searching UI
+  const [isWebSearching, setIsWebSearching] = useState(false);
+  const [webSearchResults, setWebSearchResults] = useState([]); // Current search results being displayed
 
   // Clarification request state - when agent needs user help
   const [messageClarifications, setMessageClarifications] = useState({}); // {msgId: {reason, suggestions, searchTrail}}
@@ -1072,6 +1076,10 @@ export default function Chat() {
     try {
       const data = await api.get('/chat/conversations');
       setConversations(data.conversations || []);
+      // Also update the sidebar in Dashboard
+      if (onConversationCreated) {
+        onConversationCreated();
+      }
       if (!activeConversationId && !data.conversations?.length) {
         setMessages([{
           id: 1,
@@ -1355,6 +1363,12 @@ export default function Chat() {
     setStreamingContent('');
     resetWorkflow(); // Reset agentic workflow for new message
 
+    // Show web search progress if enabled
+    if (chatOptions.useWebSearch) {
+      setIsWebSearching(true);
+      setWebSearchResults([]);
+    }
+
     try {
       const baseUrl = import.meta.env.VITE_API_URL || '';
       let response;
@@ -1370,6 +1384,8 @@ export default function Chat() {
         formData.append('use_web_search', chatOptions.useWebSearch);
         formData.append('use_reasoning', chatOptions.useReasoning);
         formData.append('use_documents', chatOptions.useDocuments);
+        formData.append('provider', currentLLMProvider);
+        formData.append('model', currentLLMModel);
 
         response = await fetch(`${baseUrl}/chat/with-attachment`, {
           method: 'POST',
@@ -1381,7 +1397,7 @@ export default function Chat() {
         setUploadStatus('pending');
         setUploadProgress(0);
       } else {
-        // Regular JSON request with chat options
+        // Regular JSON request with chat options and selected LLM
         response = await fetch(`${baseUrl}/chat/stream`, {
           method: 'POST',
           headers: {
@@ -1393,7 +1409,9 @@ export default function Chat() {
             subject: currentSubject?.id || subjectFromUrl || 'general',
             use_web_search: chatOptions.useWebSearch,
             use_reasoning: chatOptions.useReasoning,
-            use_documents: chatOptions.useDocuments
+            use_documents: chatOptions.useDocuments,
+            provider: currentLLMProvider,
+            model: currentLLMModel
           })
         });
       }
@@ -1433,6 +1451,12 @@ export default function Chat() {
                   ...prev,
                   [newMessageId]: data.search_trail
                 }));
+
+                // Extract web search results for Perplexity-style display
+                const webSearchAttempt = data.search_trail.attempts?.find(a => a.source === 'web_search');
+                if (webSearchAttempt?.results) {
+                  setWebSearchResults(webSearchAttempt.results);
+                }
                 continue;
               }
 
@@ -1504,20 +1528,40 @@ export default function Chat() {
               // Handle agentic tool events
               if (data.type === 'tool_start') {
                 handleToolStart(data.tool, data.args);
-                // Store workflow state for this message
-                setMessageWorkflows(prev => ({
-                  ...prev,
-                  [newMessageId]: { ...workflowState, hasTools: true }
-                }));
+                // Store workflow state for this message - compute new state directly
+                setMessageWorkflows(prev => {
+                  const currentWorkflow = prev[newMessageId] || { steps: [], hasTools: false };
+                  return {
+                    ...prev,
+                    [newMessageId]: {
+                      ...currentWorkflow,
+                      hasTools: true,
+                      steps: [...(currentWorkflow.steps || []), { tool: data.tool, args: data.args, complete: false }],
+                      activeStep: { tool: data.tool, args: data.args }
+                    }
+                  };
+                });
                 continue;
               }
 
               if (data.type === 'tool_end') {
                 handleToolEnd(data.tool, data.result);
-                setMessageWorkflows(prev => ({
-                  ...prev,
-                  [newMessageId]: { ...workflowState }
-                }));
+                // Update workflow state - mark tool as complete
+                setMessageWorkflows(prev => {
+                  const currentWorkflow = prev[newMessageId] || { steps: [], hasTools: false };
+                  return {
+                    ...prev,
+                    [newMessageId]: {
+                      ...currentWorkflow,
+                      steps: (currentWorkflow.steps || []).map(s =>
+                        s.tool === data.tool && !s.complete
+                          ? { ...s, complete: true, result: data.result }
+                          : s
+                      ),
+                      activeStep: null
+                    }
+                  };
+                });
                 continue;
               }
 
@@ -1526,6 +1570,22 @@ export default function Chat() {
                 setMessageWorkflows(prev => ({
                   ...prev,
                   [newMessageId]: { ...prev[newMessageId], phase: data.phase }
+                }));
+                continue;
+              }
+
+              // Handle thinking events (agent reasoning)
+              if (data.type === 'thinking') {
+                setMessageWorkflows(prev => ({
+                  ...prev,
+                  [newMessageId]: {
+                    ...prev[newMessageId],
+                    hasTools: true,
+                    thinking: {
+                      thought: data.content,
+                      confidence: data.confidence
+                    }
+                  }
                 }));
                 continue;
               }
@@ -1633,69 +1693,15 @@ export default function Chat() {
       setLoading(false);
       setStreamingMessageId(null);
       setStreamingContent('');
+      // Reset web search state after completion
+      setIsWebSearching(false);
+      setWebSearchResults([]);
     }
   };
 
   return (
     <SubjectBackground subjectId={currentSubject?.id || subjectFromUrl}>
       <div className="flex-1 flex relative overflow-hidden">
-      {/* Conversations Sidebar - Collapsible */}
-      <div className={`${sidebarOpen ? 'w-64' : 'w-0'} transition-all duration-300 ease-in-out overflow-hidden border-r ${theme.classes.sidebarBorder} ${theme.classes.sidebarBg} backdrop-blur-md flex flex-col`}>
-        <div className="w-64 h-full flex flex-col">
-          {/* Sidebar Header with Close Button */}
-          <div className={`h-14 flex items-center justify-between px-4 border-b ${isDark ? 'border-white/10' : 'border-border-color'}`}>
-            <span className={`text-sm font-medium ${isDark ? 'text-white' : 'text-text-primary'}`}>Chat History</span>
-            <button
-              onClick={() => setSidebarOpen(false)}
-              className={`p-2 rounded-lg transition-colors ${isDark ? 'hover:bg-white/10 text-gray-400 hover:text-white' : 'hover:bg-bg-tertiary text-text-muted hover:text-text-primary'}`}
-              title="Close sidebar"
-            >
-              <PanelLeftClose className="w-4 h-4" />
-            </button>
-          </div>
-
-          {/* New Dialogue Button */}
-          <div className="p-3">
-            <button
-              onClick={startNewConversation}
-              className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-xl font-medium text-sm transition-all group
-                ${isDark
-                  ? 'border border-white/20 text-gray-300 hover:border-white/40 hover:text-white hover:bg-white/5'
-                  : 'border border-border-color text-text-primary hover:border-gray-800 hover:text-gray-800'
-                }`}
-            >
-              <Plus className="w-4 h-4 group-hover:rotate-90 transition-transform duration-300" />
-              New dialogue
-            </button>
-          </div>
-
-          {/* Conversation List */}
-          <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-1">
-            <div className={`text-xs uppercase tracking-wider px-3 py-2 font-medium ${isDark ? 'text-gray-500' : 'text-text-muted/70'}`}>
-              History
-            </div>
-            {conversations.map((conv) => (
-              <ConversationItem
-                key={conv.id}
-                conversation={conv}
-                isActive={activeConversationId === conv.id}
-                onClick={loadConversation}
-                onDelete={deleteConversation}
-                onRename={renameConversation}
-                isDark={isDark}
-              />
-            ))}
-            {conversations.length === 0 && (
-              <div className={`text-center py-8 ${isDark ? 'text-gray-400' : 'text-text-muted'}`}>
-                <MessageSquare className="w-8 h-8 mx-auto mb-3 opacity-30" />
-                <p className="text-sm">No dialogues yet</p>
-                <p className="text-xs mt-1 opacity-60">Start a conversation</p>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header - Large with Clear Background Image */}
@@ -1719,16 +1725,6 @@ export default function Chat() {
             const headerTutor = getSubjectTutor(currentSubject?.id || subjectFromUrl);
             return (
               <div className="relative z-50 flex items-center gap-4">
-                {/* Sidebar Toggle Button */}
-                {!sidebarOpen && (
-                  <button
-                    onClick={() => setSidebarOpen(true)}
-                    className="p-2 rounded-lg text-white hover:bg-white/20 transition-colors"
-                    title="Show chat history"
-                  >
-                    <PanelLeft className="w-6 h-6" />
-                  </button>
-                )}
                 {/* Tutor portrait - larger */}
                 <div className="w-16 h-16 rounded-full overflow-hidden border-3 border-white/70 shadow-xl flex-shrink-0">
                   <img
@@ -1820,7 +1816,50 @@ export default function Chat() {
                 }}
               />
             ))}
-            {loading && <TypingIndicator currentSubject={currentSubject} theme={theme} isDark={isDark} />}
+
+            {/* Perplexity-style Web Search Progress - shows while searching */}
+            {isWebSearching && loading && (
+              <div className={`py-6 ${isDark ? 'bg-white/5' : 'bg-bg-secondary/50'}`}>
+                <div className="max-w-3xl mx-auto px-6">
+                  {/* Use dark or light variant based on theme */}
+                  {isDark ? (
+                    <WebSearchProgress
+                      isSearching={webSearchResults.length === 0}
+                      searchResults={webSearchResults}
+                      query={input}
+                      theme={theme}
+                    />
+                  ) : (
+                    <WebSearchProgressLight
+                      isSearching={webSearchResults.length === 0}
+                      searchResults={webSearchResults}
+                      query={input}
+                      theme={theme}
+                    />
+                  )}
+
+                  {/* Show "Generating response" after sources are found */}
+                  {webSearchResults.length > 0 && (
+                    <div className={`flex items-center gap-3 mt-4 pt-4 border-t ${isDark ? 'border-white/10' : 'border-gray-200/50'}`}>
+                      <div className="flex gap-1.5">
+                        {[...Array(3)].map((_, i) => (
+                          <div
+                            key={i}
+                            className={`w-2 h-2 rounded-full animate-bounce ${isDark ? 'bg-blue-400' : 'bg-[#6b7c5e]'}`}
+                            style={{ animationDelay: `${i * 150}ms` }}
+                          />
+                        ))}
+                      </div>
+                      <span className={`text-sm ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
+                        {getSubjectTutor(currentSubject?.id || subjectFromUrl)?.name || 'Scoratis'} is formulating a response...
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {loading && !isWebSearching && <TypingIndicator currentSubject={currentSubject} theme={theme} isDark={isDark} />}
             <div ref={messagesEndRef} />
           </div>
         </div>
@@ -1932,41 +1971,41 @@ export default function Chat() {
                             }
                             ${loading ? 'opacity-75' : ''}`}>
 
-              {/* Top row - Options pills */}
-              <div className={`flex items-center gap-2 px-4 pt-3 pb-1 border-b ${isDark ? 'border-white/10' : 'border-gray-100/50'}`}>
+              {/* Top row - Options pills - Athenian themed */}
+              <div className="flex items-center gap-3 px-5 pt-4 pb-2 border-b border-[#D4CFB8]/30">
                 <button
                   onClick={() => setChatOptions(prev => ({ ...prev, useWebSearch: !prev.useWebSearch }))}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all
+                  className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all duration-200
                     ${chatOptions.useWebSearch
-                      ? `${theme.classes.accent} bg-opacity-10 border border-current`
-                      : isDark ? 'text-gray-300 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'}`}
+                      ? 'text-[#4a5a40] bg-[#6b7c5e]/15 border border-[#6b7c5e]/40 shadow-sm'
+                      : 'text-gray-500 hover:text-[#4a5a40] hover:bg-[#6b7c5e]/5 border border-transparent'}`}
                   title="Web Search"
                 >
-                  <Globe className="w-3.5 h-3.5" />
+                  <Globe className={`w-4 h-4 ${chatOptions.useWebSearch ? 'text-[#6b7c5e]' : ''}`} />
                   <span className="hidden sm:inline">Search</span>
                 </button>
 
                 <button
                   onClick={() => setChatOptions(prev => ({ ...prev, useReasoning: !prev.useReasoning }))}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all
+                  className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all duration-200
                     ${chatOptions.useReasoning
-                      ? isDark ? 'text-purple-300 bg-purple-500/20 border border-purple-400/30' : 'text-purple-600 bg-purple-50 border border-purple-200'
-                      : isDark ? 'text-gray-300 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'}`}
+                      ? 'text-[#4a5a40] bg-[#6b7c5e]/15 border border-[#6b7c5e]/40 shadow-sm'
+                      : 'text-gray-500 hover:text-[#4a5a40] hover:bg-[#6b7c5e]/5 border border-transparent'}`}
                   title="Deep Thinking"
                 >
-                  <Brain className="w-3.5 h-3.5" />
+                  <Brain className={`w-4 h-4 ${chatOptions.useReasoning ? 'text-[#6b7c5e]' : ''}`} />
                   <span className="hidden sm:inline">Think</span>
                 </button>
 
                 <button
                   onClick={() => setChatOptions(prev => ({ ...prev, useDocuments: !prev.useDocuments }))}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all
+                  className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all duration-200
                     ${chatOptions.useDocuments
-                      ? isDark ? 'text-green-300 bg-green-500/20 border border-green-400/30' : 'text-green-600 bg-green-50 border border-green-200'
-                      : isDark ? 'text-gray-300 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'}`}
+                      ? 'text-[#4a5a40] bg-[#6b7c5e]/15 border border-[#6b7c5e]/40 shadow-sm'
+                      : 'text-gray-500 hover:text-[#4a5a40] hover:bg-[#6b7c5e]/5 border border-transparent'}`}
                   title="Use Documents"
                 >
-                  <FileText className="w-3.5 h-3.5" />
+                  <FileText className={`w-4 h-4 ${chatOptions.useDocuments ? 'text-[#6b7c5e]' : ''}`} />
                   <span className="hidden sm:inline">Docs</span>
                 </button>
 
@@ -1980,26 +2019,24 @@ export default function Chat() {
                     }
                   }}
                   disabled={loading || !input.trim()}
-                  className={`flex items-center gap-1 px-2 py-1 text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed
-                    ${isDark ? 'text-gray-400 hover:text-gray-200' : 'text-gray-400 hover:text-gray-600'}`}
+                  className="flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all duration-200 text-gray-400 hover:text-[#4a5a40] hover:bg-[#6b7c5e]/5 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-gray-400"
                   title="Generate visual explanation"
                 >
-                  <Film className="w-3.5 h-3.5" />
+                  <Film className="w-4 h-4" />
                   <span className="hidden md:inline">Video</span>
                 </button>
               </div>
 
               {/* Bottom row - Input area */}
-              <div className="flex items-end gap-2 p-3">
+              <div className="flex items-end gap-3 p-4">
                 {/* Attachment button */}
                 <button
                   onClick={() => document.getElementById('gemini-file-input')?.click()}
                   disabled={loading || uploadStatus === 'uploading'}
-                  className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all disabled:opacity-40
-                    ${isDark ? 'text-gray-300 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'}`}
+                  className="flex-shrink-0 w-11 h-11 rounded-full flex items-center justify-center transition-all disabled:opacity-40 text-gray-500 hover:text-[#4a5a40] hover:bg-[#6b7c5e]/10"
                   title="Attach file"
                 >
-                  <Plus className="w-5 h-5" />
+                  <Plus className="w-6 h-6" />
                 </button>
                 <input
                   id="gemini-file-input"
@@ -2029,32 +2066,31 @@ export default function Chat() {
                       }
                     }}
                     placeholder={currentSubject ? `Ask ${getSubjectTutor(currentSubject.id)?.name || 'Scoratis'} about ${currentSubject.name}...` : 'Ask a question...'}
-                    className={`w-full bg-transparent text-base leading-6 outline-none resize-none min-h-[24px] max-h-32
-                      ${isDark ? 'text-white placeholder-gray-400' : 'text-gray-800 placeholder-gray-400'}`}
+                    className="w-full bg-transparent text-lg leading-7 outline-none resize-none min-h-[32px] max-h-40 text-gray-800 placeholder-gray-400"
                     rows={1}
                     disabled={loading}
                     onInput={(e) => {
                       e.target.style.height = 'auto';
-                      e.target.style.height = Math.min(e.target.scrollHeight, 128) + 'px';
+                      e.target.style.height = Math.min(e.target.scrollHeight, 160) + 'px';
                     }}
                   />
                 </div>
 
                 {/* Right side buttons */}
-                <div className="flex items-center gap-1 flex-shrink-0">
+                <div className="flex items-center gap-2 flex-shrink-0">
                   {/* Voice input button */}
                   {voiceSupported && (
                     <button
                       onClick={toggleVoiceInput}
                       disabled={loading}
-                      className={`w-10 h-10 rounded-full flex items-center justify-center transition-all disabled:opacity-40
+                      className={`w-11 h-11 rounded-full flex items-center justify-center transition-all disabled:opacity-40
                         ${isListening
                           ? 'bg-red-500 text-white animate-pulse'
-                          : isDark ? 'text-gray-300 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
+                          : 'text-gray-500 hover:text-[#4a5a40] hover:bg-[#6b7c5e]/10'
                         }`}
                       title={isListening ? 'Stop listening' : 'Voice input'}
                     >
-                      {isListening ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+                      {isListening ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
                     </button>
                   )}
 
@@ -2062,17 +2098,17 @@ export default function Chat() {
                   <button
                     onClick={() => sendMessage()}
                     disabled={loading || (!input.trim() && !selectedFile)}
-                    className={`w-10 h-10 rounded-full flex items-center justify-center transition-all
+                    className={`w-12 h-12 rounded-full flex items-center justify-center transition-all
                       ${(input.trim() || selectedFile) && !loading
-                        ? `${theme.classes.sendBtn} shadow-md hover:shadow-lg hover:scale-105`
-                        : isDark ? 'bg-white/10 text-gray-500 cursor-not-allowed' : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                        ? 'bg-[#6b7c5e] hover:bg-[#5a6c4e] text-white shadow-md hover:shadow-lg hover:scale-105'
+                        : 'bg-gray-100 text-gray-400 cursor-not-allowed'
                       } disabled:opacity-40`}
                     title="Send message"
                   >
                     {loading ? (
-                      <Loader2 className="w-5 h-5 animate-spin" />
+                      <Loader2 className="w-6 h-6 animate-spin" />
                     ) : (
-                      <ArrowUp className={`w-5 h-5 ${(input.trim() || selectedFile) ? 'text-white' : ''}`} />
+                      <ArrowUp className={`w-6 h-6 ${(input.trim() || selectedFile) ? 'text-white' : ''}`} />
                     )}
                   </button>
                 </div>

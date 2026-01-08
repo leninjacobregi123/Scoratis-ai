@@ -10,7 +10,7 @@ export default function Home() {
   return (
     <div className="h-full overflow-y-auto relative">
       {/* Subtle Background Elements */}
-      <div className="fixed inset-0 pointer-events-none overflow-hidden">
+      <div className="absolute inset-0 pointer-events-none overflow-hidden">
         <div className="absolute top-1/4 -right-64 w-[800px] h-[800px] bg-accent-olive/[0.03] rounded-full blur-[150px]" />
         <div className="absolute bottom-0 -left-32 w-[600px] h-[600px] bg-accent-olive/[0.05] rounded-full blur-[120px]" />
       </div>

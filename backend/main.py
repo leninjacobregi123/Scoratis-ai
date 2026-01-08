@@ -81,6 +81,8 @@ class ChatMessage(BaseModel):
     use_web_search: Optional[bool] = True  # Enable/disable web search augmentation
     use_reasoning: Optional[bool] = False  # Enable deep thinking mode
     use_documents: Optional[bool] = True  # Enable RAG document search
+    provider: Optional[str] = None  # LLM provider (ollama, openai, anthropic, etc.)
+    model: Optional[str] = None  # Model name (llama3.2, gpt-4o, etc.)
 
 class DeleteConversation(BaseModel):
     permanent: Optional[bool] = False
@@ -1167,6 +1169,92 @@ async def chat_stream(message: ChatMessage):
         except Exception as guardrail_error:
             logger.warning(f"Guardrail check error (continuing): {guardrail_error}")
 
+    # === AGENTIC MODE: Use full agent when use_reasoning is enabled ===
+    use_reasoning = message.use_reasoning if message.use_reasoning is not None else False
+
+    if use_reasoning and scoratis_agent:
+        logger.info(f"Using agentic mode for session {session_id}")
+
+        async def generate_agent_stream_internal():
+            full_response = ""
+            try:
+                async with db.get_session() as db_session:
+                    async for event in scoratis_agent.stream(
+                        session_id=session_id,
+                        message=user_message,
+                        subject=subject,
+                        db_session=db_session,
+                        user_id=1
+                    ):
+                        event_type = event.get("type")
+
+                        if event_type == "sources":
+                            # Stream sources for citation preview
+                            yield f"data: {json.dumps(event)}\n\n"
+
+                        elif event_type == "tool_start":
+                            # Show tool execution starting (chain of thought UI)
+                            yield f"data: {json.dumps({'type': 'tool_start', 'tool': event['tool'], 'args': event.get('args', {})})}\n\n"
+
+                        elif event_type == "tool_end":
+                            # Show tool execution result
+                            yield f"data: {json.dumps({'type': 'tool_end', 'tool': event['tool'], 'result': event.get('result', {})})}\n\n"
+
+                        elif event_type == "thinking":
+                            # Stream thinking/reasoning steps
+                            yield f"data: {json.dumps({'type': 'thinking', 'content': event.get('content', '')})}\n\n"
+
+                        elif event_type == "phase":
+                            # Stream phase changes
+                            yield f"data: {json.dumps({'type': 'phase', 'phase': event.get('phase', '')})}\n\n"
+
+                        elif event_type == "token":
+                            # Stream response text
+                            full_response += event.get("content", "")
+                            yield f"data: {json.dumps({'chunk': event['content'], 'done': False})}\n\n"
+
+                        elif event_type == "done":
+                            # Ensure response is never empty
+                            final_response = full_response.strip() if full_response else ""
+                            if not final_response:
+                                final_response = event.get("response") or "I apologize, but I couldn't generate a complete response."
+
+                            # Save to database
+                            await db.add_chat_message(session_id, 'ai', final_response, subject=subject)
+
+                            # Final event with metadata
+                            final_data = {
+                                'chunk': '',
+                                'done': True,
+                                'full_response': final_response,
+                                'session_id': session_id,
+                                'subject': subject,
+                                'model': event.get('metadata', {}).get('model'),
+                                'sources': event.get('metadata', {}).get('sources', []),
+                                'tools_used': event.get('metadata', {}).get('tools_used', 0),
+                                'mode': 'agent'
+                            }
+                            yield f"data: {json.dumps(final_data)}\n\n"
+
+            except Exception as e:
+                logger.error(f"Agent stream error: {e}")
+                error_data = {
+                    'chunk': f"I apologize, but I encountered an error while reasoning: {str(e)}",
+                    'done': True,
+                    'error': str(e)
+                }
+                yield f"data: {json.dumps(error_data)}\n\n"
+
+        return StreamingResponse(
+            generate_agent_stream_internal(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+
     # Get subject-specific prompt
     base_system_prompt = get_subject_prompt(subject)
     context = subject
@@ -1233,8 +1321,62 @@ async def chat_stream(message: ChatMessage):
         except Exception as rag_error:
             logger.warning(f"RAG search error (continuing without): {rag_error}")
 
-    # Build enhanced system prompt with citation instructions
+    # === Web Search: Proactive search when enabled ===
+    web_search_context = ""
+    web_search_results = []
+    search_trail_data = {"attempts": []}
+
+    if use_web_search:
+        try:
+            web_search_service = get_web_search_service()
+            if web_search_service.enabled:
+                # Perform proactive web search
+                logger.info(f"Web search enabled, searching for: {user_message[:50]}...")
+                search_results = await web_search_service.search(user_message)
+
+                if search_results:
+                    web_search_results = search_results
+                    web_search_context = web_search_service.format_results_for_llm(search_results)
+                    logger.info(f"Web search found {len(search_results)} results")
+
+                    # Build search trail for UI
+                    search_trail_data["attempts"].append({
+                        "source": "web_search",
+                        "query": user_message[:100],
+                        "results_count": len(search_results),
+                        "results": [
+                            {
+                                "title": r.title,
+                                "url": r.url,
+                                "snippet": r.snippet[:150] + "..." if len(r.snippet) > 150 else r.snippet
+                            }
+                            for r in search_results[:3]
+                        ]
+                    })
+                else:
+                    search_trail_data["attempts"].append({
+                        "source": "web_search",
+                        "query": user_message[:100],
+                        "results_count": 0,
+                        "results": []
+                    })
+        except Exception as web_error:
+            logger.warning(f"Web search error (continuing without): {web_error}")
+
+    # Build enhanced system prompt with RAG context, web search, and citation instructions
+    context_parts = []
+
+    # Add RAG context if available
+    if rag_context_xml:
+        context_parts.append(f"DOCUMENT CONTEXT:\n{rag_context_xml}")
+
+    # Add web search context if available
+    if web_search_context:
+        context_parts.append(f"\n{web_search_context}")
+
+    # Build system prompt with all context
     if rag_context_xml and rag_sources:
+        combined_context = "\n\n".join(context_parts) if context_parts else ""
         system_prompt = f"""{base_system_prompt}
 
 {RAG_CONTEXT_AWARENESS}
@@ -1242,11 +1384,12 @@ async def chat_stream(message: ChatMessage):
 {CITATION_INSTRUCTIONS}
 
 ---
-{rag_context_xml}
+{combined_context}
 ---"""
-    elif rag_context_xml:
-        # Legacy context (no citations)
-        system_prompt = f"{base_system_prompt}\n\n---\nRELEVANT CONTEXT:\n{rag_context_xml}\n---"
+    elif context_parts:
+        # Has some context (RAG or web search)
+        combined_context = "\n\n".join(context_parts)
+        system_prompt = f"{base_system_prompt}\n\n---\nRELEVANT CONTEXT:\n{combined_context}\n---"
     else:
         system_prompt = base_system_prompt
 
@@ -1274,11 +1417,93 @@ async def chat_stream(message: ChatMessage):
                 }
                 yield f"data: {json.dumps(sources_event)}\n\n"
 
-            # Stream the response
-            async for chunk in llm_service.generate_stream(
-                messages=conversation_memory[session_id],
-                system_prompt=system_prompt
-            ):
+            # Stream search trail (shows what was searched - documents and/or web)
+            if search_trail_data["attempts"] or (use_documents and rag_sources):
+                # Add RAG search to trail if documents were searched
+                if use_documents:
+                    search_trail_data["attempts"].insert(0, {
+                        "source": "documents",
+                        "query": user_message[:100],
+                        "results_count": len(rag_sources) if rag_sources else 0,
+                    })
+
+                search_trail_event = {
+                    "type": "search_trail",
+                    "search_trail": search_trail_data
+                }
+                yield f"data: {json.dumps(search_trail_event)}\n\n"
+
+            # Stream the response using selected provider/model if specified
+            stream_kwargs = {
+                "messages": conversation_memory[session_id],
+                "system_prompt": system_prompt,
+            }
+
+            # Add provider/model if specified in request
+            logger.info(f"[MODEL SWITCH] Request provider: {message.provider}, model: {message.model}")
+
+            # Track if we need to fallback
+            use_fallback = False
+            fallback_reason = None
+
+            if message.provider:
+                try:
+                    from models import ProviderType, LLMProviderConfig
+                    provider_type = ProviderType(message.provider)
+
+                    # Check if this is a local provider (no API key needed)
+                    local_providers = ['ollama', 'lmstudio', 'localai', 'textgenwebui']
+
+                    if message.provider in local_providers:
+                        # Local provider - use directly
+                        stream_kwargs["provider"] = provider_type
+                        if message.model:
+                            stream_kwargs["model"] = message.model
+                        logger.info(f"[MODEL SWITCH] Using local provider: {message.provider}/{message.model}")
+                    else:
+                        # Cloud provider - need API key from database
+                        async with db.get_session() as db_session:
+                            from sqlalchemy import select
+                            result = await db_session.execute(
+                                select(LLMProviderConfig).where(
+                                    LLMProviderConfig.provider == provider_type,
+                                    LLMProviderConfig.is_active == True
+                                )
+                            )
+                            provider_config = result.scalar_one_or_none()
+
+                            if provider_config and provider_config.api_key_encrypted:
+                                # Found API key - use cloud provider
+                                stream_kwargs["provider"] = provider_type
+                                stream_kwargs["api_key_encrypted"] = provider_config.api_key_encrypted
+                                if message.model:
+                                    stream_kwargs["model"] = message.model
+                                logger.info(f"[MODEL SWITCH] Using cloud provider: {message.provider}/{message.model}")
+                            else:
+                                # NO API key - fallback to default Ollama
+                                use_fallback = True
+                                fallback_reason = f"No API key configured for {message.provider}"
+
+                except ValueError:
+                    use_fallback = True
+                    fallback_reason = f"Invalid provider: {message.provider}"
+
+            # Handle fallback to default Ollama model
+            if use_fallback:
+                logger.warning(f"[MODEL SWITCH] {fallback_reason} - Falling back to Ollama/{settings.DEFAULT_LLM_MODEL}")
+                stream_kwargs["provider"] = ProviderType.OLLAMA
+                stream_kwargs["model"] = settings.DEFAULT_LLM_MODEL
+                # Remove any API key that might have been set
+                stream_kwargs.pop("api_key_encrypted", None)
+
+            # If no provider specified but model is, just use the model with current provider
+            elif not message.provider and message.model:
+                stream_kwargs["model"] = message.model
+                logger.info(f"[MODEL SWITCH] Using model override only: {message.model}")
+
+            logger.info(f"[MODEL SWITCH] Final stream_kwargs keys: {list(stream_kwargs.keys())}")
+
+            async for chunk in llm_service.generate_stream(**stream_kwargs):
                 full_response += chunk
                 yield f"data: {json.dumps({'chunk': chunk, 'done': False})}\n\n"
 

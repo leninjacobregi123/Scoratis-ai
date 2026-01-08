@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as THREE from 'three';
-import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass';
@@ -1294,17 +1293,20 @@ const Gallery = () => {
     scene.add(playerGroup);
     stateRef.current.player = playerGroup;
 
-    const loader = new FBXLoader();
+    const characterLoader = new GLTFLoader();
 
     console.log('Loading Mixamo character with animation...');
     setLoadingStatus('Loading character model...');
 
-    // Load the Mixamo animated model (character + animation included)
-    loader.load(
-      '/models/assassin/assassin_walking.fbx',
-      (model) => {
+    // Load the optimized GLTF model (converted from FBX, 85% smaller)
+    characterLoader.load(
+      '/models/assassin/assassin_optimized.glb',
+      (gltf) => {
+        const model = gltf.scene;
+        // Copy animations from gltf to model for compatibility
+        model.animations = gltf.animations;
         console.log('Mixamo model loaded!');
-        console.log('Animations:', model.animations.length);
+        console.log('Animations:', gltf.animations.length);
         setLoadingStages(prev => ({ ...prev, characterModel: true }));
         setLoadingStatus('Character loaded');
 
@@ -1336,12 +1338,12 @@ const Gallery = () => {
         stateRef.current.fbxModel = model;
 
         // Setup smooth looping animation
-        if (model.animations && model.animations.length > 0) {
-          console.log('Setting up animation:', model.animations[0].name);
+        if (gltf.animations && gltf.animations.length > 0) {
+          console.log('Setting up animation:', gltf.animations[0].name);
           const mixer = new THREE.AnimationMixer(model);
           stateRef.current.mixer = mixer;
 
-          const clip = model.animations[0];
+          const clip = gltf.animations[0];
           console.log('Animation duration:', clip.duration, 'seconds');
 
           const walkAction = mixer.clipAction(clip);
@@ -1368,7 +1370,7 @@ const Gallery = () => {
         }
       },
       (error) => {
-        console.error('FBX load error:', error);
+        console.error('GLTF character load error:', error);
         setModelStatus('error');
         // Still mark as loaded to not block the app
         setLoadingStages(prev => ({ ...prev, characterModel: true }));
@@ -2463,10 +2465,10 @@ const Gallery = () => {
     topPlatform.receiveShadow = true;
     socratesGroup.add(topPlatform);
 
-    // Load 3D Socrates bust model (GLTF format)
+    // Load optimized 3D Socrates bust model (89% smaller with Draco compression)
     setLoadingStatus('Loading Socrates sculpture...');
     const gltfLoader = new GLTFLoader();
-    gltfLoader.load('/models/socrates/socrates.glb', (gltf) => {
+    gltfLoader.load('/models/socrates/socrates_optimized.glb', (gltf) => {
       console.log('Socrates bust loaded!');
       setLoadingStages(prev => ({ ...prev, socratesModel: true }));
       setLoadingStatus('Socrates sculpture loaded');

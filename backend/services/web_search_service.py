@@ -105,21 +105,43 @@ class WebSearchService:
             return []
 
         try:
-            from duckduckgo_search import DDGS
+            # Use the updated ddgs package (formerly duckduckgo_search)
+            from ddgs import DDGS
 
             results = []
-            with DDGS() as ddgs:
-                for r in ddgs.text(query, max_results=self.max_results):
-                    results.append(
-                        SearchResult(
-                            title=r.get("title", ""),
-                            url=r.get("href", ""),
-                            snippet=r.get("body", ""),
-                        )
+            search_results = list(DDGS().text(query, max_results=self.max_results))
+            for r in search_results:
+                results.append(
+                    SearchResult(
+                        title=r.get("title", ""),
+                        url=r.get("href", ""),
+                        snippet=r.get("body", ""),
                     )
+                )
 
             logger.info(f"Web search found {len(results)} results for: {query[:50]}...")
             return results
+
+        except ImportError:
+            # Fallback to old package if ddgs not installed
+            try:
+                from duckduckgo_search import DDGS
+
+                results = []
+                with DDGS() as ddgs:
+                    for r in ddgs.text(query, max_results=self.max_results):
+                        results.append(
+                            SearchResult(
+                                title=r.get("title", ""),
+                                url=r.get("href", ""),
+                                snippet=r.get("body", ""),
+                            )
+                        )
+                logger.info(f"Web search found {len(results)} results for: {query[:50]}...")
+                return results
+            except Exception as e:
+                logger.error(f"Web search error (fallback): {e}")
+                return []
 
         except Exception as e:
             logger.error(f"Web search error: {e}")

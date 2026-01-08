@@ -283,17 +283,38 @@ class ScoratisAgent:
                 }
 
             # Clean messages - convert LangChain objects to dicts
+            # IMPORTANT: Preserve tool_calls and tool_call_id for Groq/OpenAI compatibility
             messages = []
             for msg in raw_messages:
                 if isinstance(msg, dict):
-                    messages.append({
-                        "role": msg.get("role", "user"),
+                    role = msg.get("role", "user")
+                    cleaned_msg = {
+                        "role": role,
                         "content": msg.get("content", "")
-                    })
+                    }
+                    # Preserve tool_calls for assistant messages (required by Groq)
+                    if role == "assistant" and "tool_calls" in msg:
+                        cleaned_msg["tool_calls"] = msg["tool_calls"]
+                    # Preserve tool_call_id and name for tool response messages (required by Groq)
+                    if role == "tool":
+                        if "tool_call_id" in msg:
+                            cleaned_msg["tool_call_id"] = msg["tool_call_id"]
+                        if "name" in msg:
+                            cleaned_msg["name"] = msg["name"]
+                    messages.append(cleaned_msg)
                 elif hasattr(msg, "content") and hasattr(msg, "type"):
                     # LangChain message object
                     role = "user" if msg.type == "human" else "assistant" if msg.type == "ai" else msg.type
-                    messages.append({"role": role, "content": msg.content})
+                    cleaned_msg = {"role": role, "content": msg.content}
+                    # Check for tool_calls on LangChain AI messages
+                    if hasattr(msg, "tool_calls") and msg.tool_calls:
+                        cleaned_msg["tool_calls"] = msg.tool_calls
+                    # Check for tool_call_id on LangChain tool messages
+                    if hasattr(msg, "tool_call_id") and msg.tool_call_id:
+                        cleaned_msg["tool_call_id"] = msg.tool_call_id
+                    if hasattr(msg, "name") and msg.name:
+                        cleaned_msg["name"] = msg.name
+                    messages.append(cleaned_msg)
                 else:
                     messages.append({"role": "user", "content": str(msg)})
 
