@@ -117,7 +117,7 @@ class LiteLLMService:
         """
         prefix_map = {
             # Local providers
-            ProviderType.OLLAMA: "ollama/",
+            ProviderType.OLLAMA: "ollama_chat/",
             ProviderType.LMSTUDIO: "openai/",
             ProviderType.LOCALAI: "openai/",
             ProviderType.TEXTGENWEBUI: "openai/",

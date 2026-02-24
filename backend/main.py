@@ -1908,10 +1908,50 @@ async def update_conversation(conversation_id: int, data: ConversationUpdate):
 
 @app.delete("/chat/conversation/{conversation_id}")
 async def delete_conversation(conversation_id: int, data: DeleteConversation = None):
-    """Delete a conversation"""
+    """Delete a conversation (soft delete to trash)"""
     permanent = data.permanent if data else False
     await db.delete_conversation(conversation_id, permanent=permanent)
     return {"message": "Conversation deleted" if permanent else "Moved to trash"}
+
+
+# ==================== TRASH ENDPOINTS ====================
+
+@app.get("/chat/trash")
+async def get_trash():
+    """Get all soft-deleted (trashed) conversations"""
+    try:
+        conversations = await db.get_trashed_conversations()
+        return {"conversations": conversations}
+    except Exception as e:
+        logger.error(f"Failed to get trash: {e}")
+        return {"conversations": []}
+
+
+@app.post("/chat/conversation/{conversation_id}/restore")
+async def restore_conversation(conversation_id: int):
+    """Restore a conversation from trash"""
+    try:
+        success = await db.restore_conversation(conversation_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Conversation not found in trash")
+        return {"message": "Conversation restored successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to restore conversation: {e}")
+        raise HTTPException(status_code=500, detail="Failed to restore conversation")
+
+
+@app.post("/chat/trash/empty")
+async def empty_trash():
+    """Permanently delete all trashed conversations"""
+    try:
+        count = await db.empty_trash()
+        return {"message": f"Permanently deleted {count} conversations", "deleted_count": count}
+    except Exception as e:
+        logger.error(f"Failed to empty trash: {e}")
+        raise HTTPException(status_code=500, detail="Failed to empty trash")
+
 
 # RAG Search endpoint for debugging/testing
 @app.get("/rag/search")

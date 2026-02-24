@@ -69,7 +69,8 @@ RECOMMENDED_MODELS = {
         {"id": "qwen2.5:14b", "name": "Qwen 2.5 14B", "description": "Excellent reasoning", "size": "14B", "vram": "~11GB", "recommended": True},
     ],
     "24GB+": [
-        {"id": "qwen2.5:32b", "name": "Qwen 2.5 32B", "description": "Excellent all-around", "size": "32B", "vram": "~20GB", "recommended": True},
+        {"id": "gpt-oss:20b", "name": "GPT-OSS 20B", "description": "OpenAI's open MoE model, fast reasoning", "size": "20B", "vram": "~12GB", "recommended": True},
+        {"id": "qwen2.5:32b", "name": "Qwen 2.5 32B", "description": "Excellent all-around", "size": "32B", "vram": "~20GB"},
         {"id": "deepseek-coder:33b", "name": "DeepSeek Coder 33B", "description": "Best open coder", "size": "33B", "vram": "~22GB"},
     ]
 }
@@ -77,6 +78,7 @@ RECOMMENDED_MODELS = {
 # All available Ollama models
 AVAILABLE_MODELS = {
     LLMProvider.OLLAMA: [
+        {"id": "gpt-oss:20b", "name": "GPT-OSS 20B", "description": "OpenAI's open MoE model, fast reasoning", "size": "20B", "category": "general"},
         {"id": "llama3.2", "name": "Llama 3.2 3B", "description": "Latest Llama, fast & efficient", "size": "3B", "category": "general"},
         {"id": "llama3.2:1b", "name": "Llama 3.2 1B", "description": "Ultra lightweight", "size": "1B", "category": "general"},
         {"id": "llama3.1", "name": "Llama 3.1 8B", "description": "Excellent all-around", "size": "8B", "category": "general"},

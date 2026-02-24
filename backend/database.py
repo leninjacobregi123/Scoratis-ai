@@ -523,7 +523,7 @@ class DatabaseManager:
             return messages
 
     async def get_conversations(self, user_id: int = 1, limit: int = 50) -> List[Dict]:
-        """Get all conversations for sidebar display"""
+        """Get all conversations for sidebar display (excludes trashed)"""
         async with self.get_session() as session:
             stmt = (
                 select(
@@ -531,7 +531,10 @@ class DatabaseManager:
                     func.count(ChatMessage.id).label("message_count"),
                 )
                 .outerjoin(ChatMessage)
-                .where(Conversation.user_id == user_id)
+                .where(
+                    Conversation.user_id == user_id,
+                    or_(Conversation.is_deleted == False, Conversation.is_deleted == None),
+                )
                 .group_by(Conversation.id)
                 .having(func.count(ChatMessage.id) > 0)
                 .order_by(Conversation.updated_at.desc())
@@ -569,7 +572,7 @@ class DatabaseManager:
     async def delete_conversation(
         self, conversation_id: int, user_id: int = 1, permanent: bool = False
     ) -> bool:
-        """Delete a conversation"""
+        """Delete a conversation (soft delete to trash, or permanent)"""
         async with self.get_session() as session:
             conv = await session.get(Conversation, conversation_id)
             if not conv or conv.user_id != user_id:
@@ -578,14 +581,64 @@ class DatabaseManager:
             if permanent:
                 await session.delete(conv)
             else:
-                # Soft delete by removing messages
-                await session.execute(
-                    text("DELETE FROM chat_messages WHERE conversation_id = :cid"),
-                    {"cid": conversation_id},
-                )
-                await session.delete(conv)
+                # Soft delete - move to trash
+                conv.is_deleted = True
+                conv.deleted_at = func.now()
 
             return True
+
+    async def get_trashed_conversations(self, user_id: int = 1) -> List[Dict]:
+        """Get all soft-deleted conversations"""
+        async with self.get_session() as session:
+            stmt = (
+                select(Conversation)
+                .where(
+                    Conversation.user_id == user_id,
+                    Conversation.is_deleted == True,
+                )
+                .order_by(Conversation.deleted_at.desc())
+            )
+            result = await session.execute(stmt)
+            conversations = result.scalars().all()
+
+            return [
+                {
+                    "id": conv.id,
+                    "session_id": conv.session_id,
+                    "title": conv.title or "Untitled",
+                    "subject": conv.subject,
+                    "created_at": str(conv.created_at) if conv.created_at else None,
+                    "deleted_at": str(conv.deleted_at) if conv.deleted_at else None,
+                }
+                for conv in conversations
+            ]
+
+    async def restore_conversation(self, conversation_id: int, user_id: int = 1) -> bool:
+        """Restore a conversation from trash"""
+        async with self.get_session() as session:
+            conv = await session.get(Conversation, conversation_id)
+            if not conv or conv.user_id != user_id or not conv.is_deleted:
+                return False
+
+            conv.is_deleted = False
+            conv.deleted_at = None
+            return True
+
+    async def empty_trash(self, user_id: int = 1) -> int:
+        """Permanently delete all trashed conversations"""
+        async with self.get_session() as session:
+            stmt = select(Conversation).where(
+                Conversation.user_id == user_id,
+                Conversation.is_deleted == True,
+            )
+            result = await session.execute(stmt)
+            conversations = result.scalars().all()
+
+            count = len(conversations)
+            for conv in conversations:
+                await session.delete(conv)
+
+            return count
 
     async def clear_conversation(self, session_id: str, user_id: int = 1) -> bool:
         """Clear/delete a conversation and all its messages"""

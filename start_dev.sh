@@ -95,12 +95,25 @@ echo -e "  Redis:      localhost:6379"
 echo ""
 echo -e "  ${YELLOW}Press Ctrl+C to stop all servers${NC}"
 echo ""
+echo -e "${YELLOW}Opening Chrome with NVIDIA GPU acceleration...${NC}"
+sleep 1
+
+# Launch Chrome with NVIDIA GPU for optimal 3D performance
+export __NV_PRIME_RENDER_OFFLOAD=1
+export __GLX_VENDOR_LIBRARY_NAME=nvidia
+export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
+google-chrome --use-gl=desktop --enable-gpu-rasterization --enable-zero-copy --ignore-gpu-blocklist --disable-gpu-driver-bug-workarounds http://localhost:5173 > /dev/null 2>&1 &
+CHROME_PID=$!
+
+echo -e "${GREEN}Chrome launched with RTX 5090 GPU acceleration!${NC}"
+echo ""
 
 # Cleanup on exit
 cleanup() {
     echo -e "\n${BLUE}Stopping servers...${NC}"
     kill $BACKEND_PID 2>/dev/null || true
     kill $FRONTEND_PID 2>/dev/null || true
+    kill $CHROME_PID 2>/dev/null || true
     echo -e "${GREEN}Servers stopped. Docker services still running.${NC}"
     exit 0
 }

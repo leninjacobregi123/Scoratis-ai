@@ -72,7 +72,7 @@ class Settings(BaseSettings):
 
     # Default LLM Settings
     DEFAULT_LLM_PROVIDER: str = "ollama"
-    DEFAULT_LLM_MODEL: str = "llama3.2"
+    DEFAULT_LLM_MODEL: str = "gpt-oss:20b"
 
     # Encryption (REQUIRED for production - generate secure values!)
     SCORATIS_ENCRYPTION_KEY: str = "scoratis-default-dev-key-change-in-production-32chars"

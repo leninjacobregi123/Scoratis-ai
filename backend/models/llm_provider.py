@@ -105,7 +105,7 @@ PROVIDER_INFO = {
         "requires_api_key": False,
         "is_local": True,
         "default_base_url": "http://localhost:11434",
-        "models": ["llama3.2", "llama3.1", "mistral", "qwen2.5", "codellama", "phi3", "gemma2"],
+        "models": ["gpt-oss:20b", "llama3.2", "llama3.1", "mistral", "qwen2.5", "codellama", "phi3", "gemma2"],
     },
     ProviderType.LMSTUDIO: {
         "display_name": "LM Studio",

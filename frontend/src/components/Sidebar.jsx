@@ -1,6 +1,5 @@
-import { Home, MessageCircle, Search, GalleryHorizontalEnd, Settings } from 'lucide-react';
+import { Home, MessageCircle, Search, GalleryHorizontalEnd, Settings, Lightbulb } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import SocratesLogo from '../3d/SocratesLogo';
 
 const navItems = [
   { id: 'home', label: 'Home', icon: Home, path: '/app/home' },
@@ -17,7 +16,9 @@ export default function Sidebar({ stats, showGalleryLink = false }) {
     <aside className="w-72 flex-shrink-0 flex flex-col p-5 bg-bg-secondary border-r border-border-color">
       {/* Logo */}
       <div className="flex items-center space-x-3 mb-8">
-        <SocratesLogo size={48} />
+        <div className="w-12 h-12 rounded-full bg-accent-olive flex items-center justify-center">
+          <Lightbulb className="w-6 h-6 text-white" />
+        </div>
         <span className="text-xl font-light text-text-primary" style={{ fontFamily: 'Georgia, serif' }}>Scoratis</span>
       </div>
 

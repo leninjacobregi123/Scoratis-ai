@@ -4,16 +4,13 @@ import {
   ArrowUp, MessageSquare, Plus, PanelLeftClose, PanelLeft,
   MoreVertical, Trash2, Edit2, Check, X,
   Play, Loader2, Download, Film, Pause, Volume2, VolumeX, Mic, MicOff, FileText,
-  Globe, Brain
+  Globe, Brain, Lightbulb
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
-import SocratesLogo from '../3d/SocratesLogo';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import SubjectBackground from '../components/SubjectBackground';
 import LLMSwitcher from '../components/LLMSwitcher';
-import { getSubjectTheme, DEFAULT_THEME, getSubjectImage, getSubjectTutor, isDarkTheme, getStandardizedThemeClasses } from '../config/subjectThemes';
 import { parseCitations, buildSourceMap, hasCitations } from '../utils/citations';
 import { CitationNumber, CitationPopup, CitationList, SourcesBadge, FootnotesSection } from '../components/Citation';
 import AgenticWorkflow, { useAgenticWorkflow } from '../components/AgenticWorkflow';
@@ -25,6 +22,56 @@ import ClarificationRequest from '../components/ClarificationRequest';
 import ManimAnimationCard from '../components/ManimAnimationCard';
 import { LinkPreviewCard, LinkPreviewGrid } from '../components/LinkPreviewCard';
 import { InlineImage, ImageGallery } from '../components/InlineImage';
+
+// UNIFIED SCORATIS THEME - Athenian/Socratic Design
+const SCORATIS_THEME = {
+  classes: {
+    pageBg: 'bg-gradient-to-br from-bg-primary via-bg-secondary to-bg-tertiary',
+    headerBg: 'bg-bg-card/80 backdrop-blur-sm',
+    headerText: 'text-text-primary',
+    userMsgBg: 'bg-accent-olive/10',
+    userMsgBorder: 'border-accent-olive/30',
+    userMsgText: 'text-text-primary',
+    aiMsgBg: 'bg-bg-card',
+    aiMsgAccent: 'text-accent-olive',
+    aiMsgBorder: 'border-border-color',
+    inputBg: 'bg-bg-card',
+    inputBorder: 'border-border-color',
+    inputFocus: 'focus-within:border-accent-olive focus-within:ring-2 focus-within:ring-accent-olive/20',
+    inputText: 'text-text-primary',
+    inputPlaceholder: 'placeholder-text-muted',
+    sendBtn: 'bg-accent-olive hover:bg-accent-olive-dark text-white',
+    sidebarBg: 'bg-bg-secondary',
+    sidebarBorder: 'border-border-color',
+    sidebarText: 'text-text-primary',
+    sidebarTextMuted: 'text-text-muted',
+    activeItem: 'bg-accent-olive/10 border-l-2 border-accent-olive',
+    hoverItem: 'hover:bg-bg-tertiary',
+    accent: 'text-accent-olive',
+    accentBg: 'bg-accent-olive',
+    accentHover: 'hover:bg-accent-olive-dark',
+    accentLight: 'bg-accent-olive/10',
+    codeBlockBg: 'bg-bg-tertiary',
+    blockquoteBorder: 'border-l-4 border-accent-olive',
+    scrollbarTrack: 'scrollbar-track-bg-tertiary',
+    scrollbarThumb: 'scrollbar-thumb-accent-olive',
+    welcomeBg: 'bg-bg-card',
+    welcomeBorder: 'border-border-color',
+    optionPillBg: 'bg-bg-card',
+    optionPillBorder: 'border-border-color',
+    optionPillActive: 'bg-accent-olive/20 border-accent-olive',
+    // Standardized for components
+    bgPrimary: 'bg-accent-olive',
+    bgSecondary: 'bg-bg-card',
+    bgTertiary: 'bg-bg-tertiary',
+    text: 'text-text-primary',
+    textPrimary: 'text-accent-olive',
+    textMuted: 'text-text-muted',
+    textOnPrimary: 'text-white',
+    border: 'border-border-color',
+    borderLight: 'border-border-color',
+  }
+};
 
 // ============== UI COMPONENTS ==============
 
@@ -380,14 +427,12 @@ function MessageCard({
   const [activeCitation, setActiveCitation] = useState(null);
   const [showSourcesList, setShowSourcesList] = useState(false);
 
-  // Get tutor info for this subject
-  const tutor = useMemo(() => getSubjectTutor(subjectId), [subjectId]);
+  // Unified Scoratis assistant
+  const assistantName = "Scoratis AI";
+  const tutor = { name: "Scoratis AI", title: "Socratic Learning Assistant" };
 
   // Get theme classes (use defaults if no theme provided)
-  const t = theme || DEFAULT_THEME;
-
-  // Get avatar image for AI responses (use tutor portrait)
-  const avatarImage = tutor?.portrait || getSubjectImage(subjectId, 'avatar');
+  const t = theme || SCORATIS_THEME;
 
   // Process content to hide pedagogical plan for AI messages
   const strippedContent = isUser ? message.content : stripPedagogicalPlan(message.content);
@@ -447,14 +492,9 @@ function MessageCard({
       <div className="max-w-3xl mx-auto">
         {/* Label with tutor avatar and timestamp */}
         <div className={`flex items-center gap-3 mb-4 ${isUser ? 'justify-end' : ''}`}>
-          {!isUser && avatarImage && (
-            <div className="w-10 h-10 rounded-full overflow-hidden border-2 border-gray-300 shadow-md flex-shrink-0">
-              <img
-                src={avatarImage}
-                alt={tutor?.name || 'Scoratis'}
-                className="w-full h-full object-cover"
-                onError={(e) => { e.target.style.display = 'none'; }}
-              />
+          {!isUser && (
+            <div className="w-10 h-10 rounded-full overflow-hidden border-2 border-accent-olive/30 shadow-md flex-shrink-0 bg-accent-olive flex items-center justify-center">
+              <Lightbulb className="w-5 h-5 text-white" />
             </div>
           )}
           <div className={`flex flex-col ${isUser ? 'items-end' : ''}`}>
@@ -891,21 +931,11 @@ export default function Chat() {
   const videoPollingRefs = useRef({}); // Store polling intervals by taskId
   const api = useApi();
 
-  // Get theme based on current subject (with standardized classes for new components)
-  const theme = useMemo(() => {
-    const subjectId = currentSubject?.id || subjectFromUrl;
-    const baseTheme = getSubjectTheme(subjectId);
-    const standardizedClasses = getStandardizedThemeClasses(subjectId);
-    return {
-      ...baseTheme,
-      classes: standardizedClasses
-    };
-  }, [currentSubject, subjectFromUrl]);
+  // Use unified Scoratis theme (no more per-subject themes)
+  const theme = SCORATIS_THEME;
+  const isDark = false; // Scoratis theme is light
 
-  // Check if current theme is dark
-  const isDark = useMemo(() => isDarkTheme(currentSubject?.id || subjectFromUrl), [currentSubject, subjectFromUrl]);
-
-  // Load subject details from URL
+  // Load subject details from URL (keep for subject name display only)
   useEffect(() => {
     const loadSubject = async () => {
       if (subjectFromUrl) {
@@ -1294,7 +1324,7 @@ export default function Chat() {
   // Handle switching subject from guardrail suggestion
   const handleSwitchSubject = useCallback((suggestedSubject) => {
     // Navigate to the suggested subject channel
-    window.location.href = `/chat?subject=${suggestedSubject}&fresh=true`;
+    window.location.href = `/app/scoratis?subject=${suggestedSubject}&fresh=true`;
   }, []);
 
   // Fetch documents for canvas panel
@@ -1637,7 +1667,7 @@ export default function Chat() {
   };
 
   return (
-    <SubjectBackground subjectId={currentSubject?.id || subjectFromUrl}>
+    <div className={`flex h-screen overflow-hidden ${theme.classes.pageBg}`}>
       <div className="flex-1 flex relative overflow-hidden">
       {/* Conversations Sidebar - Collapsible */}
       <div className={`${sidebarOpen ? 'w-64' : 'w-0'} transition-all duration-300 ease-in-out overflow-hidden border-r ${theme.classes.sidebarBorder} ${theme.classes.sidebarBg} backdrop-blur-md flex flex-col`}>
@@ -1704,21 +1734,13 @@ export default function Chat() {
         >
           {/* Clear background image */}
           <div
-            className="absolute inset-0 overflow-hidden"
-            style={{
-              backgroundImage: `url(${getSubjectImage(currentSubject?.id || subjectFromUrl, 'header')})`,
-              backgroundSize: 'cover',
-              backgroundPosition: 'center',
-            }}
+            className="absolute inset-0 overflow-hidden bg-gradient-to-r from-accent-olive/20 via-accent-olive/10 to-transparent"
           />
           {/* Dark overlay for text readability */}
           <div className="absolute inset-0 overflow-hidden bg-gradient-to-r from-black/70 via-black/50 to-black/40" />
 
           {/* Header content - Left side */}
-          {(() => {
-            const headerTutor = getSubjectTutor(currentSubject?.id || subjectFromUrl);
-            return (
-              <div className="relative z-50 flex items-center gap-4">
+          <div className="relative z-50 flex items-center gap-4">
                 {/* Sidebar Toggle Button */}
                 {!sidebarOpen && (
                   <button
@@ -1729,25 +1751,17 @@ export default function Chat() {
                     <PanelLeft className="w-6 h-6" />
                   </button>
                 )}
-                {/* Tutor portrait - larger */}
-                <div className="w-16 h-16 rounded-full overflow-hidden border-3 border-white/70 shadow-xl flex-shrink-0">
-                  <img
-                    src={headerTutor?.portrait}
-                    alt={headerTutor?.name || 'Scoratis'}
-                    className="w-full h-full object-cover"
-                    onError={(e) => { e.target.style.display = 'none'; }}
-                  />
+                {/* Scoratis Icon */}
+                <div className="w-16 h-16 rounded-full border-3 border-white/70 shadow-xl flex-shrink-0 bg-accent-olive flex items-center justify-center">
+                  <Lightbulb className="w-8 h-8 text-white" />
                 </div>
                 <div className="flex flex-col">
                   <span className="font-semibold text-xl text-white drop-shadow-md">
-                    {headerTutor?.name || 'Scoratis'}
+                    Scoratis AI
                   </span>
                   <span className="text-sm text-white/90">
-                    {currentSubject ? `${currentSubject.icon} ${currentSubject.name}` : headerTutor?.title || 'Socratic Tutor'}
+                    {currentSubject ? `${currentSubject.icon} ${currentSubject.name}` : 'Socratic Learning'}
                   </span>
-                  {headerTutor?.title && currentSubject && (
-                    <span className="text-xs text-white/70 mt-0.5">{headerTutor.title}</span>
-                  )}
                 </div>
 
                 {/* LLM Model Switcher - Left side */}
@@ -1762,8 +1776,6 @@ export default function Chat() {
                   />
                 </div>
               </div>
-            );
-          })()}
 
           {/* Right side - Loading indicator and Canvas toggle */}
           <div className="relative z-10 flex items-center gap-3">
@@ -1827,7 +1839,7 @@ export default function Chat() {
 
         {/* Welcome screen - Theme-aware centered design with tutor portrait */}
         {messages.length <= 1 && (() => {
-          const welcomeTutor = getSubjectTutor(currentSubject?.id || subjectFromUrl);
+          const welcomeTutor = {name: "Scoratis AI", title: "Socratic Learning Assistant"};
           return (
             <div className="flex-1 flex items-center justify-center p-8 -mt-20">
               <div className="text-center max-w-lg">
@@ -1836,8 +1848,8 @@ export default function Chat() {
                   <div className="relative">
                     <div className={`w-36 h-36 rounded-full overflow-hidden shadow-2xl border-4 ring-4 ${isDark ? 'border-white/30 ring-white/10' : 'border-white/90 ring-gray-200'}`}>
                       <img
-                        src={welcomeTutor?.portrait || getSubjectImage(currentSubject?.id, 'avatar')}
-                        alt={welcomeTutor?.name || 'Scoratis'}
+                        src={null}
+                        alt={"Scoratis AI" || 'Scoratis'}
                         className="w-full h-full object-cover"
                         onError={(e) => { e.target.style.display = 'none'; }}
                       />
@@ -1853,16 +1865,11 @@ export default function Chat() {
                 {/* Tutor name and title */}
                 <h2 className={`text-2xl font-medium mb-1 ${isDark ? 'text-white' : 'text-text-primary'}`}
                     style={{ fontFamily: 'Georgia, serif' }}>
-                  {welcomeTutor?.name || 'Scoratis'}
+                  {"Scoratis AI" || 'Scoratis'}
                 </h2>
-                <p className={`text-sm font-medium mb-1 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-                  {welcomeTutor?.title || 'Your Socratic Tutor'}
+                <p className={`text-sm font-medium mb-4 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
+                  {"Socratic Learning Assistant" || 'Your Socratic Tutor'}
                 </p>
-                {welcomeTutor?.years && (
-                  <p className={`text-xs mb-4 ${isDark ? 'text-gray-400' : 'text-text-muted/70'}`}>
-                    {welcomeTutor.years}
-                  </p>
-                )}
 
                 {/* Subject name */}
                 <h1 className={`text-xl font-light mb-2 ${isDark ? 'text-white' : 'text-text-primary'}`}
@@ -1872,7 +1879,7 @@ export default function Chat() {
 
                 {/* Tutor quote */}
                 <p className={`text-base mb-8 italic px-4 ${isDark ? 'text-gray-300' : 'text-text-muted'}`}>
-                  {welcomeTutor?.quote || '"The unexamined life is not worth living."'}
+                  {"The unexamined life is not worth living." || '"The unexamined life is not worth living."'}
                 </p>
 
                 <div className="space-y-3">
@@ -2028,7 +2035,7 @@ export default function Chat() {
                         sendMessage();
                       }
                     }}
-                    placeholder={currentSubject ? `Ask ${getSubjectTutor(currentSubject.id)?.name || 'Scoratis'} about ${currentSubject.name}...` : 'Ask a question...'}
+                    placeholder={currentSubject ? `Ask Scoratis about ${currentSubject.name}...` : 'Ask a question...'}
                     className={`w-full bg-transparent text-base leading-6 outline-none resize-none min-h-[24px] max-h-32
                       ${isDark ? 'text-white placeholder-gray-400' : 'text-gray-800 placeholder-gray-400'}`}
                     rows={1}
@@ -2081,7 +2088,7 @@ export default function Chat() {
 
             {/* Subtle hint text */}
             <p className={`text-center text-xs mt-2 ${isDark ? 'text-gray-400' : 'text-gray-400'}`}>
-              {currentSubject ? `Learning ${currentSubject.name} with ${getSubjectTutor(currentSubject.id)?.name || 'Scoratis'}` : 'Socratic learning powered by AI'}
+              {currentSubject ? `Learning ${currentSubject.name} with Scoratis` : 'Socratic learning powered by AI'}
             </p>
           </div>
         </div>
@@ -2102,6 +2109,6 @@ export default function Chat() {
         onOpenDocument={handleCitationClick}
       />
     </div>
-  </SubjectBackground>
+    </div>
   );
 }

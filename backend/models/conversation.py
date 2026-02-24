@@ -2,7 +2,7 @@
 Conversation Model
 """
 
-from sqlalchemy import Integer, String, Text, DateTime, ForeignKey, Index
+from sqlalchemy import Integer, String, Text, DateTime, Boolean, ForeignKey, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from typing import Optional, List, TYPE_CHECKING
@@ -37,6 +37,10 @@ class Conversation(Base):
 
     # Subject for topic isolation (physics, chemistry, biology, etc.)
     subject: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
+
+    # Soft delete support for trash functionality
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    deleted_at: Mapped[Optional[DateTime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     user: Mapped["User"] = relationship("User", back_populates="conversations")

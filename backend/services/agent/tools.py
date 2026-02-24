@@ -329,11 +329,17 @@ def create_web_search_tool(
             results = await web_search_service.search(query, max_results=max_results)
             results_count = len(results) if results else 0
 
+            # Convert dataclass objects to dicts for JSON serialization
+            serialized_results = [
+                {"title": r.title, "url": r.url, "snippet": r.snippet}
+                for r in (results or [])
+            ]
+
             result = {
                 "success": True,
                 "query": query,
                 "results_count": results_count,
-                "results": results or []
+                "results": serialized_results
             }
 
             # Add explicit NO_RESULTS message if empty

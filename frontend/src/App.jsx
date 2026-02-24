@@ -1,5 +1,5 @@
 import { BrowserRouter as Router, Routes, Route, Outlet } from 'react-router-dom';
-import Gallery from './pages/Gallery';
+import SubjectSelector from './pages/SubjectSelector';
 import Dashboard from './pages/Dashboard';
 import Home from './pages/Home';
 import Chat from './pages/Chat';
@@ -10,8 +10,8 @@ function App() {
   return (
     <Router>
       <Routes>
-        {/* 3D Gallery Landing Page */}
-        <Route path="/" element={<Gallery />} />
+        {/* Subject Selector Landing Page */}
+        <Route path="/" element={<SubjectSelector />} />
 
         {/* Main Scoratis Application with Nested Routes */}
         <Route path="/app" element={<Dashboard />}>

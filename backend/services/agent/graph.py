@@ -868,9 +868,11 @@ class ScoratisAgent:
 
             try:
                 # First check if we need tools
+                logger.info(f"[Agent Stream] Iteration {iteration}: checking for tools with {len(tool_schemas)} schemas")
                 check_response = await self._check_for_tools(
                     messages, system_prompt, tool_schemas
                 )
+                logger.info(f"[Agent Stream] Tool check response: content_len={len(check_response.get('content', ''))}, tool_calls={len(check_response.get('tool_calls', []))}, error={check_response.get('error')}")
 
                 if check_response.get("tool_calls"):
                     # Execute tools
@@ -924,6 +926,7 @@ class ScoratisAgent:
 
                 else:
                     # No tools, stream final response
+                    logger.info(f"[Agent Stream] No tools requested, streaming final response. Messages count: {len(messages)}")
                     async for chunk in self.llm_service.generate_stream(
                         messages=messages,
                         system_prompt=system_prompt
@@ -931,6 +934,7 @@ class ScoratisAgent:
                         full_response += chunk
                         yield {"type": "token", "content": chunk}
 
+                    logger.info(f"[Agent Stream] Final response length: {len(full_response)}")
                     break  # Done
 
             except Exception as e:

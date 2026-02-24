@@ -87,12 +87,13 @@ class WebSearchService:
 
         return query
 
-    async def search(self, query: str) -> List[SearchResult]:
+    async def search(self, query: str, max_results: int = None) -> List[SearchResult]:
         """
         Perform a web search using DuckDuckGo.
 
         Args:
             query: Search query string
+            max_results: Override max results (defaults to config setting)
 
         Returns:
             List of SearchResult objects
@@ -104,19 +105,20 @@ class WebSearchService:
         if not query or not query.strip():
             return []
 
+        effective_max = max_results or self.max_results
+
         try:
-            from duckduckgo_search import DDGS
+            from ddgs import DDGS
 
             results = []
-            with DDGS() as ddgs:
-                for r in ddgs.text(query, max_results=self.max_results):
-                    results.append(
-                        SearchResult(
-                            title=r.get("title", ""),
-                            url=r.get("href", ""),
-                            snippet=r.get("body", ""),
-                        )
+            for r in DDGS().text(query, max_results=effective_max):
+                results.append(
+                    SearchResult(
+                        title=r.get("title", ""),
+                        url=r.get("href", ""),
+                        snippet=r.get("body", ""),
                     )
+                )
 
             logger.info(f"Web search found {len(results)} results for: {query[:50]}...")
             return results
