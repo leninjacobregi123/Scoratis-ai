@@ -47,6 +47,11 @@ Scoratis is a next-generation educational platform that transforms learning thro
 - **Sub-Agent Delegation** - Research, Analysis, Summary, Expert, Fact-Check agents
 - **Response Verification** - Quality checking before delivery
 
+
+### Application workflow diagram 
+![workflow](https://github.com/user-attachments/assets/ef267da1-8644-47a4-8782-65c5be4ed6dd)
+
+
 ### Available Agent Tools
 | Tool | Description |
 |------|-------------|
