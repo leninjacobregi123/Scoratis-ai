@@ -11,16 +11,26 @@ name: CD - Deploy
 # that were never real - none of it had ever actually run, since it
 # triggered on `main`/version tags while this repo's default branch is
 # `master`. Replaced with what's actually deployed and verified working.
+#
+# Triggers off ci.yml's completion (workflow_run) rather than push directly -
+# a push that fails tests/lint/docker-build must not still reach the live VM.
+# workflow_dispatch bypasses this for deliberate manual deploys.
 
 on:
-  push:
+  workflow_run:
+    workflows: ["CI - Test & Lint"]
     branches: [master]
+    types: [completed]
   workflow_dispatch: {}
 
 jobs:
   deploy:
     name: Deploy to production VM
     runs-on: ubuntu-latest
+    # workflow_run fires on both success AND failure of CI - only deploy on
+    # success. workflow_dispatch has no workflow_run event, so it isn't
+    # gated (manual deploys are an explicit, deliberate override).
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     environment:
       name: production
       url: https://scoratis-app.centralindia.cloudapp.azure.com
@@ -28,6 +38,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up deploy SSH key
         run: |
