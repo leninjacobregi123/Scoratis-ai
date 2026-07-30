@@ -1,0 +1,8 @@
+# Scoratis reverse proxy - automatic HTTPS via Let's Encrypt.
+# DOMAIN comes from .env.production (e.g. scoratis.eastus.cloudapp.azure.com,
+# the free DNS label Azure assigns the VM's public IP - Caddy can't issue a
+# cert for a bare IP, so this must be a real hostname).
+
+{$DOMAIN} {
+    reverse_proxy frontend:8080
+}

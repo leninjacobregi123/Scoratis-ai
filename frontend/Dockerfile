@@ -28,5 +28,8 @@ ENV DNS_RESOLVER=127.0.0.11
 
 EXPOSE 8080
 
+# 127.0.0.1, not localhost - nginx's `listen 8080` only binds IPv4, but
+# /etc/hosts lists ::1 first, and busybox wget doesn't fall back to IPv4 on
+# an IPv6 connection refusal the way curl does - it just fails every check.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget -qO- http://localhost:8080/ || exit 1
+    CMD wget -qO- http://127.0.0.1:8080/ || exit 1

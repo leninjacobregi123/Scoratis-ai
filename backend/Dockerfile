@@ -60,11 +60,19 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 COPY . .
 
 RUN mkdir -p generated_videos uploads audio_cache
+RUN chmod +x docker-entrypoint.sh
 
 EXPOSE 8000
 
+# 127.0.0.1, not localhost - avoids a wasted IPv6 attempt-then-fallback on
+# every check (uvicorn --host 0.0.0.0 only binds IPv4); curl falls back to
+# IPv4 fine either way, unlike the frontend's busybox wget.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://127.0.0.1:8000/health || exit 1
+
+# docker-entrypoint.sh runs migrations (only when RUN_MIGRATIONS=true, set by
+# the `backend` service in docker-compose.prod.yml) before handing off to CMD.
+ENTRYPOINT ["./docker-entrypoint.sh"]
 
 # Default process is the API. The worker service (see fly.toml/docker-compose.prod.yml)
 # overrides this with: celery -A celery_app worker -Q default,ingestion,video --concurrency=2

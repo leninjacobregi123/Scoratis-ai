@@ -1,0 +1,133 @@
+# Scoratis - Production stack (single VM deploy)
+#
+# Brings up the entire application - Postgres, Redis, backend API, Celery
+# worker, frontend, and a TLS-terminating reverse proxy - with one command:
+#
+#   docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
+#
+# --env-file is required, not optional: each service's own `env_file:` below
+# only injects vars into that container's runtime environment - it does NOT
+# make them available for ${VAR} substitution in this compose file itself
+# (e.g. postgres's POSTGRES_PASSWORD below). Without --env-file on the
+# command line, POSTGRES_PASSWORD silently resolves to an empty string and
+# Postgres initializes with a blank password that won't match DATABASE_URL.
+#
+# Requires a real .env.production next to this file (copy .env.production.example
+# and fill in real secrets/keys - never commit the real one).
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: scoratis-postgres
+    environment:
+      POSTGRES_USER: scoratis
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: scoratis
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scoratis"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: scoratis-redis
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    container_name: scoratis-backend
+    env_file:
+      - .env.production
+    environment:
+      RUN_MIGRATIONS: "true"
+    volumes:
+      - generated_videos_data:/app/generated_videos
+      - uploads_data:/app/uploads
+      - audio_cache_data:/app/audio_cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+
+  worker:
+    build:
+      context: ./backend
+    container_name: scoratis-worker
+    command: ["celery", "-A", "celery_app", "worker", "-Q", "default,ingestion,video", "--concurrency=2"]
+    env_file:
+      - .env.production
+    volumes:
+      - generated_videos_data:/app/generated_videos
+      - uploads_data:/app/uploads
+      - audio_cache_data:/app/audio_cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    # The image's HEALTHCHECK (backend/Dockerfile) probes the FastAPI /health
+    # endpoint - this container only runs the Celery worker, nothing ever
+    # listens on 8000 here, so that probe would always fail and mark this
+    # container unhealthy forever. Disable it rather than inheriting it.
+    healthcheck:
+      disable: true
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: scoratis-frontend
+    env_file:
+      - .env.production
+    environment:
+      BACKEND_URL: http://backend:8000
+      DNS_RESOLVER: 127.0.0.11
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: scoratis-caddy
+    env_file:
+      - .env.production
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  generated_videos_data:
+  uploads_data:
+  audio_cache_data:
+  caddy_data:
+  caddy_config:

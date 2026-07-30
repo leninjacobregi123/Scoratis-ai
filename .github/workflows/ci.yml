@@ -2,9 +2,9 @@ name: CI - Test & Lint
 
 on:
   push:
-    branches: [main, socratis-v2, develop]
+    branches: [master, main, socratis-v2, develop]
   pull_request:
-    branches: [main, socratis-v2]
+    branches: [master, main, socratis-v2]
 
 env:
   PYTHON_VERSION: "3.11"
