@@ -139,9 +139,17 @@ class TestLiteLLMServiceGeneration:
     @pytest.mark.asyncio
     async def test_generate_returns_string(self, litellm_service, mock_litellm):
         """Test that generate returns a string response."""
+        from models import ProviderType
+
+        # Ollama doesn't require an API key - isolates this test to the
+        # acompletion-response-parsing logic being tested, rather than
+        # tripping the (correct, separate) "API key required" guard for
+        # cloud providers like the DEFAULT_LLM_PROVIDER=groq this would
+        # otherwise fall back to.
         result = await litellm_service.generate(
             messages=[{"role": "user", "content": "Hello"}],
-            system_prompt="You are helpful."
+            system_prompt="You are helpful.",
+            provider=ProviderType.OLLAMA,
         )
 
         assert isinstance(result, str)
@@ -150,6 +158,8 @@ class TestLiteLLMServiceGeneration:
     @pytest.mark.asyncio
     async def test_generate_with_tools_structure(self, litellm_service):
         """Test generate_with_tools returns proper structure."""
+        from models import ProviderType
+
         with patch("services.litellm_service.acompletion") as mock:
             mock.return_value = MagicMock(
                 choices=[MagicMock(
@@ -171,7 +181,8 @@ class TestLiteLLMServiceGeneration:
             result = await litellm_service.generate_with_tools(
                 messages=[{"role": "user", "content": "Search my notes"}],
                 system_prompt="You are helpful.",
-                tools=[{"type": "function", "function": {"name": "search"}}]
+                tools=[{"type": "function", "function": {"name": "search"}}],
+                provider=ProviderType.OLLAMA,
             )
 
             assert "content" in result
@@ -181,16 +192,24 @@ class TestLiteLLMServiceGeneration:
     @pytest.mark.asyncio
     async def test_generate_handles_error_gracefully(self, litellm_service):
         """Test that errors are handled gracefully."""
+        from models import ProviderType
+
         with patch("services.litellm_service.acompletion") as mock:
             mock.side_effect = Exception("API Error")
 
             with pytest.raises(Exception) as exc_info:
                 await litellm_service.generate(
                     messages=[{"role": "user", "content": "Hello"}],
-                    system_prompt="You are helpful."
+                    system_prompt="You are helpful.",
+                    provider=ProviderType.OLLAMA,
                 )
 
-            assert "LLM generation failed" in str(exc_info.value)
+            # _categorize_error's fallback branch for an unrecognized
+            # exception produces "Unexpected error: ..." - "LLM generation
+            # failed" never appears anywhere in the source, this was
+            # asserting on text that was never actually produced.
+            assert "Unexpected error" in str(exc_info.value)
+            assert "API Error" in str(exc_info.value)
 
 
 class TestLiteLLMServiceTestProvider:
@@ -222,7 +241,14 @@ class TestLiteLLMServiceTestProvider:
         """Test failed provider test."""
         from models import ProviderType
 
-        with patch.object(litellm_service, "generate", side_effect=Exception("Connection failed")):
+        # test_provider() calls self.validate_config(), not self.generate() -
+        # mocking generate() here was a no-op, this test was only "passing"
+        # because OPENAI's real validate_config() independently hit its own
+        # "API key required" branch, not because of anything this mock did.
+        with patch.object(
+            litellm_service, "validate_config",
+            return_value=(False, "Connection failed", None)
+        ):
             result = await litellm_service.test_provider(
                 provider=ProviderType.OPENAI,
                 model="gpt-4"

@@ -120,6 +120,29 @@ def mock_rag_service():
     service.hybrid_chunk_search = AsyncMock(return_value=[])
     service.search_journals = AsyncMock(return_value=[])
     service.search_conversations = AsyncMock(return_value=[])
+    # create_search_knowledge_base_tool() prefers enhanced_search() over
+    # get_context_with_citations() whenever hasattr(rag_service,
+    # 'enhanced_search') is true - which a plain MagicMock() always
+    # satisfies via attribute auto-vivification, regardless of whether this
+    # is actually mocked. Without an explicit AsyncMock here, that always
+    # takes the "enhanced" branch in tests and awaits an un-mocked
+    # auto-generated MagicMock, failing with "object MagicMock can't be
+    # used in 'await' expression" - not what any of these tests intended
+    # to exercise.
+    service.enhanced_search = AsyncMock(return_value={
+        "sources": [
+            {
+                "citation_number": 1,
+                "chunk_id": 1,
+                "document_title": "Test Document",
+                "content_preview": "This is test content...",
+                "source_type": "upload",
+                "rrf_score": 0.9,
+            }
+        ],
+        "search_info": {"reformulated_query": None, "reranked": True, "grouped": False},
+        "context_xml": "<context><chunk id='1'>Test content</chunk></context>",
+    })
     return service
 
 

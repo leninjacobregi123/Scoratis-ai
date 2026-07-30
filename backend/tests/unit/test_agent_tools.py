@@ -120,14 +120,18 @@ class TestSearchKnowledgeBaseTool:
         assert result["success"] is True
         assert "sources" in result
         assert "query" in result
-        mock_rag_service.get_context_with_citations.assert_called_once()
+        # create_search_knowledge_base_tool() prefers enhanced_search() over
+        # get_context_with_citations() whenever the rag_service has it (real
+        # RAGService always does) - that's the path a default call (use_enhanced
+        # defaults to True) actually takes, not the plain fallback.
+        mock_rag_service.enhanced_search.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_search_handles_error(self, mock_rag_service):
         """Test that search handles errors gracefully."""
         from services.agent.tools import create_search_knowledge_base_tool
 
-        mock_rag_service.get_context_with_citations.side_effect = Exception("DB Error")
+        mock_rag_service.enhanced_search.side_effect = Exception("DB Error")
         mock_db = AsyncMock()
 
         tool = create_search_knowledge_base_tool(mock_db, mock_rag_service, user_id=1)

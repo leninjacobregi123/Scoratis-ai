@@ -1,11 +1,15 @@
 """Manual/integration smoke test for the video generation pipeline.
 
-Requires a live backend on BASE_URL - not run as part of the default unit
-suite (mirrors test_ollama_gpu.py's skip-unless-integration gating). Actual
-Manim rendering is slow (minutes), so this is meant for a deliberate
-`pytest -m integration` pass against a running server, not CI.
+Requires a LIVE backend already running at BASE_URL, reachable over a real
+socket (plain httpx.Client, not FastAPI's in-process TestClient like
+test_ollama_gpu.py uses) - CI has no such server, and neither does a plain
+`pytest -m integration` run unless one was started first. Actual Manim
+rendering is slow (minutes) too, so this is opt-in only: set
+RUN_LIVE_VIDEO_TESTS=true after starting the app yourself, e.g.
+`RUN_LIVE_VIDEO_TESTS=true pytest tests/integration/test_video_generation.py -m integration`.
 """
 
+import os
 import time
 
 import httpx
@@ -14,7 +18,13 @@ import pytest
 BASE_URL = "http://localhost:8000"
 TIMEOUT = 300.0
 
-pytestmark = pytest.mark.integration
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        os.environ.get("RUN_LIVE_VIDEO_TESTS") != "true",
+        reason="Requires a live backend on localhost:8000 - opt in with RUN_LIVE_VIDEO_TESTS=true",
+    ),
+]
 
 
 class TestVideoGeneration:

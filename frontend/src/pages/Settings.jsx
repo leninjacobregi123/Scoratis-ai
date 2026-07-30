@@ -22,12 +22,18 @@ function LocalProviderCard({ provider, config, onSave, onTest, onDelete, isLoadi
   const isAvailable = isOllama ? ollamaStatus?.available : isConfigured
 
   const handleSave = async () => {
-    await onSave({
-      provider: provider.id,
-      name: provider.displayName,
-      base_url: baseUrl,
-      is_default: false,
-    })
+    setTestResult(null)
+    try {
+      await onSave({
+        provider: provider.id,
+        name: provider.displayName,
+        base_url: baseUrl,
+        is_default: false,
+      })
+      setTestResult({ success: true, message: 'Saved' })
+    } catch (error) {
+      setTestResult({ success: false, message: error.message })
+    }
   }
 
   const handleTest = async () => {
@@ -195,14 +201,20 @@ function CloudProviderCard({ provider, config, onSave, onTest, onDelete, isLoadi
   const isConfigured = config?.id
 
   const handleSave = async () => {
-    await onSave({
-      provider: provider.id,
-      name: provider.displayName,
-      api_key: apiKey || undefined,
-      base_url: baseUrl || undefined,
-      is_default: false,
-    })
-    setApiKey('')
+    setTestResult(null)
+    try {
+      await onSave({
+        provider: provider.id,
+        name: provider.displayName,
+        api_key: apiKey || undefined,
+        base_url: baseUrl || undefined,
+        is_default: false,
+      })
+      setApiKey('')
+      setTestResult({ success: true, message: 'API key saved' })
+    } catch (error) {
+      setTestResult({ success: false, message: error.message })
+    }
   }
 
   const handleTest = async () => {
@@ -390,6 +402,11 @@ export default function Settings() {
       await loadAll()
     } catch (error) {
       console.error('Failed to save provider:', error)
+      // Re-throw so the calling ProviderCard's handleSave can show the
+      // failure to the user - this used to be swallowed here entirely,
+      // so a failed save (e.g. a backend/DB error) looked identical to a
+      // successful one from the UI's perspective.
+      throw new Error(error.response?.data?.detail || error.message || 'Failed to save provider')
     } finally {
       setSaving(false)
     }
