@@ -56,6 +56,7 @@ from api_pkg.routes.progress import router as progress_router
 from api_pkg.routes.review import router as review_router
 from api_pkg.routes.transcripts import router as transcripts_router
 from api_pkg.routes.subjects import router as subjects_router
+from api_pkg.routes.health import router as health_router
 from services.video_job_service import start_video_job
 from services import progress_service, review_service
 
@@ -319,33 +320,7 @@ app.include_router(progress_router)
 app.include_router(review_router)
 app.include_router(transcripts_router)
 app.include_router(subjects_router)
-
-# ==================== HEALTH CHECK ====================
-
-@app.get("/health")
-async def health_check():
-    """Unauthenticated health check for PaaS/uptime probes - global counts only, no per-user data."""
-    stats = await db.get_user_stats()
-    return {
-        "status": "running",
-        "message": "Scoratis FastAPI is healthy",
-        "version": "3.0",
-        "database": "PostgreSQL + pgvector",
-        "features": ["RAG", "Web Search", "Embeddings"],
-        "stats": stats
-    }
-
-@app.get("/stats")
-async def get_stats(current_user: User = Depends(get_current_user)):
-    """Get statistics for the authenticated user"""
-    return await db.get_user_stats(user_id=current_user.id)
-
-
-@app.get("/migrations/status")
-async def get_migration_status():
-    """Get database migration status (Alembic)"""
-    return db.get_migration_status()
-
+app.include_router(health_router)
 
 # ==================== JOURNAL ENDPOINTS ====================
 
