@@ -30,8 +30,14 @@ from models.base import Base
 # Database Fixtures
 # =============================================================================
 
-# Test database URL (SQLite in-memory for speed)
-TEST_DATABASE_URL = "sqlite:///./test.db"
+# Test database URL - honors DATABASE_URL from the environment (ci.yml points
+# this at a real Postgres service container for integration tests) and only
+# falls back to SQLite when nothing is set. Several models use Postgres-only
+# JSONB columns, which SQLite's compiler cannot render at all - hardcoding
+# sqlite here unconditionally made any test touching table creation fail
+# with a CompileError, regardless of what DATABASE_URL the environment
+# actually provided.
+TEST_DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./test.db")
 
 
 @pytest.fixture(scope="session")
@@ -45,11 +51,18 @@ def event_loop():
 @pytest.fixture(scope="function")
 def sync_engine():
     """Create a synchronous test database engine."""
-    engine = create_engine(
-        TEST_DATABASE_URL,
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
+    # check_same_thread/StaticPool are SQLite-only concerns (a single shared
+    # in-memory connection); psycopg2 raises TypeError on an unrecognized
+    # check_same_thread connect_arg, so these can't be passed unconditionally
+    # once TEST_DATABASE_URL can point at a real Postgres service container.
+    if TEST_DATABASE_URL.startswith("sqlite"):
+        engine = create_engine(
+            TEST_DATABASE_URL,
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+    else:
+        engine = create_engine(TEST_DATABASE_URL)
     Base.metadata.create_all(bind=engine)
     yield engine
     Base.metadata.drop_all(bind=engine)
