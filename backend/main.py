@@ -27,7 +27,7 @@ from database import get_database, DatabaseManager
 from llm_service import llm_service, RECOMMENDED_MODELS
 from services.litellm_service import LLMGenerationError, LLMError
 from prompts import (
-    detect_video_potential, get_subject_prompt, get_available_subjects,
+    detect_video_potential, get_subject_prompt,
     SUBJECT_CHANNELS, CITATION_INSTRUCTIONS, RAG_CONTEXT_AWARENESS
 )
 from models import ProviderType, PROVIDER_INFO, LLMProviderConfig, Document, SourceType, DocumentStatus, User
@@ -55,6 +55,7 @@ from api_pkg.routes.quizzes import router as quizzes_router
 from api_pkg.routes.progress import router as progress_router
 from api_pkg.routes.review import router as review_router
 from api_pkg.routes.transcripts import router as transcripts_router
+from api_pkg.routes.subjects import router as subjects_router
 from services.video_job_service import start_video_job
 from services import progress_service, review_service
 
@@ -317,6 +318,7 @@ app.include_router(quizzes_router)
 app.include_router(progress_router)
 app.include_router(review_router)
 app.include_router(transcripts_router)
+app.include_router(subjects_router)
 
 # ==================== HEALTH CHECK ====================
 
@@ -908,27 +910,6 @@ async def get_all_available_models():
         "ollama_available": ollama_health.get("available", False)
     }
 
-
-# ==================== SUBJECT CHANNELS ENDPOINTS ====================
-
-@app.get("/subjects")
-async def get_subjects():
-    """Get available subject channels for the Gallery"""
-    subjects = get_available_subjects()
-    # Convert to list format for frontend
-    subjects_list = list(subjects.values())
-    return {
-        "subjects": subjects_list,
-        "total": len(subjects_list)
-    }
-
-@app.get("/subjects/{subject_id}")
-async def get_subject(subject_id: str):
-    """Get details for a specific subject"""
-    subjects = get_available_subjects()
-    if subject_id not in subjects:
-        raise HTTPException(status_code=404, detail=f"Subject '{subject_id}' not found")
-    return subjects[subject_id]
 
 # ==================== CHAT ENDPOINTS ====================
 
