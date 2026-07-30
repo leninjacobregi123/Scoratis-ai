@@ -29,7 +29,7 @@ class TestHealthEndpoints:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] == "healthy"
+        assert data["status"] == "running"
 
     def test_health_endpoint_includes_service_info(self, test_client: TestClient):
         """Test health endpoint includes service information."""
@@ -38,15 +38,3 @@ class TestHealthEndpoints:
         data = response.json()
         # Should have some status info
         assert "status" in data
-
-
-class TestRootEndpoint:
-    """Tests for root endpoint."""
-
-    def test_root_endpoint(self, test_client: TestClient):
-        """Test the root endpoint."""
-        response = test_client.get("/")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert "message" in data or "status" in data

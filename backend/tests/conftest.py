@@ -105,6 +105,32 @@ def test_client(db_session) -> Generator[TestClient, None, None]:
     with TestClient(app) as client:
         yield client
 
+    # app is a module-level singleton reused across every test - any
+    # dependency_overrides a test registered (e.g. bypassing auth) must not
+    # leak into the next test's client.
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture(scope="function")
+def db_user(db_session: Session):
+    """A real, committed User row - needed by any test whose request handler
+    does a DB write with a user_id foreign key (e.g. document upload); a
+    dependency-override auth bypass alone isn't enough there since the FK
+    constraint is enforced by Postgres, not by FastAPI's auth layer."""
+    from models import User
+
+    user = User(
+        username="test_upload_user",
+        email="test_upload_user@example.com",
+        hashed_password="not-a-real-hash",
+    )
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
+    yield user
+    db_session.delete(user)
+    db_session.commit()
+
 
 # =============================================================================
 # Mock Service Fixtures
