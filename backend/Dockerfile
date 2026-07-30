@@ -1,7 +1,7 @@
 # Scoratis Backend - serves both the FastAPI API and the Celery worker
 # (including real video rendering: Manim + ffmpeg + edge-tts) from one image.
 #
-# Supersedes docker-backup/Dockerfile.backend, which based itself on a
+# An earlier version of this Dockerfile (removed) based itself on a
 # CUDA/pytorch image. That GPU base is unnecessary here: Manim rendering,
 # ffmpeg muxing, and edge-tts narration are all CPU-only in this codebase -
 # GPU is only used for local Ollama/embeddings, which production doesn't use
