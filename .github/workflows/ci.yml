@@ -55,14 +55,33 @@ jobs:
           cache-dependency-path: backend/requirements.txt
 
       - name: Install system dependencies
+        # Mirrors backend/Dockerfile's apt-get install list - requirements.txt
+        # pulls in Manim (manimpango, etc.), which has no pre-built wheel and
+        # needs these dev headers/pkg-config packages to build from source.
+        # Previously only installed libmagic1, so `pip install -r
+        # requirements.txt` failed here on every run before tests ever got a
+        # chance to execute - the actual root cause of the reported CI
+        # failure, unrelated to the 6 test-code bugs fixed separately.
         run: |
           sudo apt-get update
-          sudo apt-get install -y libmagic1
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libcairo2-dev \
+            libpango1.0-dev \
+            libglib2.0-dev \
+            pkg-config \
+            gfortran \
+            libopenblas-dev \
+            liblapack-dev \
+            libmagic1 \
+            poppler-utils \
+            tesseract-ocr
 
       - name: Install Python dependencies
         working-directory: backend
         run: |
           python -m pip install --upgrade pip
+          pip install --timeout 120 --retries 10 torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements.txt
           pip install aiosqlite  # For test database
 
