@@ -33,12 +33,16 @@ class ChatMessage(BaseModel):
     use_documents: Optional[bool] = True
     provider: Optional[str] = None
     model: Optional[str] = None
+    mode: Optional[str] = None
+    mode_context: Optional[str] = None
 
 class DeleteConversation(BaseModel):
     permanent: Optional[bool] = False
 
 class ConversationUpdate(BaseModel):
     title: Optional[str] = None
+    mode: Optional[str] = None
+    mode_context: Optional[str] = None
 
 class LLMConfigUpdate(BaseModel):
     model: str
