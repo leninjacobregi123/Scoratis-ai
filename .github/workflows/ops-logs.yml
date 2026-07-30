@@ -1,0 +1,48 @@
+name: Ops - Fetch VM Logs
+
+# On-demand debugging helper: SSHes into the production VM and prints
+# recent container logs, without needing anyone to have their own SSH
+# access configured. Reuses the same deploy key/secrets as cd.yml.
+# Manual trigger only - never runs automatically.
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Compose service to tail (backend, worker, frontend, caddy, postgres, redis, or 'all')"
+        required: false
+        default: "backend"
+      lines:
+        description: "Number of log lines to fetch"
+        required: false
+        default: "300"
+
+jobs:
+  fetch-logs:
+    name: Fetch logs from production VM
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up deploy SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VM_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Container status
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
+            "sudo docker compose -f ~/scoratis-deploy/docker-compose.prod.yml ps"
+
+      - name: Tail logs
+        run: |
+          SERVICE="${{ github.event.inputs.service }}"
+          LINES="${{ github.event.inputs.lines }}"
+          if [ "$SERVICE" = "all" ]; then
+            SERVICE=""
+          fi
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
+            "sudo docker compose -f ~/scoratis-deploy/docker-compose.prod.yml logs --no-color --tail=$LINES $SERVICE"
