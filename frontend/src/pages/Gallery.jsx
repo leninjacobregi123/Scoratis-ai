@@ -1312,7 +1312,6 @@ const Gallery = () => {
 
     const characterLoader = new GLTFLoader();
 
-    console.log('Loading Mixamo character with animation...');
     setLoadingStatus('Loading character model...');
 
     // Load the optimized GLTF model (converted from FBX, 85% smaller)
@@ -1322,8 +1321,6 @@ const Gallery = () => {
         const model = gltf.scene;
         // Copy animations from gltf to model for compatibility
         model.animations = gltf.animations;
-        console.log('Mixamo model loaded!');
-        console.log('Animations:', gltf.animations.length);
         setLoadingStages(prev => ({ ...prev, characterModel: true }));
         setLoadingStatus('Character loaded');
 
@@ -1347,7 +1344,6 @@ const Gallery = () => {
             child.castShadow = true;
             child.receiveShadow = true;
             // Don't override materials - keep Mixamo's embedded textures/colors
-            console.log('Mesh:', child.name, 'Material:', child.material?.name || 'unnamed');
           }
         });
 
@@ -1356,12 +1352,10 @@ const Gallery = () => {
 
         // Setup smooth looping animation
         if (gltf.animations && gltf.animations.length > 0) {
-          console.log('Setting up animation:', gltf.animations[0].name);
           const mixer = new THREE.AnimationMixer(model);
           stateRef.current.mixer = mixer;
 
           const clip = gltf.animations[0];
-          console.log('Animation duration:', clip.duration, 'seconds');
 
           const walkAction = mixer.clipAction(clip);
 
@@ -1378,12 +1372,10 @@ const Gallery = () => {
         }
 
         setModelStatus('loaded');
-        console.log('Character ready!');
       },
       (progress) => {
         if (progress.total > 0) {
           const percent = Math.round((progress.loaded / progress.total) * 100);
-          console.log(`Loading FBX: ${percent}%`);
         }
       },
       (error) => {
@@ -2486,7 +2478,6 @@ const Gallery = () => {
     setLoadingStatus('Loading Socrates sculpture...');
     const gltfLoader = new GLTFLoader();
     gltfLoader.load('/models/socrates/socrates_optimized.glb', (gltf) => {
-      console.log('Socrates bust loaded!');
       setLoadingStages(prev => ({ ...prev, socratesModel: true }));
       setLoadingStatus('Socrates sculpture loaded');
       const model = gltf.scene;
@@ -2495,8 +2486,6 @@ const Gallery = () => {
       const box = new THREE.Box3().setFromObject(model);
       const size = box.getSize(new THREE.Vector3());
       const center = box.getCenter(new THREE.Vector3());
-
-      console.log('Socrates size:', size.x, size.y, size.z);
 
       // Scale to fit on pedestal (much bigger and more imposing)
       const targetHeight = 9;
@@ -2532,12 +2521,7 @@ const Gallery = () => {
       glowLight.position.set(0, 5, 2);
       socratesGroup.add(glowLight);
       stateRef.current.socratesGlow = glowLight;
-
-      console.log('Socrates sculpture ready!');
     }, (progress) => {
-      if (progress.total > 0) {
-        console.log('Loading Socrates:', Math.round((progress.loaded / progress.total) * 100) + '%');
-      }
     }, (error) => {
       console.error('Error loading Socrates:', error);
       // Still mark as loaded to not block the app
