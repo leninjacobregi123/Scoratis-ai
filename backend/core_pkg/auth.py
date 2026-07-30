@@ -4,10 +4,8 @@ FastAPI dependency-injection layer for "current user".
 
 This is the first place in the codebase using FastAPI's Depends() pattern.
 It intentionally builds on database.py's DatabaseManager (the real, working
-async session layer used throughout main.py) rather than
-database_pkg/session.py, which is dead scaffolding left over from an
-incomplete refactor (it references `self` outside any method and cannot
-run).
+async session layer used throughout main.py) rather than introducing a
+separate session layer.
 """
 import logging
 from datetime import datetime, timedelta, timezone
