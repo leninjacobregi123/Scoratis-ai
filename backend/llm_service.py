@@ -51,6 +51,44 @@ class LLMConfig:
     num_gpu: int = 99
 
 
+# Models optimized for different VRAM sizes (Ollama)
+RECOMMENDED_MODELS = {
+    "4GB": [
+        {"id": "llama3.2", "name": "Llama 3.2 3B", "description": "Best balance of speed & quality", "size": "3B", "vram": "~2.5GB", "recommended": True},
+        {"id": "llama3.2:1b", "name": "Llama 3.2 1B", "description": "Ultra fast, lightweight", "size": "1B", "vram": "~1GB"},
+        {"id": "phi3", "name": "Phi-3 Mini", "description": "Microsoft's efficient model", "size": "3.8B", "vram": "~3GB"},
+        {"id": "qwen2.5:3b", "name": "Qwen 2.5 3B", "description": "Good for reasoning", "size": "3B", "vram": "~2.5GB"},
+    ],
+    "8GB": [
+        {"id": "llama3.1", "name": "Llama 3.1 8B", "description": "Excellent all-around", "size": "8B", "vram": "~6GB", "recommended": True},
+        {"id": "mistral", "name": "Mistral 7B", "description": "Fast and capable", "size": "7B", "vram": "~5GB"},
+        {"id": "qwen2.5", "name": "Qwen 2.5 7B", "description": "Strong reasoning", "size": "7B", "vram": "~5GB"},
+    ],
+    "16GB": [
+        {"id": "llama3.1:13b", "name": "Llama 3.1 13B", "description": "High quality responses", "size": "13B", "vram": "~10GB"},
+        {"id": "qwen2.5:14b", "name": "Qwen 2.5 14B", "description": "Excellent reasoning", "size": "14B", "vram": "~11GB", "recommended": True},
+    ],
+    "24GB+": [
+        {"id": "qwen2.5:32b", "name": "Qwen 2.5 32B", "description": "Excellent all-around", "size": "32B", "vram": "~20GB", "recommended": True},
+        {"id": "deepseek-coder:33b", "name": "DeepSeek Coder 33B", "description": "Best open coder", "size": "33B", "vram": "~22GB"},
+    ]
+}
+
+# All available Ollama models
+AVAILABLE_MODELS = {
+    LLMProvider.OLLAMA: [
+        {"id": "llama3.2", "name": "Llama 3.2 3B", "description": "Latest Llama, fast & efficient", "size": "3B", "category": "general"},
+        {"id": "llama3.2:1b", "name": "Llama 3.2 1B", "description": "Ultra lightweight", "size": "1B", "category": "general"},
+        {"id": "llama3.1", "name": "Llama 3.1 8B", "description": "Excellent all-around", "size": "8B", "category": "general"},
+        {"id": "mistral", "name": "Mistral 7B", "description": "Fast and efficient", "size": "7B", "category": "general"},
+        {"id": "qwen2.5", "name": "Qwen 2.5 7B", "description": "Strong reasoning", "size": "7B", "category": "general"},
+        {"id": "phi3", "name": "Phi-3 Mini", "description": "Small but powerful", "size": "3.8B", "category": "general"},
+        {"id": "deepseek-coder", "name": "DeepSeek Coder", "description": "Excellent for code", "size": "6.7B", "category": "coding"},
+        {"id": "codellama", "name": "CodeLlama 7B", "description": "Meta's coding model", "size": "7B", "category": "coding"},
+    ],
+}
+
+
 class OllamaProvider:
     """Direct Ollama provider for backwards compatibility and pull operations"""
 
