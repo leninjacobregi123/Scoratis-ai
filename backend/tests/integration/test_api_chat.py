@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from unittest.mock import patch, AsyncMock, MagicMock
 import json
 
-from core_pkg.auth import get_current_user
+from core.auth import get_current_user
 
 # Mark all tests as integration tests
 # Skip if PostgreSQL is not available
@@ -59,7 +59,7 @@ class TestChatEndpoint:
     def test_chat_endpoint_with_message(self, test_client: TestClient, mock_llm_service):
         """Test chat with a valid message."""
         _override_auth(test_client)
-        with patch("api_pkg.routes.agent.get_agent") as mock_get_agent:
+        with patch("api.routes.agent.get_agent") as mock_get_agent:
             mock_agent = MagicMock()
             mock_agent.invoke = AsyncMock(return_value={
                 "response": "Test response",
@@ -86,7 +86,7 @@ class TestChatStreamEndpoint:
     def test_stream_endpoint_accepts_request(self, test_client: TestClient):
         """Test that stream endpoint accepts requests."""
         _override_auth(test_client)
-        with patch("api_pkg.routes.agent.get_agent") as mock_get_agent:
+        with patch("api.routes.agent.get_agent") as mock_get_agent:
             # Mock the agent's stream method
             async def mock_stream(*args, **kwargs):
                 yield {"type": "token", "content": "Test"}

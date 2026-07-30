@@ -39,7 +39,7 @@ class Conversation(Base):
     subject: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
 
     # Set when the user shares this conversation - grants unauthenticated
-    # read-only access via GET /shared/{token} (see api_pkg/routes/transcripts.py)
+    # read-only access via GET /shared/{token} (see api/routes/transcripts.py)
     share_token: Mapped[Optional[str]] = mapped_column(String(64), unique=True, nullable=True, index=True)
 
     # Learning intent for this session: 'exam_prep' (fast, direct answers) or

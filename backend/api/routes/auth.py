@@ -13,7 +13,7 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core_pkg.auth import (
+from core.auth import (
     create_access_token,
     create_refresh_token,
     decode_token,

@@ -2,7 +2,7 @@
 LLM configuration and provider-management routes.
 
 Uses database.get_database()'s singleton directly for db.get_session(),
-same pattern as api_pkg/routes/health.py/journals.py - see health.py's
+same pattern as api/routes/health.py/journals.py - see health.py's
 docstring for why.
 """
 import logging
@@ -10,8 +10,8 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, update
 
-from api_pkg.schemas import LLMConfigUpdate, LLMProviderCreate, LLMProviderUpdate, SessionModelUpdate
-from core_pkg.auth import get_current_user
+from api.schemas import LLMConfigUpdate, LLMProviderCreate, LLMProviderUpdate, SessionModelUpdate
+from core.auth import get_current_user
 from database import get_database
 from llm_service import llm_service, RECOMMENDED_MODELS
 from models import User, ProviderType, PROVIDER_INFO, LLMProviderConfig

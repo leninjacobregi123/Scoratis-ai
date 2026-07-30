@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core_pkg.auth import get_current_user, get_db
+from core.auth import get_current_user, get_db
 from models import User, VideoJob, VideoJobStatus
 from services.video_job_service import start_video_job
 from video_service import video_service
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/videos", tags=["videos"])
 
 # Lazy-loaded YouTube API client, self-contained singleton (mirrors the
-# get_database()/get_rag_service() etc. pattern elsewhere in api_pkg/routes/)
+# get_database()/get_rag_service() etc. pattern elsewhere in api/routes/)
 _youtube_client = None
 
 

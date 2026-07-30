@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from core_pkg.auth import get_current_user, get_db
+from core.auth import get_current_user, get_db
 from models import Quiz, QuizQuestion, User
 from services import quiz_service, progress_service, review_service
 

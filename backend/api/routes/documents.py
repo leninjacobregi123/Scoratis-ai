@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from sqlalchemy import select, func
 
 from config import settings
-from core_pkg.auth import get_current_user
+from core.auth import get_current_user
 from database import get_database
 from models import Document, SourceType, DocumentStatus, User
 from models.chunk import Chunk

@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from io import BytesIO
 from unittest.mock import patch, MagicMock
 
-from core_pkg.auth import get_current_user
+from core.auth import get_current_user
 
 # Mark all tests as integration tests
 # Skip if PostgreSQL is not available

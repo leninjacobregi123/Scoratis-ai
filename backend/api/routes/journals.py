@@ -4,14 +4,14 @@ into. Bundled together (not two separate files) since they're the same
 "notes management" feature area and each individually small.
 
 Uses database.get_database()'s singleton directly, same pattern as
-api_pkg/routes/health.py - see that file's docstring for why.
+api/routes/health.py - see that file's docstring for why.
 """
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from api_pkg.schemas import JournalCreate, JournalUpdate, FolderCreate, FolderUpdate
-from core_pkg.auth import get_current_user
+from api.schemas import JournalCreate, JournalUpdate, FolderCreate, FolderUpdate
+from core.auth import get_current_user
 from database import get_database
 from models import User
 

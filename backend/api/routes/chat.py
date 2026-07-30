@@ -29,10 +29,10 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from api_pkg.schemas import ChatMessage, DeleteConversation, ConversationUpdate
+from api.schemas import ChatMessage, DeleteConversation, ConversationUpdate
 from config import settings
 from conversation_analyzer import conversation_analyzer, VideoTrigger
-from core_pkg.auth import get_current_user
+from core.auth import get_current_user
 from coqui_tts_service import coqui_tts_service, TUTOR_VOICES
 from database import get_database
 from llm_service import llm_service

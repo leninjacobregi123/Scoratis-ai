@@ -3,7 +3,7 @@ import pytest
 from fastapi.testclient import TestClient
 import os
 
-from core_pkg.auth import get_current_user
+from core.auth import get_current_user
 
 # Requires a real Ollama server with a model loaded - not available in CI.
 # Opt in locally with RUN_LIVE_OLLAMA_TESTS=true (see test_video_generation.py

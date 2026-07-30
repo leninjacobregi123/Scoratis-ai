@@ -21,19 +21,19 @@ from services.video_analyzer_service import init_video_analyzer_service
 from services.agent import create_agent, ScoratisAgent
 from services.guardrail_service import get_guardrail_service, GuardrailService
 from config import settings
-from api_pkg.routes.auth import router as auth_router
-from api_pkg.routes.videos import router as videos_router
-from api_pkg.routes.quizzes import router as quizzes_router
-from api_pkg.routes.progress import router as progress_router
-from api_pkg.routes.review import router as review_router
-from api_pkg.routes.transcripts import router as transcripts_router
-from api_pkg.routes.subjects import router as subjects_router
-from api_pkg.routes.health import router as health_router
-from api_pkg.routes.journals import router as journals_router
-from api_pkg.routes.llm import router as llm_router
-from api_pkg.routes.chat import router as chat_router
-from api_pkg.routes.documents import router as documents_router
-from api_pkg.routes.agent import router as agent_router
+from api.routes.auth import router as auth_router
+from api.routes.videos import router as videos_router
+from api.routes.quizzes import router as quizzes_router
+from api.routes.progress import router as progress_router
+from api.routes.review import router as review_router
+from api.routes.transcripts import router as transcripts_router
+from api.routes.subjects import router as subjects_router
+from api.routes.health import router as health_router
+from api.routes.journals import router as journals_router
+from api.routes.llm import router as llm_router
+from api.routes.chat import router as chat_router
+from api.routes.documents import router as documents_router
+from api.routes.agent import router as agent_router
 
 load_dotenv()
 logger = logging.getLogger(__name__)

@@ -13,7 +13,7 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core_pkg.auth import get_current_user, get_db
+from core.auth import get_current_user, get_db
 from models import ChatMessage, Conversation, User
 from services.export_service import build_markdown_transcript, generate_share_token
 

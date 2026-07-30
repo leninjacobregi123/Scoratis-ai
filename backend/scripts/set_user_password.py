@@ -26,7 +26,7 @@ from sqlalchemy import create_engine, select, or_
 from sqlalchemy.orm import sessionmaker
 
 from config import settings
-from core_pkg.auth import hash_password
+from core.auth import hash_password
 from models import User
 
 

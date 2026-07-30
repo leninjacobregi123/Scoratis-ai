@@ -1,6 +1,6 @@
 """
 Agentic chat routes (/agent/*) - the multi-step-reasoning agent, as
-opposed to the plain/streaming chat in api_pkg/routes/chat.py.
+opposed to the plain/streaming chat in api/routes/chat.py.
 """
 import json
 import logging
@@ -10,9 +10,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 
-from api_pkg.routes.chat import chat_stream
-from api_pkg.schemas import ChatMessage
-from core_pkg.auth import get_current_user
+from api.routes.chat import chat_stream
+from api.schemas import ChatMessage
+from core.auth import get_current_user
 from database import get_database
 from models import User
 from services import get_rag_service, get_web_search_service

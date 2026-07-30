@@ -8,7 +8,7 @@ circular import back into main.
 """
 from fastapi import APIRouter, Depends
 
-from core_pkg.auth import get_current_user
+from core.auth import get_current_user
 from database import get_database
 from models import User
 
