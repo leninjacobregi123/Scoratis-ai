@@ -57,6 +57,7 @@ from api_pkg.routes.review import router as review_router
 from api_pkg.routes.transcripts import router as transcripts_router
 from api_pkg.routes.subjects import router as subjects_router
 from api_pkg.routes.health import router as health_router
+from api_pkg.routes.journals import router as journals_router
 from services.video_job_service import start_video_job
 from services import progress_service, review_service
 
@@ -86,28 +87,6 @@ async def _track_subject_progress(session_id: str, user_id: int, subject: str) -
         logger.warning(f"Progress/review tracking failed (continuing): {e}")
 
 # Pydantic Models
-class JournalCreate(BaseModel):
-    title: str
-    content: str
-    tags: Optional[List[str]] = []
-    folder_id: Optional[int] = None
-
-class JournalUpdate(BaseModel):
-    title: Optional[str] = None
-    content: Optional[str] = None
-    tags: Optional[List[str]] = None
-    folder_id: Optional[int] = None
-
-class FolderCreate(BaseModel):
-    name: str
-    description: Optional[str] = ""
-    color: Optional[str] = "#8A2BE2"
-
-class FolderUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    color: Optional[str] = None
-
 class ChatMessage(BaseModel):
     message: str
     session_id: Optional[str] = "default"
@@ -321,94 +300,7 @@ app.include_router(review_router)
 app.include_router(transcripts_router)
 app.include_router(subjects_router)
 app.include_router(health_router)
-
-# ==================== JOURNAL ENDPOINTS ====================
-
-@app.get("/journals")
-async def get_journals(
-    folder_id: Optional[int] = Query(None),
-    search: Optional[str] = Query(None),
-    current_user: User = Depends(get_current_user),
-):
-    """Get all journals with optional filtering"""
-    return await db.get_journals(user_id=current_user.id, folder_id=folder_id, search_query=search)
-
-@app.post("/journals", status_code=201)
-async def create_journal(journal: JournalCreate, current_user: User = Depends(get_current_user)):
-    """Create a new journal entry with embedding for RAG"""
-    if not journal.title.strip() or not journal.content.strip():
-        raise HTTPException(status_code=400, detail="Title and content are required")
-
-    journal_id = await db.create_journal(
-        title=journal.title.strip(),
-        content=journal.content.strip(),
-        user_id=current_user.id,
-        tags=journal.tags,
-        folder_id=journal.folder_id
-    )
-    return {"id": journal_id, "message": "Journal created successfully"}
-
-@app.put("/journals/{journal_id}")
-async def update_journal(journal_id: int, journal: JournalUpdate, current_user: User = Depends(get_current_user)):
-    """Update a journal entry (re-generates embedding)"""
-    success = await db.update_journal(
-        journal_id,
-        user_id=current_user.id,
-        title=journal.title,
-        content=journal.content,
-        tags=journal.tags,
-        folder_id=journal.folder_id
-    )
-    if not success:
-        raise HTTPException(status_code=400, detail="No changes made")
-    return {"message": "Journal updated successfully"}
-
-@app.delete("/journals/{journal_id}")
-async def delete_journal(journal_id: int, current_user: User = Depends(get_current_user)):
-    """Delete a journal entry"""
-    await db.delete_journal(journal_id, user_id=current_user.id)
-    return {"message": "Journal deleted successfully"}
-
-# ==================== FOLDER ENDPOINTS ====================
-
-@app.get("/folders")
-async def get_folders(current_user: User = Depends(get_current_user)):
-    """Get all folders"""
-    return await db.get_folders(user_id=current_user.id)
-
-@app.post("/folders", status_code=201)
-async def create_folder(folder: FolderCreate, current_user: User = Depends(get_current_user)):
-    """Create a new folder"""
-    if not folder.name.strip():
-        raise HTTPException(status_code=400, detail="Folder name is required")
-
-    folder_id = await db.create_folder(
-        name=folder.name.strip(),
-        user_id=current_user.id,
-        description=folder.description.strip() if folder.description else "",
-        color=folder.color
-    )
-    return {"id": folder_id, "message": "Folder created successfully"}
-
-@app.put("/folders/{folder_id}")
-async def update_folder(folder_id: int, folder: FolderUpdate, current_user: User = Depends(get_current_user)):
-    """Update a folder"""
-    success = await db.update_folder(
-        folder_id,
-        user_id=current_user.id,
-        name=folder.name,
-        description=folder.description,
-        color=folder.color
-    )
-    if not success:
-        raise HTTPException(status_code=400, detail="No changes made")
-    return {"message": "Folder updated successfully"}
-
-@app.delete("/folders/{folder_id}")
-async def delete_folder(folder_id: int, current_user: User = Depends(get_current_user)):
-    """Delete a folder"""
-    await db.delete_folder(folder_id, user_id=current_user.id)
-    return {"message": "Folder deleted successfully"}
+app.include_router(journals_router)
 
 # ==================== CHAT ENDPOINTS ====================
 

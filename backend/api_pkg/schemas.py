@@ -16,7 +16,7 @@ class JournalUpdate(BaseModel):
 class FolderCreate(BaseModel):
     name: str
     description: Optional[str] = ""
-    color: Optional[str] = "
+    color: Optional[str] = "#8A2BE2"
 
 class FolderUpdate(BaseModel):
     name: Optional[str] = None
