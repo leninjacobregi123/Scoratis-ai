@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import StaticPool
 
@@ -63,6 +63,17 @@ def sync_engine():
         )
     else:
         engine = create_engine(TEST_DATABASE_URL)
+        # Base.metadata.create_all() below creates tables directly from ORM
+        # metadata - it does not run Alembic migrations, so migration 001's
+        # `CREATE EXTENSION vector`/`pg_trgm` calls never happen here. A
+        # fresh Postgres service container (e.g. ci.yml's) has neither
+        # extension, and several models declare Vector(384) columns -
+        # without this, create_all() fails with "type vector does not
+        # exist" the moment it reaches the first such table.
+        with engine.connect() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+            conn.commit()
     Base.metadata.create_all(bind=engine)
     yield engine
     Base.metadata.drop_all(bind=engine)
