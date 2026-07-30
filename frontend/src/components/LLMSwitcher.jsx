@@ -8,8 +8,16 @@ import { useState, useEffect, useRef } from 'react';
 import { ChevronDown, Check, Settings, Loader2, Cpu, Cloud, Sparkles } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
+import { getAccessToken } from '../utils/auth';
 
+// Separate instance from useApi.js's shared one (this component predates it),
+// but still attaches the auth token so /llm/providers/configured works.
 const api = axios.create({ baseURL: '/api' });
+api.interceptors.request.use((config) => {
+  const token = getAccessToken();
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
 
 // Provider display names and icons
 const PROVIDER_META = {

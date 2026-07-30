@@ -147,6 +147,17 @@ class LiteLLMService:
 
         return self._env_keys.get(provider)
 
+    def has_api_key(
+        self,
+        provider: ProviderType,
+        encrypted_key: Optional[str] = None
+    ) -> bool:
+        """Whether a usable key exists for this provider, from DB or env - local
+        providers (Ollama etc.) don't need one and always return True."""
+        if provider in (ProviderType.OLLAMA, ProviderType.LMSTUDIO, ProviderType.LOCALAI, ProviderType.TEXTGENWEBUI):
+            return True
+        return bool(self._get_api_key(provider, encrypted_key))
+
     def _categorize_error(
         self,
         error: Exception,
@@ -269,7 +280,8 @@ class LiteLLMService:
         self,
         config: LiteLLMConfig,
         messages: List[Dict[str, Any]],
-        system_prompt: Optional[str] = None
+        system_prompt: Optional[str] = None,
+        disable_thinking: bool = False,
     ) -> Dict[str, Any]:
         """Prepare kwargs for LiteLLM completion call.
 
@@ -303,7 +315,16 @@ class LiteLLMService:
 
             api_messages.append(processed_msg)
 
-        model_string = self._get_model_string(config.provider, config.model)
+        # ollama_chat/ + think=False only for callers that opt in
+        # (disable_thinking=True, e.g. structured-JSON prompts like quiz
+        # generation). Left off by default so this doesn't change behavior
+        # for the main chat/tutoring path, which routes through "ollama/"
+        # (legacy /api/generate) and is unaffected by this flag.
+        use_ollama_chat = disable_thinking and config.provider == ProviderType.OLLAMA
+        if use_ollama_chat:
+            model_string = f"ollama_chat/{config.model}"
+        else:
+            model_string = self._get_model_string(config.provider, config.model)
 
         kwargs = {
             "model": model_string,
@@ -332,6 +353,8 @@ class LiteLLMService:
 
         if config.provider == ProviderType.OLLAMA:
             kwargs["api_base"] = config.base_url or settings.OLLAMA_BASE_URL
+            if use_ollama_chat:
+                kwargs["think"] = False
         elif config.provider in local_providers_with_openai_api:
             default_urls = {
                 ProviderType.LMSTUDIO: "http://localhost:1234/v1",
@@ -494,12 +517,20 @@ class LiteLLMService:
         max_tokens: int = 2048,
         temperature: float = 0.7,
         timeout: int = DEFAULT_TIMEOUT,
+        disable_thinking: bool = False,
     ) -> str:
         """
         Generate a non-streaming response from any supported provider.
 
         This method includes centralized error handling. All errors are
         categorized and re-raised with structured information.
+
+        Args:
+            disable_thinking: For Ollama, route through ollama_chat/ with
+                think=False instead of the default ollama/ provider. Only
+                opt in for prompts that need clean structured output (e.g.
+                JSON) - see _prepare_litellm_kwargs for why this isn't the
+                default for every caller.
 
         Raises:
             LLMGenerationError: On any LLM failure with structured error info
@@ -528,7 +559,7 @@ class LiteLLMService:
             timeout=timeout,
         )
 
-        kwargs = self._prepare_litellm_kwargs(config, messages, system_prompt)
+        kwargs = self._prepare_litellm_kwargs(config, messages, system_prompt, disable_thinking=disable_thinking)
 
         try:
             logger.info(f"LiteLLM generating with {provider.value}/{model}")

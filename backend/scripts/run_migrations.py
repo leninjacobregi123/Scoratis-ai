@@ -26,7 +26,7 @@ def run_alembic(*args):
     # Set database URL from environment or default
     database_url = os.getenv(
         "DATABASE_URL",
-        "postgresql://scoratis:scoratis_password@localhost:5433/scoratis"
+        "postgresql://scoratis:scoratis_password@localhost:5434/scoratis"
     )
 
     env = os.environ.copy()

@@ -251,12 +251,31 @@ class LLMService:
             return ProviderType(self.current_config.provider.value)
         return ProviderType.OLLAMA
 
+    def has_api_key(self) -> bool:
+        """Whether the currently configured provider has a usable key (DB or env)."""
+        encrypted_key = self.current_config.api_key_encrypted if self.current_config else None
+        return self.litellm.has_api_key(self._get_provider_type(), encrypted_key)
+
     # ==================== GENERATION METHODS ====================
     # These delegate to LiteLLMService and let exceptions propagate
 
-    async def generate(self, messages: List[Dict[str, str]], system_prompt: str) -> str:
+    async def generate(
+        self,
+        messages: List[Dict[str, str]],
+        system_prompt: str,
+        max_tokens: Optional[int] = None,
+        disable_thinking: bool = False,
+    ) -> str:
         """
         Generate a response using LiteLLM.
+
+        Args:
+            max_tokens: Override the configured provider's default token budget
+                for this call. Useful for structured-output prompts (JSON) where
+                a small local reasoning model can spend most of its budget
+                narrating before it reaches the actual answer.
+            disable_thinking: See LiteLLMService.generate - opt in only for
+                prompts that need clean structured output, not the main chat path.
 
         Raises:
             LLMGenerationError: On any LLM failure with structured error info
@@ -272,8 +291,9 @@ class LLMService:
             model=self.current_config.model,
             api_key_encrypted=self.current_config.api_key_encrypted,
             base_url=self.current_config.base_url,
-            max_tokens=self.current_config.max_tokens,
+            max_tokens=max_tokens or self.current_config.max_tokens,
             temperature=self.current_config.temperature,
+            disable_thinking=disable_thinking,
         )
 
     async def generate_stream(

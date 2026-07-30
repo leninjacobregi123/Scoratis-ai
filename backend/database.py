@@ -78,8 +78,11 @@ class DatabaseManager:
             logger.info("Using SQLAlchemy create_all for database initialization")
             Base.metadata.create_all(self.sync_engine)
 
-        # Create default user if not exists
-        self._ensure_default_user()
+        # NOTE: no longer auto-seeding a default user here now that real
+        # signup/login exists (see /auth/signup) - a hardcoded id=1 row
+        # bypasses the users_id_seq sequence and collides with the first
+        # real signup. See migration 002 for the one-time sequence repair
+        # on databases that already have this legacy row.
 
     def _run_alembic_migrations(self):
         """Run Alembic migrations to upgrade database schema."""
@@ -111,16 +114,6 @@ class DatabaseManager:
             logger.error(f"Alembic migration failed: {e}")
             logger.info("Falling back to SQLAlchemy create_all")
             Base.metadata.create_all(self.sync_engine)
-
-    def _ensure_default_user(self):
-        """Create default user if not exists."""
-        with self.SyncSession() as session:
-            user = session.get(User, 1)
-            if not user:
-                user = User(id=1, username="Lenin", email="lenin@scoratis.com")
-                session.add(user)
-                session.commit()
-                logger.info("Created default user")
 
     def get_migration_status(self) -> Dict[str, Any]:
         """Get current migration status."""
@@ -177,9 +170,10 @@ class DatabaseManager:
         self,
         title: str,
         content: str,
+        *,
+        user_id: int,
         tags: Optional[List[str]] = None,
         folder_id: Optional[int] = None,
-        user_id: int = 1,
     ) -> int:
         """Create a new journal entry with embedding"""
         async with self.get_session() as session:
@@ -203,7 +197,8 @@ class DatabaseManager:
 
     async def get_journals(
         self,
-        user_id: int = 1,
+        *,
+        user_id: int,
         folder_id: Optional[int] = None,
         search_query: Optional[str] = None,
     ) -> List[Dict]:
@@ -251,6 +246,8 @@ class DatabaseManager:
     async def update_journal(
         self,
         journal_id: int,
+        *,
+        user_id: int,
         title: Optional[str] = None,
         content: Optional[str] = None,
         tags: Optional[List[str]] = None,
@@ -259,7 +256,7 @@ class DatabaseManager:
         """Update an existing journal"""
         async with self.get_session() as session:
             journal = await session.get(Journal, journal_id)
-            if not journal:
+            if not journal or journal.user_id != user_id:
                 return False
 
             if title is not None:
@@ -281,7 +278,7 @@ class DatabaseManager:
 
             return True
 
-    async def delete_journal(self, journal_id: int, user_id: int = 1) -> bool:
+    async def delete_journal(self, journal_id: int, *, user_id: int) -> bool:
         """Soft delete a journal entry"""
         async with self.get_session() as session:
             journal = await session.get(Journal, journal_id)
@@ -295,9 +292,10 @@ class DatabaseManager:
     async def create_folder(
         self,
         name: str,
+        *,
+        user_id: int,
         description: Optional[str] = None,
         color: str = "#8A2BE2",
-        user_id: int = 1,
     ) -> int:
         """Create a new folder"""
         async with self.get_session() as session:
@@ -306,7 +304,7 @@ class DatabaseManager:
             await session.flush()
             return folder.id
 
-    async def get_folders(self, user_id: int = 1) -> List[Dict]:
+    async def get_folders(self, *, user_id: int) -> List[Dict]:
         """Get all folders for a user with journal counts"""
         async with self.get_session() as session:
             stmt = (
@@ -341,6 +339,8 @@ class DatabaseManager:
     async def update_folder(
         self,
         folder_id: int,
+        *,
+        user_id: int,
         name: Optional[str] = None,
         description: Optional[str] = None,
         color: Optional[str] = None,
@@ -348,7 +348,7 @@ class DatabaseManager:
         """Update an existing folder"""
         async with self.get_session() as session:
             folder = await session.get(Folder, folder_id)
-            if not folder:
+            if not folder or folder.user_id != user_id:
                 return False
 
             if name is not None:
@@ -356,7 +356,7 @@ class DatabaseManager:
 
             return True
 
-    async def delete_folder(self, folder_id: int, user_id: int = 1) -> bool:
+    async def delete_folder(self, folder_id: int, *, user_id: int) -> bool:
         """Delete a folder and unlink its journals"""
         async with self.get_session() as session:
             # Unlink journals
@@ -376,7 +376,8 @@ class DatabaseManager:
     async def create_conversation(
         self,
         session_id: str,
-        user_id: int = 1,
+        *,
+        user_id: int,
         title: Optional[str] = None,
         subject: Optional[str] = None,
     ) -> int:
@@ -393,7 +394,7 @@ class DatabaseManager:
             return conv.id
 
     async def get_or_create_conversation(
-        self, session_id: str, user_id: int = 1
+        self, session_id: str, *, user_id: int, mode: Optional[str] = None, mode_context: Optional[str] = None
     ) -> int:
         """Get existing conversation or create new one"""
         async with self.get_session() as session:
@@ -405,10 +406,13 @@ class DatabaseManager:
             conv = result.scalar_one_or_none()
 
             if conv:
+                if mode and not conv.learning_mode:
+                    conv.learning_mode = mode
+                    conv.mode_context = mode_context
                 return conv.id
 
             # Create new
-            conv = Conversation(session_id=session_id, user_id=user_id)
+            conv = Conversation(session_id=session_id, user_id=user_id, learning_mode=mode, mode_context=mode_context)
             session.add(conv)
             await session.flush()
             return conv.id
@@ -418,8 +422,11 @@ class DatabaseManager:
         session_id: str,
         sender: str,
         message: str,
-        user_id: int = 1,
+        *,
+        user_id: int,
         subject: Optional[str] = None,
+        mode: Optional[str] = None,
+        mode_context: Optional[str] = None,
     ) -> int:
         """Add a message to the conversation with embedding and subject tagging"""
         async with self.get_session() as session:
@@ -436,12 +443,20 @@ class DatabaseManager:
                     session_id=session_id,
                     user_id=user_id,
                     subject=subject,
+                    learning_mode=mode,
+                    mode_context=mode_context,
                 )
                 session.add(conv)
                 await session.flush()
-            elif subject and not conv.subject:
-                # Update subject if not already set
-                conv.subject = subject
+            else:
+                if subject and not conv.subject:
+                    # Update subject if not already set
+                    conv.subject = subject
+                if mode and not conv.learning_mode:
+                    # Initial mode capture only - the header toggle uses
+                    # update_conversation_mode() for unconditional changes
+                    conv.learning_mode = mode
+                    conv.mode_context = mode_context
 
             # Generate embedding (if service available)
             embedding = None
@@ -467,7 +482,7 @@ class DatabaseManager:
             return conv.id
 
     async def get_conversation_messages(
-        self, session_id: str, user_id: int = 1
+        self, session_id: str, *, user_id: int
     ) -> List[Dict]:
         """Get all messages for a conversation by session_id"""
         async with self.get_session() as session:
@@ -494,8 +509,44 @@ class DatabaseManager:
 
             return messages
 
+    async def get_conversation_session_id(
+        self, conversation_id: int, *, user_id: int
+    ) -> Optional[str]:
+        """Look up a conversation's real session_id from its numeric id -
+        needed by the frontend for share/export calls, which key off
+        session_id, not the conversation's primary key."""
+        async with self.get_session() as session:
+            stmt = select(Conversation.session_id).where(
+                Conversation.id == conversation_id,
+                Conversation.user_id == user_id,
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
+
+    async def get_conversation_meta(
+        self, session_id: str, *, user_id: int
+    ) -> Dict[str, Optional[str]]:
+        """Look up a conversation's (subject, learning_mode, mode_context) by
+        session_id - used by chat_stream to resolve mode when the frontend
+        doesn't send one explicitly, and by GET /chat/conversation/{id} to
+        restore mode when reopening an existing conversation. Values are
+        None if no conversation exists yet or no mode has been set -
+        callers should default learning_mode to 'deep_learning'."""
+        async with self.get_session() as session:
+            stmt = select(
+                Conversation.subject, Conversation.learning_mode, Conversation.mode_context
+            ).where(
+                Conversation.session_id == session_id,
+                Conversation.user_id == user_id,
+            )
+            result = await session.execute(stmt)
+            row = result.first()
+            if not row:
+                return {"subject": None, "learning_mode": None, "mode_context": None}
+            return {"subject": row[0], "learning_mode": row[1], "mode_context": row[2]}
+
     async def get_conversation_messages_by_id(
-        self, conversation_id: int, user_id: int = 1
+        self, conversation_id: int, *, user_id: int
     ) -> List[Dict]:
         """Get all messages for a conversation by conversation ID"""
         async with self.get_session() as session:
@@ -522,7 +573,7 @@ class DatabaseManager:
 
             return messages
 
-    async def get_conversations(self, user_id: int = 1, limit: int = 50) -> List[Dict]:
+    async def get_conversations(self, *, user_id: int, limit: int = 50) -> List[Dict]:
         """Get all conversations for sidebar display"""
         async with self.get_session() as session:
             stmt = (
@@ -548,6 +599,8 @@ class DatabaseManager:
                     "session_id": conv.session_id,
                     "title": conv.title,
                     "subject": conv.subject,
+                    "learning_mode": conv.learning_mode,
+                    "mode_context": conv.mode_context,
                     "message_count": row.message_count,
                     "created_at": str(conv.created_at),
                     "updated_at": str(conv.updated_at),
@@ -556,7 +609,7 @@ class DatabaseManager:
             return conversations
 
     async def update_conversation_title(
-        self, conversation_id: int, title: str, user_id: int = 1
+        self, conversation_id: int, title: str, *, user_id: int
     ) -> bool:
         """Update conversation title"""
         async with self.get_session() as session:
@@ -566,8 +619,23 @@ class DatabaseManager:
                 return True
             return False
 
+    async def update_conversation_mode(
+        self, conversation_id: int, mode: str, mode_context: Optional[str], *, user_id: int
+    ) -> bool:
+        """Unconditionally set a conversation's learning mode - used by the
+        header mode-toggle on an existing conversation, distinct from the
+        "set once" initial-capture logic in add_chat_message/
+        get_or_create_conversation."""
+        async with self.get_session() as session:
+            conv = await session.get(Conversation, conversation_id)
+            if conv and conv.user_id == user_id:
+                conv.learning_mode = mode
+                conv.mode_context = mode_context
+                return True
+            return False
+
     async def delete_conversation(
-        self, conversation_id: int, user_id: int = 1, permanent: bool = False
+        self, conversation_id: int, *, user_id: int, permanent: bool = False
     ) -> bool:
         """Delete a conversation"""
         async with self.get_session() as session:
@@ -587,7 +655,7 @@ class DatabaseManager:
 
             return True
 
-    async def clear_conversation(self, session_id: str, user_id: int = 1) -> bool:
+    async def clear_conversation(self, session_id: str, *, user_id: int) -> bool:
         """Clear/delete a conversation and all its messages"""
         async with self.get_session() as session:
             stmt = select(Conversation).where(
@@ -616,7 +684,7 @@ class DatabaseManager:
             return None
 
     async def save_learning_state(
-        self, session_id: str, state_data: Dict, user_id: int = 1
+        self, session_id: str, state_data: Dict, *, user_id: int
     ) -> None:
         """Save or update learning state"""
         async with self.get_session() as session:
@@ -644,33 +712,28 @@ class DatabaseManager:
 
     # ==================== Statistics ====================
 
-    async def get_user_stats(self, user_id: int = 1) -> Dict:
-        """Get user statistics"""
+    async def get_user_stats(self, user_id: Optional[int] = None) -> Dict:
+        """
+        Get statistics. With a user_id, returns that user's counts (used by the
+        authenticated /stats endpoint). Without one, returns global counts across
+        all users - used only by the unauthenticated /health check, which needs
+        to stay reachable for PaaS health probes without a login.
+        """
         async with self.get_session() as session:
             stats = {}
 
-            # Journal count
-            result = await session.execute(
-                select(func.count(Journal.id)).where(
-                    Journal.user_id == user_id,
-                    Journal.is_deleted == False,
-                )
-            )
-            stats["total_journals"] = result.scalar() or 0
+            journal_stmt = select(func.count(Journal.id)).where(Journal.is_deleted == False)
+            folder_stmt = select(func.count(Folder.id))
+            conversation_stmt = select(func.count(Conversation.id))
 
-            # Folder count
-            result = await session.execute(
-                select(func.count(Folder.id)).where(Folder.user_id == user_id)
-            )
-            stats["total_folders"] = result.scalar() or 0
+            if user_id is not None:
+                journal_stmt = journal_stmt.where(Journal.user_id == user_id)
+                folder_stmt = folder_stmt.where(Folder.user_id == user_id)
+                conversation_stmt = conversation_stmt.where(Conversation.user_id == user_id)
 
-            # Conversation count
-            result = await session.execute(
-                select(func.count(Conversation.id)).where(
-                    Conversation.user_id == user_id
-                )
-            )
-            stats["total_conversations"] = result.scalar() or 0
+            stats["total_journals"] = (await session.execute(journal_stmt)).scalar() or 0
+            stats["total_folders"] = (await session.execute(folder_stmt)).scalar() or 0
+            stats["total_conversations"] = (await session.execute(conversation_stmt)).scalar() or 0
 
             return stats
 

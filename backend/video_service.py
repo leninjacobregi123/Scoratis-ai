@@ -106,7 +106,7 @@ class SmartVideoClient:
                 # Check if using a cloud provider (not ollama/local)
                 if provider not in ["ollama", "lmstudio", "localai", "textgenwebui"]:
                     # Check if API key is available by checking the current config has encrypted key
-                    if llm_service.current_config and llm_service.current_config.api_key_encrypted:
+                    if llm_service.has_api_key():
                         self._use_api = True
                         self._llm_service = llm_service
                         logger.info(f"SmartVideoClient: Using API ({provider}/{config.get('model')})")
@@ -206,7 +206,7 @@ class SmartManimClient:
             if config:
                 provider = config.get("provider", "ollama")
                 if provider not in ["ollama", "lmstudio", "localai", "textgenwebui"]:
-                    if llm_service.current_config and llm_service.current_config.api_key_encrypted:
+                    if llm_service.has_api_key():
                         self._use_api = True
                         self._llm_service = llm_service
                         logger.info(f"SmartManimClient: Using API ({provider}/{config.get('model')})")
@@ -686,6 +686,20 @@ VISUAL DENSITY: 8-10 visual elements per concept
 - Visual recap of main diagram/concept
 - Memorable closing statement
 
+## VISUAL TYPES
+Every visual's "type" field must be one of: text, diagram, equation, numbered_list, shape.
+There are no photo/image assets available - never use "image" or "photo" as a type.
+Represent any photographic or real-world visual idea (a sunset, a leaf, an
+apparatus) as a "diagram" built from simple shapes instead, described in
+words for the animator to draw.
+
+## ANIMATION NAMES
+Every visual's "animation" field must be one of exactly these (they map
+directly to real Manim animation classes - inventing other names like "Pop",
+"SlideIn", "ZoomIn", or "Bounce" will crash the renderer, since no such
+classes exist): Write, Create, FadeIn, FadeOut, GrowFromCenter, Indicate,
+DrawBorderThenFill.
+
 ## OUTPUT FORMAT (JSON only, no markdown):
 {{
   "title": "Engaging title (max 8 words)",
@@ -744,6 +758,17 @@ class ManimScene(Scene):
 - Include labels, annotations, and arrows
 - Show relationships with connecting lines
 - Add step numbers for processes (①②③)
+- No photo/image/icon asset files exist in this environment: never call
+  ImageMobject, SVGMobject, or reference any external file. Build every
+  visual - including anything the script describes as an "image" - out of
+  native Manim primitives only (Text, MathTex, Circle, Rectangle, Arrow,
+  Line, Polygon, VGroup, etc.)
+- Never reference a variable inside its own definition - e.g. do NOT write
+  `group = VGroup(a, b, Text("x").next_to(group, UP))`, since `group`
+  doesn't exist yet on that line and this raises UnboundLocalError. Build
+  every sub-element as its own variable first (positioning each with
+  `.next_to()`/`.shift()` against the other sub-elements, not the group),
+  then combine them into the VGroup as the last step.
 
 ### 3. ANIMATION TIMING
 - Title animations: 2-3 seconds with Write()
@@ -752,6 +777,13 @@ class ManimScene(Scene):
 - Key points: 2 second pause with Indicate()
 - Transitions: 1 second with FadeOut()/FadeIn()
 - Use self.wait(2) after important information
+- ONLY use these animation classes - every one of them is a real Manim
+  class, nothing else is guaranteed to exist: Write, Create, FadeIn,
+  FadeOut, GrowFromCenter, Indicate, DrawBorderThenFill, Transform. Do not
+  invent plausible-sounding animation names (e.g. PopUp, SlideIn, ZoomIn,
+  Bounce) - they don't exist in Manim and will crash the render with a
+  NameError. If the script's "animation" hint isn't in this list, substitute
+  FadeIn.
 
 ### 4. PROFESSIONAL STYLING
 - Title: font_size=48, color=BLUE
@@ -846,7 +878,7 @@ class EnhancedVideoGenerator:
                 provider = config.get("provider", "ollama")
                 # Check if using cloud provider with API key
                 if provider not in ["ollama", "lmstudio", "localai", "textgenwebui"]:
-                    if llm_service.current_config and llm_service.current_config.api_key_encrypted:
+                    if llm_service.has_api_key():
                         self._use_api = True
                         logger.info(f"EnhancedVideoGenerator: API mode enabled ({provider})")
                         return

@@ -11,7 +11,7 @@ services:
       POSTGRES_PASSWORD: scoratis_password
       POSTGRES_DB: scoratis
     ports:
-      - "5433:5432"
+      - "5434:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -27,7 +27,7 @@ services:
     image: redis:7-alpine
     container_name: scoratis-redis
     ports:
-      - "6379:6379"
+      - "6381:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes

@@ -128,6 +128,11 @@ const Gallery = () => {
   const [showWelcomeDialog, setShowWelcomeDialog] = useState(false);
   const [greetingText, setGreetingText] = useState('');
 
+  // Set when the browser can't create a WebGL context (disabled hardware
+  // acceleration, remote/sandboxed sessions, some older devices) - falls back
+  // to a plain subject list instead of crashing the whole app.
+  const [webglUnavailable, setWebglUnavailable] = useState(false);
+
   // Calculate total progress from stages
   useEffect(() => {
     const stages = loadingStages;
@@ -241,11 +246,23 @@ const Gallery = () => {
     // No fog - keep Socrates and all elements crisp and clear
 
     const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
-    const renderer = new THREE.WebGLRenderer({
-      antialias: true,
-      alpha: true,
-      powerPreference: "high-performance"
-    });
+    let renderer;
+    try {
+      renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        alpha: true,
+        powerPreference: "high-performance"
+      });
+    } catch (err) {
+      // No error boundary sits above this effect, so letting this exception
+      // escape previously crashed the whole app to a blank screen. Skip the
+      // 3D scene and let the loading flow continue into the non-3D fallback below.
+      console.error('WebGL unavailable, falling back to non-3D gallery:', err);
+      setWebglUnavailable(true);
+      setLoadingStages(prev => ({ ...prev, characterModel: true, socratesModel: true, scene: true }));
+      setLoadingStatus('Gallery ready (simplified mode)');
+      return;
+    }
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -3080,6 +3097,31 @@ const Gallery = () => {
         {/* 3D Canvas */}
         <div ref={containerRef} className="absolute inset-0 z-0" />
 
+        {/* Non-3D fallback when WebGL can't be created */}
+        {webglUnavailable && (
+          <div className="absolute inset-0 z-0 overflow-y-auto p-12 flex flex-col items-center">
+            <h1 className="text-3xl font-serif italic mb-2 text-[#4a5a40]">Scoratis</h1>
+            <p className="text-sm text-[#8a8a7a] mb-10 text-center max-w-md">
+              Your browser can't render the 3D gallery, so here's the subject list instead.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 w-full max-w-4xl">
+              {SUBJECT_CHANNELS.map((subject) => (
+                <button
+                  key={subject.id}
+                  onClick={() => handleSubjectClick(subject)}
+                  className="flex items-center gap-3 bg-[#faf6ed] border border-[#d4cfb8] rounded-xl p-4 text-left hover:bg-[#f0ebe0] transition-colors shadow-sm"
+                >
+                  <span className="text-3xl">{subject.icon}</span>
+                  <div>
+                    <div className="font-semibold text-[#4a5a40]">{subject.name}</div>
+                    <div className="text-xs text-[#8a8a7a]">{subject.description}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* UI Overlay (Original Style) */}
         <div className="absolute inset-0 pointer-events-none flex flex-col justify-between p-12">
           <header className="flex justify-between items-start">
@@ -3132,19 +3174,21 @@ const Gallery = () => {
             </div>
           )}
 
-          <footer className="flex flex-col items-center gap-2">
-            {modelStatus === 'loading' && (
-              <div className="bg-[#faf6ed]/90 px-4 py-2 rounded-lg shadow-sm border border-[#d4cfb8]">
-                <span className="text-xs text-[#6b7c5e]">Loading Character...</span>
-              </div>
-            )}
-            {modelStatus === 'error' && (
-              <div className="bg-[#fdf2f2] border border-[#e5c5c5] px-4 py-2 rounded-lg">
-                <span className="text-xs text-[#9a5a5a]">Model failed to load - check console</span>
-              </div>
-            )}
-            <span className="text-[10px] uppercase tracking-[0.5em] font-bold text-[#4a5a40] opacity-40">Walk to floor markers to enter subjects</span>
-          </footer>
+          {!webglUnavailable && (
+            <footer className="flex flex-col items-center gap-2">
+              {modelStatus === 'loading' && (
+                <div className="bg-[#faf6ed]/90 px-4 py-2 rounded-lg shadow-sm border border-[#d4cfb8]">
+                  <span className="text-xs text-[#6b7c5e]">Loading Character...</span>
+                </div>
+              )}
+              {modelStatus === 'error' && (
+                <div className="bg-[#fdf2f2] border border-[#e5c5c5] px-4 py-2 rounded-lg">
+                  <span className="text-xs text-[#9a5a5a]">Model failed to load - check console</span>
+                </div>
+              )}
+              <span className="text-[10px] uppercase tracking-[0.5em] font-bold text-[#4a5a40] opacity-40">Walk to floor markers to enter subjects</span>
+            </footer>
+          )}
         </div>
       </div>
 

@@ -6,6 +6,7 @@ Falls back to Edge TTS if Coqui TTS is not available
 
 import hashlib
 import logging
+import sys
 from pathlib import Path
 from typing import Optional
 import threading
@@ -68,10 +69,19 @@ class CoquiTTSService:
         logger.info("Coqui TTS Service created (lazy initialization)")
 
     def _check_edge_tts(self) -> bool:
-        """Check if edge-tts is available"""
+        """Check if edge-tts is available.
+
+        Invoked as `python -m edge_tts` (module form), not the bare `edge-tts`
+        console script - the console script only resolves if this process's
+        PATH happens to include the venv's bin directory, which isn't
+        guaranteed depending on how the backend was launched (same issue
+        fixed in tasks_pkg/video_tasks.py's narration synthesis).
+        `sys.executable` always correctly identifies this interpreter's
+        environment regardless of PATH.
+        """
         try:
             result = subprocess.run(
-                ["edge-tts", "--version"],
+                [sys.executable, "-m", "edge_tts", "--version"],
                 capture_output=True,
                 text=True,
                 timeout=5
@@ -199,10 +209,10 @@ class CoquiTTSService:
         try:
             logger.info(f"Synthesizing with Edge TTS voice {voice}")
 
-            # Run edge-tts command
+            # Run edge-tts via module form (see _check_edge_tts's docstring)
             result = subprocess.run(
                 [
-                    "edge-tts",
+                    sys.executable, "-m", "edge_tts",
                     "--voice", voice,
                     "--text", text,
                     "--write-media", str(mp3_path)

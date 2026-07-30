@@ -1,0 +1,96 @@
+# Render.com fallback deployment config (alternative to fly.toml).
+# Deploy: connect this repo in the Render dashboard - it reads this file
+# automatically ("render blueprint"). Secrets marked `sync: false` must be
+# set manually in the Render dashboard after the first deploy.
+
+databases:
+  - name: scoratis-postgres
+    databaseName: scoratis
+    user: scoratis
+    plan: starter
+    # After first deploy, run `CREATE EXTENSION IF NOT EXISTS vector;` once -
+    # Render's managed Postgres supports pgvector but doesn't enable it by default.
+
+services:
+  - type: redis
+    name: scoratis-redis
+    plan: starter
+    ipAllowList: []
+
+  - type: web
+    name: scoratis-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: scoratis-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: scoratis-redis
+          property: connectionString
+      - key: ALLOWED_ORIGINS
+        value: https://scoratis-frontend.onrender.com
+      - key: DEFAULT_LLM_PROVIDER
+        value: groq
+      - key: DEFAULT_LLM_MODEL
+        value: llama-3.3-70b-versatile
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: SCORATIS_ENCRYPTION_KEY
+        sync: false
+      - key: SCORATIS_ENCRYPTION_SALT
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+
+  - type: worker
+    name: scoratis-worker
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    dockerCommand: celery -A celery_app worker -Q default,ingestion,video --concurrency=2
+    plan: starter
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: scoratis-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: scoratis-redis
+          property: connectionString
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: SCORATIS_ENCRYPTION_KEY
+        sync: false
+      - key: SCORATIS_ENCRYPTION_SALT
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+
+  - type: web
+    name: scoratis-frontend
+    runtime: docker
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    plan: starter
+    envVars:
+      - key: BACKEND_URL
+        fromService:
+          type: web
+          name: scoratis-backend
+          property: hostport
+      # Render has no Docker-Compose-style embedded DNS - use a public
+      # resolver so nginx can look up the backend's hostname (see
+      # frontend/nginx.conf.template).
+      - key: DNS_RESOLVER
+        value: 1.1.1.1

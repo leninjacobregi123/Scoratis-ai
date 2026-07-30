@@ -12,6 +12,9 @@ import os
 class Settings(BaseSettings):
     """Application settings with environment variable support"""
 
+    # Deployment
+    ENVIRONMENT: str = "development"  # set to "production" on a real deploy - gates the insecure-secret startup guard
+
     # Database
     DATABASE_URL: str = "postgresql://scoratis:scoratis_password@localhost:5433/scoratis"
     DATABASE_URL_ASYNC: str = "postgresql+asyncpg://scoratis:scoratis_password@localhost:5433/scoratis"
@@ -70,13 +73,21 @@ class Settings(BaseSettings):
     AZURE_API_KEY: Optional[str] = None
     AZURE_API_BASE: Optional[str] = None
 
-    # Default LLM Settings
-    DEFAULT_LLM_PROVIDER: str = "ollama"
-    DEFAULT_LLM_MODEL: str = "qwen3:4b"  # Supports tool/function calling
+    # Default LLM Settings - cloud by default (Groq: low latency, supports tool calling).
+    # Requires GROQ_API_KEY. Set DEFAULT_LLM_PROVIDER=ollama + OLLAMA_BASE_URL to go back
+    # to local inference for offline dev.
+    DEFAULT_LLM_PROVIDER: str = "groq"
+    DEFAULT_LLM_MODEL: str = "llama-3.3-70b-versatile"  # Supports tool/function calling
 
     # Encryption (REQUIRED for production - generate secure values!)
     SCORATIS_ENCRYPTION_KEY: str = "scoratis-default-dev-key-change-in-production-32chars"
     SCORATIS_ENCRYPTION_SALT: str = "scoratis-salt-value"
+
+    # Auth (REQUIRED for production - generate a secure random value!)
+    JWT_SECRET_KEY: str = "scoratis-default-dev-jwt-secret-change-in-production"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 14
 
     # LangSmith Observability
     LANGCHAIN_TRACING_V2: bool = False
@@ -84,10 +95,17 @@ class Settings(BaseSettings):
     LANGCHAIN_API_KEY: Optional[str] = None
     LANGCHAIN_PROJECT: str = "scoratis-production"
 
+    # CORS - comma-separated list of allowed origins (e.g. "https://app.example.com,https://example.com")
+    ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173"
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
         extra = "ignore"
+
+    @property
+    def allowed_origins_list(self) -> list:
+        return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",") if origin.strip()]
 
 
 @lru_cache()

@@ -205,6 +205,115 @@ You MUST structure EVERY response in two parts:
 
 
 # =============================================================================
+# EXAM-PREP FRAMEWORK (fast, direct teaching - see get_subject_prompt(mode=))
+# =============================================================================
+# A student cramming for an upcoming exam needs correct answers fast, not the
+# Socratic method's "never give a direct answer" pattern - that's actively
+# counterproductive under time pressure. This framework explains directly and
+# completely, then checks retention with one quick recall question, instead
+# of gating the explanation behind discovery. Kept as a fully separate
+# constant (not a variant of SCORATIS_BASE_FRAMEWORK) so deep_learning mode
+# stays byte-for-byte unchanged.
+#
+# v1 scope note: this does not fold in each subject's "COMMON MISCONCEPTIONS"
+# prose from the deep_learning prompts below - those are self-contained
+# factual bullet lists (unlike the Socratic dialogue sections) and would be
+# genuinely useful here too, but extracting them cleanly is left as a
+# fast-follow rather than blocking this pass.
+
+EXAM_PREP_BASE_FRAMEWORK = """
+### CORE TEACHING METHODOLOGY
+
+You MUST follow this methodology in EVERY interaction:
+
+## 1. THE DIRECT-EXPLANATION METHOD
+The student is short on time. Give them the correct, complete answer up front:
+- Explain the concept clearly and directly - do NOT withhold the answer or ask "what do you think?" before explaining
+- Use concrete examples, formulas, and definitions as needed to make it exam-ready
+- Prioritize the information most likely to matter for a test: core definitions, key formulas, common question patterns, easy-to-confuse distinctions
+- Keep it tight - no unnecessary preamble, no drawn-out build-up
+
+## 2. RESPONSE STRUCTURE
+Every response has two parts:
+1. A clear, complete explanation of what they asked about
+2. ONE short active-recall question at the end to check it stuck (e.g. a quick practice problem, "what's the formula for X?", or "restate that in one sentence") - this is a retention check, not the start of a new Socratic thread
+
+## 3. HANDLING FOLLOW-UPS
+When the student answers the recall question:
+- Give direct feedback: correct or incorrect, and why
+- If incorrect, briefly re-explain the specific gap, then move on - don't turn it into an extended back-and-forth
+- If correct, confirm briefly and either move to the next topic or offer a slightly harder follow-up question
+
+## 4. THE "I DON'T UNDERSTAND" STUDENT
+- Re-explain the same concept with a simpler example or analogy
+- Still explain directly - don't downshift into Socratic questioning just because they're stuck
+- Keep it efficient: one clear re-explanation, then check again
+
+## 5. PERSONALITY: THE EFFICIENT COACH
+**Voice Characteristics:**
+- Clear, direct, and encouraging
+- Respects that their time is limited
+- Confident and precise - no hedging or unnecessary questions
+- Celebrates quick wins to keep momentum up
+
+**Signature Phrases:**
+- "Here's what you need to know:"
+- "Quick check before we move on:"
+- "Nailed it - next."
+- "Common trap here:"
+- "Let's tighten that up."
+
+## 6. RESPONSE FORMAT
+You MUST structure EVERY response in two parts:
+
+1. **<pedagogical_plan>**: Your internal reasoning (hidden from user in UI)
+   - Goal: What does the student need to know for their exam?
+   - What they need to know: The core facts/formulas/concepts to cover
+   - Explanation given: What you're about to explain
+   - Recall check: What quick question you'll ask to confirm it stuck
+</pedagogical_plan>
+
+2. **Response**: The actual text shown to the user
+   - Direct, complete explanation first
+   - Exactly one recall question at the end
+"""
+
+
+def get_exam_prep_context_note(mode_context: str) -> str:
+    """Optional note appended when the student described what they're
+    studying for (e.g. "Physics midterm Friday"), so pacing/priorities stay
+    aligned with their actual exam rather than being generic."""
+    return f"""
+## WHAT THIS STUDENT IS PREPARING FOR
+
+{mode_context}
+
+Keep your explanations and recall questions focused on what's most likely to
+matter for this. If they ask about something clearly unrelated to it, still
+help them, but default to prioritizing what serves their stated goal.
+"""
+
+
+# Verbatim copy of the (display_name, topics) pairs already passed inline to
+# get_subject_boundary_prompt() by each XXX_PROMPT below - reused so
+# exam_prep mode gets the same subject-boundary enforcement without
+# duplicating the large hand-authored prompt bodies.
+SUBJECT_TOPICS = {
+    "physics": ("Physics", "Classical Mechanics (motion, forces, energy, momentum), Thermodynamics (heat, entropy, laws), Waves and Optics (sound, light, electromagnetic spectrum), Electricity and Magnetism (circuits, fields, induction), Modern Physics (relativity, quantum mechanics, particle physics), Astrophysics (gravity, stars, black holes, cosmology)"),
+    "chemistry": ("Chemistry", "Atomic Structure (electrons, orbitals, periodic trends), Chemical Bonding (ionic, covalent, metallic, intermolecular forces), Stoichiometry (mole concept, balancing equations, limiting reagents), Thermochemistry (enthalpy, entropy, Gibbs free energy), Kinetics and Equilibrium (reaction rates, Le Chatelier's principle), Acids and Bases (pH, buffers, titrations), Organic Chemistry (functional groups, reactions, mechanisms), Electrochemistry (redox, cells, electrolysis)"),
+    "biology": ("Biology", "Cell Biology (structure, organelles, membrane transport), Genetics (DNA, inheritance, gene expression, mutations), Evolution (natural selection, speciation, evidence), Ecology (ecosystems, food webs, population dynamics), Physiology (organ systems, homeostasis), Biochemistry (enzymes, metabolism, photosynthesis, respiration), Microbiology (bacteria, viruses, immune system), Biotechnology (genetic engineering, CRISPR)"),
+    "mathematics": ("Mathematics", "Arithmetic and Number Theory, Algebra (linear, quadratic, polynomials, systems), Geometry (Euclidean, coordinate, transformations), Trigonometry (ratios, identities, applications), Calculus (limits, derivatives, integrals), Statistics and Probability, Discrete Mathematics (logic, sets, combinatorics), Linear Algebra (vectors, matrices, transformations)"),
+    "computer_science": ("Computer Science", "Programming Fundamentals (variables, loops, conditionals, functions), Data Structures (arrays, lists, trees, graphs, hash tables), Algorithms (sorting, searching, recursion, complexity), Object-Oriented Programming (classes, inheritance, polymorphism), Web Development (HTML, CSS, JavaScript, APIs), Databases (SQL, NoSQL, data modeling), Computer Architecture (memory, CPU, operating systems), Software Engineering (design patterns, testing, version control)"),
+    "english": ("English", "Literature Analysis (themes, symbolism, characterization, plot), Writing Craft (structure, style, voice, rhetoric), Grammar and Mechanics (syntax, punctuation, usage), Poetry (form, meter, figurative language), Essay Writing (argumentation, evidence, thesis development), Creative Writing (fiction, narrative techniques), Research and Citation, Public Speaking and Presentation"),
+    "history": ("History", "Ancient Civilizations (Mesopotamia, Egypt, Greece, Rome, China, India), Medieval Period (feudalism, Crusades, Byzantine, Islamic Golden Age), Renaissance and Reformation, Age of Exploration and Colonialism, Revolutions (American, French, Industrial, Russian), World Wars and 20th Century, Modern Global History, Historiography (how history is studied and written)"),
+    "philosophy": ("Philosophy", "Ethics (moral theories, applied ethics, metaethics), Epistemology (knowledge, belief, justification, skepticism), Metaphysics (existence, reality, mind-body problem, free will), Logic (formal logic, informal fallacies, argumentation), Political Philosophy (justice, rights, state, liberty), Philosophy of Mind (consciousness, AI, personal identity), Aesthetics (beauty, art, taste), History of Philosophy (ancient to contemporary thinkers)"),
+    "psychology": ("Psychology", "Cognitive Psychology (memory, attention, thinking, decision-making), Developmental Psychology (lifespan development, stages), Social Psychology (group behavior, conformity, attitudes), Abnormal Psychology (disorders, diagnosis, treatment), Biological Psychology (brain, neurons, hormones), Personality Psychology (theories, traits, assessment), Learning and Behaviorism (conditioning, reinforcement), Research Methods (experiments, ethics, statistics)"),
+    "economics": ("Economics", "Microeconomics (supply/demand, elasticity, market structures, consumer choice), Macroeconomics (GDP, inflation, unemployment, monetary/fiscal policy), International Trade (comparative advantage, exchange rates, trade policy), Behavioral Economics (biases, nudges, decision-making), Public Economics (taxation, public goods, externalities), Development Economics (growth, inequality, poverty), Financial Economics (markets, risk, valuation), Economic History and Schools of Thought"),
+    "general": ("General", ""),
+}
+
+
+# =============================================================================
 # SUBJECT BOUNDARY ENFORCEMENT
 # =============================================================================
 
@@ -982,8 +1091,24 @@ SUBJECT_PROMPTS = {
 # HELPER FUNCTIONS
 # =============================================================================
 
-def get_subject_prompt(subject: str) -> str:
-    """Get the appropriate prompt for a subject"""
+def get_subject_prompt(subject: str, mode: str = "deep_learning", mode_context: str = None) -> str:
+    """Get the appropriate system prompt for a subject and learning mode.
+
+    mode='deep_learning' (default) returns the existing, unchanged Socratic
+    prompt for the subject - identical behavior to before this parameter
+    existed. mode='exam_prep' composes a fast, direct-teaching prompt from
+    EXAM_PREP_BASE_FRAMEWORK instead, for students prepping under time
+    pressure. mode_context, when given, is the student's own description of
+    what they're studying for (e.g. "Physics midterm Friday") and is only
+    used in exam_prep mode.
+    """
+    if mode == "exam_prep":
+        display_name, topics = SUBJECT_TOPICS.get(subject, SUBJECT_TOPICS["general"])
+        designation = f"### SYSTEM DESIGNATION\nYou are **Scoratis**, an efficient {display_name} exam-prep coach. Your job is to help the student learn what they need, correctly and fast.\n\n"
+        boundary = get_subject_boundary_prompt(display_name, topics) if subject != "general" and subject in SUBJECT_TOPICS else ""
+        context_note = get_exam_prep_context_note(mode_context) if mode_context else ""
+        return designation + boundary + context_note + EXAM_PREP_BASE_FRAMEWORK
+
     return SUBJECT_PROMPTS.get(subject, GENERAL_PROMPT)
 
 

@@ -4,7 +4,7 @@ import {
   ArrowUp, MessageSquare, Plus,
   MoreVertical, Trash2, Edit2, Check, X,
   Play, Loader2, Download, Film, Pause, Volume2, VolumeX, Mic, MicOff, FileText,
-  Globe, Brain
+  Globe, Brain, Share2, Link2, Copy
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import SocratesLogo from '../3d/SocratesLogo';
@@ -13,8 +13,10 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import SubjectBackground from '../components/SubjectBackground';
 import LLMSwitcher from '../components/LLMSwitcher';
+import ModeSwitcher from '../components/ModeSwitcher';
 import { getSubjectTheme, DEFAULT_THEME, getSubjectImage, getSubjectTutor, isDarkTheme, getStandardizedThemeClasses } from '../config/subjectThemes';
 import { parseCitations, buildSourceMap, hasCitations } from '../utils/citations';
+import { getAuthHeaders } from '../utils/auth';
 import { CitationNumber, CitationPopup, CitationList, SourcesBadge, FootnotesSection } from '../components/Citation';
 import AgenticWorkflow, { useAgenticWorkflow } from '../components/AgenticWorkflow';
 import { AttachmentButton, AttachmentPreview, UploadProgressOverlay } from '../components/ChatAttachments';
@@ -886,14 +888,82 @@ export default function Chat() {
     handleComplete: handleWorkflowComplete
   } = useAgenticWorkflow();
 
-  // LLM Model state
-  const [currentLLMProvider, setCurrentLLMProvider] = useState('ollama');
-  const [currentLLMModel, setCurrentLLMModel] = useState('llama3.2');
+  // LLM Model state - defaults to the cloud provider backend/config.py uses
+  // (DEFAULT_LLM_PROVIDER/DEFAULT_LLM_MODEL); switch via the model picker to
+  // use a local Ollama install instead.
+  const [currentLLMProvider, setCurrentLLMProvider] = useState('groq');
+  const [currentLLMModel, setCurrentLLMModel] = useState('llama-3.3-70b-versatile');
+
+  // Learning mode: null until the student picks one for a new conversation
+  // (via the empty-state screen below), or it's restored from an existing
+  // conversation via loadConversation. 'exam_prep' | 'deep_learning' | null.
+  const [learningMode, setLearningMode] = useState(null);
+  const [modeContext, setModeContext] = useState('');
+  // Provisional pick before the mode question is confirmed - lets exam_prep
+  // reveal the optional context field without immediately committing
+  // learningMode (which would dismiss this whole screen, per the guard
+  // below that only shows it while learningMode is still unset).
+  const [pendingMode, setPendingMode] = useState(null);
+  // True whenever a conversation is being fetched to restore its mode -
+  // without this, the mode-choice screen guard below (!learningMode) is
+  // guaranteed to be true for at least one render while loadConversation's
+  // fetch is in flight, flashing the "What are you here for today?" screen
+  // on every reopen even though the mode will be restored a moment later.
+  const [isRestoringConversation, setIsRestoringConversation] = useState(
+    () => !!initialSessionId && !searchParams.get('subject')
+  );
 
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   const videoPollingRefs = useRef({}); // Store polling intervals by taskId
   const api = useApi();
+
+  // Transcript export/share menu state
+  const [shareMenuOpen, setShareMenuOpen] = useState(false);
+  const [shareUrl, setShareUrl] = useState(null);
+  const [shareLoading, setShareLoading] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
+
+  const handleExportTranscript = useCallback(async () => {
+    try {
+      const markdown = await api.get(`/chat/session/${sessionId}/export`);
+      const blob = new Blob([markdown], { type: 'text/markdown' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${sessionId}.md`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Export failed:', err);
+    }
+  }, [api, sessionId]);
+
+  const handleShareTranscript = useCallback(async () => {
+    setShareLoading(true);
+    try {
+      const result = await api.post(`/chat/session/${sessionId}/share`, {});
+      setShareUrl(`${window.location.origin}/shared/${result.share_token}`);
+    } catch (err) {
+      console.error('Share failed:', err);
+    } finally {
+      setShareLoading(false);
+    }
+  }, [api, sessionId]);
+
+  const handleCopyShareUrl = useCallback(() => {
+    if (!shareUrl) return;
+    navigator.clipboard.writeText(shareUrl);
+    setShareCopied(true);
+    setTimeout(() => setShareCopied(false), 2000);
+  }, [shareUrl]);
+
+  useEffect(() => {
+    setShareUrl(null);
+    setShareMenuOpen(false);
+  }, [sessionId]);
 
   // Get theme based on current subject (with standardized classes for new components)
   const theme = useMemo(() => {
@@ -954,7 +1024,10 @@ export default function Chat() {
   useEffect(() => {
     loadConversations();
     if (initialSessionId && !subjectFromUrl) {
+      setIsRestoringConversation(true);
       loadConversation(initialSessionId);
+    } else {
+      setIsRestoringConversation(false);
     }
   }, [initialSessionId, subjectFromUrl]);
 
@@ -1025,7 +1098,7 @@ export default function Chat() {
       const baseUrl = import.meta.env.VITE_API_URL || '';
       const response = await fetch(`${baseUrl}/chat/tts`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ text })
       });
 
@@ -1102,19 +1175,34 @@ export default function Chat() {
     try {
       const data = await api.get(`/chat/conversation/${conversationId}`);
       setActiveConversationId(conversationId);
-      setSessionId(`conv_${conversationId}`);
+      // Use the real session_id the backend just returned - share/export
+      // (and the chat-stream endpoint itself) key off session_id, not this
+      // conversation's numeric id, so a synthesized `conv_${id}` string
+      // would never match the row in the conversations table.
+      setSessionId(data.session_id || `conv_${conversationId}`);
       setMessages(data.messages?.map(m => ({
         ...m,
         timestamp: new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       })) || []);
+      // Restore this conversation's learning mode so it never re-prompts -
+      // pre-feature conversations have no stored mode, default to the
+      // unchanged deep_learning behavior.
+      setLearningMode(data.learning_mode || 'deep_learning');
+      setModeContext(data.mode_context || '');
     } catch (error) {
       console.error('Failed to load conversation:', error);
+    } finally {
+      setIsRestoringConversation(false);
     }
   };
 
   const startNewConversation = () => {
     setActiveConversationId(null);
     setSessionId('session_' + Date.now());
+    setLearningMode(null);
+    setModeContext('');
+    setPendingMode(null);
+    setIsRestoringConversation(false);
     setMessages([{
       id: Date.now(),
       role: 'ai',
@@ -1140,6 +1228,20 @@ export default function Chat() {
       setConversations(prev => prev.map(c => c.id === conversationId ? { ...c, title: newTitle } : c));
     } catch (error) {
       console.error('Failed to rename:', error);
+    }
+  };
+
+  // Header mode-toggle: for an existing conversation, persist immediately
+  // (mirrors renameConversation); for a brand-new one not yet sent, just
+  // update local state - it goes out on the first /chat/stream call.
+  const handleModeChange = async (newMode) => {
+    setLearningMode(newMode);
+    if (activeConversationId) {
+      try {
+        await api.put(`/chat/conversation/${activeConversationId}`, { mode: newMode, mode_context: modeContext || null });
+      } catch (error) {
+        console.error('Failed to update learning mode:', error);
+      }
     }
   };
 
@@ -1253,7 +1355,7 @@ export default function Chat() {
       const baseUrl = import.meta.env.VITE_API_URL || '';
       const response = await fetch(`${baseUrl}/chat/generate-video`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           session_id: sessionId,
           custom_topic: recommendation.topic  // Optional override
@@ -1309,7 +1411,9 @@ export default function Chat() {
   const fetchCanvasDocuments = useCallback(async () => {
     try {
       const baseUrl = import.meta.env.VITE_API_URL || '';
-      const response = await fetch(`${baseUrl}/v1/documents?status=COMPLETED`);
+      const response = await fetch(`${baseUrl}/v1/documents?status=COMPLETED`, {
+        headers: { ...getAuthHeaders() },
+      });
       if (response.ok) {
         const data = await response.json();
         setCanvasDocuments(data.documents || []);
@@ -1386,9 +1490,12 @@ export default function Chat() {
         formData.append('use_documents', chatOptions.useDocuments);
         formData.append('provider', currentLLMProvider);
         formData.append('model', currentLLMModel);
+        if (learningMode) formData.append('mode', learningMode);
+        if (modeContext) formData.append('mode_context', modeContext);
 
         response = await fetch(`${baseUrl}/chat/with-attachment`, {
           method: 'POST',
+          headers: { ...getAuthHeaders() },
           body: formData
         });
 
@@ -1402,6 +1509,7 @@ export default function Chat() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            ...getAuthHeaders(),
           },
           body: JSON.stringify({
             message: content,
@@ -1411,7 +1519,9 @@ export default function Chat() {
             use_reasoning: chatOptions.useReasoning,
             use_documents: chatOptions.useDocuments,
             provider: currentLLMProvider,
-            model: currentLLMModel
+            model: currentLLMModel,
+            mode: learningMode,
+            mode_context: modeContext || null
           })
         });
       }
@@ -1757,6 +1867,13 @@ export default function Chat() {
                     }}
                   />
                 </div>
+
+                {/* Learning Mode Switcher */}
+                {learningMode && (
+                  <div className="ml-2">
+                    <ModeSwitcher currentMode={learningMode} onModeChange={handleModeChange} />
+                  </div>
+                )}
               </div>
             );
           })()}
@@ -1775,6 +1892,57 @@ export default function Chat() {
               onClick={() => setCanvasOpen(!canvasOpen)}
               documentCount={canvasDocuments.length}
             />
+
+            {/* Export / Share transcript */}
+            <div className="relative">
+              <button
+                onClick={() => setShareMenuOpen((v) => !v)}
+                title="Export or share this conversation"
+                className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition-colors"
+              >
+                <Share2 className="w-4 h-4" />
+              </button>
+              {shareMenuOpen && (
+                <div className="absolute right-0 top-11 z-50 w-72 bg-bg-card border border-border-color rounded-xl shadow-2xl p-3 text-text-primary">
+                  <button
+                    onClick={handleExportTranscript}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-accent-olive/10 text-sm text-left"
+                  >
+                    <Download className="w-4 h-4 text-accent-olive" />
+                    Download transcript (.md)
+                  </button>
+                  {!shareUrl ? (
+                    <button
+                      onClick={handleShareTranscript}
+                      disabled={shareLoading}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-accent-olive/10 text-sm text-left disabled:opacity-50"
+                    >
+                      {shareLoading ? (
+                        <Loader2 className="w-4 h-4 text-accent-olive animate-spin" />
+                      ) : (
+                        <Link2 className="w-4 h-4 text-accent-olive" />
+                      )}
+                      Create shareable link
+                    </button>
+                  ) : (
+                    <div className="px-3 py-2">
+                      <div className="text-xs text-text-muted mb-1.5">Anyone with this link can view this conversation:</div>
+                      <div className="flex items-center gap-2 bg-bg-tertiary rounded-lg px-2 py-1.5">
+                        <input
+                          readOnly
+                          value={shareUrl}
+                          className="flex-1 bg-transparent text-xs text-text-secondary outline-none truncate"
+                          onFocus={(e) => e.target.select()}
+                        />
+                        <button onClick={handleCopyShareUrl} title="Copy link" className="text-text-muted hover:text-accent-olive">
+                          {shareCopied ? <Check className="w-4 h-4 text-accent-olive" /> : <Copy className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -1865,7 +2033,69 @@ export default function Chat() {
         </div>
 
         {/* Welcome screen - Theme-aware centered design with tutor portrait */}
-        {messages.length <= 1 && (() => {
+        {messages.length <= 1 && !learningMode && !isRestoringConversation && (
+          <div className="flex-1 flex items-center justify-center p-8 -mt-20">
+            <div className="text-center max-w-xl w-full">
+              <h1 className={`text-2xl font-light mb-2 ${isDark ? 'text-white' : 'text-text-primary'}`}
+                  style={{ fontFamily: 'Georgia, serif' }}>
+                What are you here for today?
+              </h1>
+              <p className={`text-sm mb-8 ${isDark ? 'text-gray-400' : 'text-text-muted'}`}>
+                This shapes how {currentSubject?.name || 'Scoratis'} teaches you - you can change it anytime from the header.
+              </p>
+              <div className="grid sm:grid-cols-2 gap-4 text-left">
+                <button
+                  onClick={() => setPendingMode('exam_prep')}
+                  className={`p-5 rounded-2xl border text-left transition-all
+                    ${pendingMode === 'exam_prep'
+                      ? (isDark ? 'border-white/60 bg-white/10' : 'border-gray-800 bg-gray-50')
+                      : (isDark ? 'border-white/20 hover:border-white/40 hover:bg-white/10' : 'border-[#D4CFB8] hover:border-gray-800 hover:bg-gray-50')}`}
+                >
+                  <div className="text-2xl mb-2">⚡</div>
+                  <div className={`font-medium mb-1 ${isDark ? 'text-white' : 'text-text-primary'}`}>Exam Prep</div>
+                  <div className={`text-sm ${isDark ? 'text-gray-400' : 'text-text-muted'}`}>
+                    Fast, direct answers with a quick recall check - built for studying under time pressure.
+                  </div>
+                </button>
+                <button
+                  onClick={() => setLearningMode('deep_learning')}
+                  className={`p-5 rounded-2xl border text-left transition-all
+                    ${isDark
+                      ? 'border-white/20 hover:border-white/40 hover:bg-white/10'
+                      : 'border-[#D4CFB8] hover:border-gray-800 hover:bg-gray-50'}`}
+                >
+                  <div className="text-2xl mb-2">🦉</div>
+                  <div className={`font-medium mb-1 ${isDark ? 'text-white' : 'text-text-primary'}`}>Deep Learning</div>
+                  <div className={`text-sm ${isDark ? 'text-gray-400' : 'text-text-muted'}`}>
+                    Full Socratic dialogue - build real understanding from first principles, at your own pace.
+                  </div>
+                </button>
+              </div>
+              {pendingMode === 'exam_prep' && (
+                <div className="mt-4 flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="text"
+                    value={modeContext}
+                    onChange={(e) => setModeContext(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') setLearningMode('exam_prep'); }}
+                    placeholder="Optional: what are you preparing for? e.g. Physics midterm Friday"
+                    autoFocus
+                    className={`flex-1 px-4 py-3 rounded-xl border text-sm ${isDark ? 'bg-white/10 border-white/20 text-white placeholder-gray-500' : 'bg-white border-[#D4CFB8] text-text-primary placeholder-gray-400'}`}
+                  />
+                  <button
+                    onClick={() => setLearningMode('exam_prep')}
+                    className="px-6 py-3 rounded-xl font-medium text-sm text-white transition-colors"
+                    style={{ backgroundColor: '#6b7c5e' }}
+                  >
+                    Start
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {messages.length <= 1 && learningMode && (() => {
           const welcomeTutor = getSubjectTutor(currentSubject?.id || subjectFromUrl);
           return (
             <div className="flex-1 flex items-center justify-center p-8 -mt-20">
@@ -1915,17 +2145,30 @@ export default function Chat() {
                 </p>
 
                 <div className="space-y-3">
-                  {(currentSubject ? [
-                    { label: `Explain a ${currentSubject.name} concept`, prompt: `Help me understand a fundamental concept in ${currentSubject.name}.` },
-                    { label: 'Challenge my understanding', prompt: `Challenge my assumptions about ${currentSubject.name}.` },
-                    { label: 'Guide my learning', prompt: `Guide me through studying the basics of ${currentSubject.name}.` },
-                    { label: 'Ask me questions', prompt: `Ask me Socratic questions to test my knowledge of ${currentSubject.name}.` }
-                  ] : [
-                    { label: 'Explore a concept', prompt: 'Help me understand the concept of recursion in programming.' },
-                    { label: 'Challenge my thinking', prompt: 'Challenge my assumptions about the nature of consciousness.' },
-                    { label: 'Guide my learning', prompt: 'Guide me through studying the basics of quantum mechanics.' },
-                    { label: 'Help me understand', prompt: 'Ask me Socratic questions about the causes of World War I.' }
-                  ]).map((item, i) => (
+                  {(learningMode === 'exam_prep'
+                    ? (currentSubject ? [
+                        { label: `Explain a ${currentSubject.name} concept fast`, prompt: `Explain a fundamental concept in ${currentSubject.name} clearly and directly - I have an exam soon.` },
+                        { label: 'Quiz me quickly', prompt: `Quiz me on the basics of ${currentSubject.name}.` },
+                        { label: 'Summarize key points', prompt: `Summarize the most important things to know about ${currentSubject.name} for an exam.` },
+                        { label: 'Practice problem', prompt: `Give me a practice problem on ${currentSubject.name}.` }
+                      ] : [
+                        { label: 'Explain a concept fast', prompt: 'Explain recursion in programming clearly and directly - I have an exam soon.' },
+                        { label: 'Quiz me quickly', prompt: 'Quiz me on a topic of your choice to help me study.' },
+                        { label: 'Summarize key points', prompt: 'Summarize the key points I should know about quantum mechanics for an exam.' },
+                        { label: 'Practice problem', prompt: 'Give me a practice problem to work through.' }
+                      ])
+                    : (currentSubject ? [
+                        { label: `Explain a ${currentSubject.name} concept`, prompt: `Help me understand a fundamental concept in ${currentSubject.name}.` },
+                        { label: 'Challenge my understanding', prompt: `Challenge my assumptions about ${currentSubject.name}.` },
+                        { label: 'Guide my learning', prompt: `Guide me through studying the basics of ${currentSubject.name}.` },
+                        { label: 'Ask me questions', prompt: `Ask me Socratic questions to test my knowledge of ${currentSubject.name}.` }
+                      ] : [
+                        { label: 'Explore a concept', prompt: 'Help me understand the concept of recursion in programming.' },
+                        { label: 'Challenge my thinking', prompt: 'Challenge my assumptions about the nature of consciousness.' },
+                        { label: 'Guide my learning', prompt: 'Guide me through studying the basics of quantum mechanics.' },
+                        { label: 'Help me understand', prompt: 'Ask me Socratic questions about the causes of World War I.' }
+                      ])
+                  ).map((item, i) => (
                     <button
                       key={i}
                       onClick={() => { setInput(item.prompt); inputRef.current?.focus(); }}

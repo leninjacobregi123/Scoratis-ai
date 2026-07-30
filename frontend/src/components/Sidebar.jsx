@@ -1,10 +1,14 @@
-import { Home, MessageCircle, Search, GalleryHorizontalEnd, Settings, ChevronLeft, ChevronRight, Clock, Plus } from 'lucide-react';
+import { Home, MessageCircle, Search, GalleryHorizontalEnd, Settings, ChevronLeft, ChevronRight, Clock, Plus, LogOut, BarChart3, Brain, GraduationCap } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import SocratesLogo from '../3d/SocratesLogo';
+import { useAuth } from '../context/AuthContext';
 
 const navItems = [
   { id: 'home', label: 'Home', icon: Home, path: '/app/home' },
   { id: 'scoratis', label: 'Scoratis AI', icon: MessageCircle, path: '/app/scoratis', primary: true },
+  { id: 'quizzes', label: 'Quizzes', icon: GraduationCap, path: '/app/quizzes' },
+  { id: 'progress', label: 'Progress', icon: BarChart3, path: '/app/progress' },
+  { id: 'review', label: 'Review', icon: Brain, path: '/app/review' },
   { id: 'settings', label: 'AI Settings', icon: Settings, path: '/app/settings' },
 ];
 
@@ -20,6 +24,14 @@ export default function Sidebar({
 }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const { user, logout } = useAuth();
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login', { replace: true });
+  };
+
+  const initial = user?.username?.[0]?.toUpperCase() || '?';
 
   // Show only 5 most recent chats
   const displayChats = recentChats.slice(0, 5);
@@ -48,24 +60,38 @@ export default function Sidebar({
         <div className="glass-card rounded-xl p-3 mb-4">
           <div className="flex items-center space-x-3">
             <div className="w-10 h-10 rounded-full bg-gradient-to-br from-accent-olive-light to-accent-olive flex items-center justify-center text-bg-primary font-semibold">
-              L
+              {initial}
             </div>
-            <div>
-              <h2 className="text-text-primary font-semibold text-sm">Lenin</h2>
+            <div className="flex-1 min-w-0">
+              <h2 className="text-text-primary font-semibold text-sm truncate">{user?.username || 'Loading...'}</h2>
               <p className="text-xs text-text-muted">
                 {stats.journals_this_week || 0} entries this week
               </p>
             </div>
+            <button
+              onClick={handleLogout}
+              title="Sign out"
+              className="p-1.5 rounded-lg text-text-muted hover:text-red-400 hover:bg-red-500/10 transition-colors"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
           </div>
         </div>
       )}
 
       {/* Collapsed User Avatar */}
       {collapsed && (
-        <div className="flex justify-center mb-4">
+        <div className="flex flex-col items-center gap-2 mb-4">
           <div className="w-10 h-10 rounded-full bg-gradient-to-br from-accent-olive-light to-accent-olive flex items-center justify-center text-bg-primary font-semibold">
-            L
+            {initial}
           </div>
+          <button
+            onClick={handleLogout}
+            title="Sign out"
+            className="p-1.5 rounded-lg text-text-muted hover:text-red-400 hover:bg-red-500/10 transition-colors"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
         </div>
       )}
 

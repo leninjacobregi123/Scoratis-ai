@@ -27,7 +27,7 @@ class Journal(Base):
         Integer, ForeignKey("folders.id", ondelete="SET NULL"), nullable=True
     )
     user_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("users.id", ondelete="CASCADE"), default=1
+        Integer, ForeignKey("users.id", ondelete="CASCADE")
     )
     # pgvector embedding for semantic search (384 dimensions for all-MiniLM-L6-v2)
     embedding = mapped_column(Vector(384), nullable=True)

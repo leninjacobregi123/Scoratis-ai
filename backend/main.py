@@ -5,7 +5,9 @@ Multi-LLM support with adaptive learning prompts
 RAG + Web Search augmentation for enhanced responses
 """
 
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
+import re
+
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -28,7 +30,7 @@ from prompts import (
     detect_video_potential, get_subject_prompt, get_available_subjects,
     SUBJECT_CHANNELS, CITATION_INSTRUCTIONS, RAG_CONTEXT_AWARENESS
 )
-from models import ProviderType, PROVIDER_INFO, LLMProviderConfig, Document, SourceType, DocumentStatus
+from models import ProviderType, PROVIDER_INFO, LLMProviderConfig, Document, SourceType, DocumentStatus, User
 from services.encryption_service import get_encryption_service
 from video_service import video_service
 from conversation_analyzer import conversation_analyzer, VideoTrigger
@@ -46,9 +48,40 @@ from services.guardrail_service import (
     get_guardrail_service, GuardrailService, GuardrailResult, GuardrailResponse
 )
 from config import settings
+from core_pkg.auth import get_current_user
+from api_pkg.routes.auth import router as auth_router
+from api_pkg.routes.videos import router as videos_router
+from api_pkg.routes.quizzes import router as quizzes_router
+from api_pkg.routes.progress import router as progress_router
+from api_pkg.routes.review import router as review_router
+from api_pkg.routes.transcripts import router as transcripts_router
+from services.video_job_service import start_video_job
+from services import progress_service, review_service
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+
+async def _track_subject_progress(session_id: str, user_id: int, subject: str) -> None:
+    """Update SubjectProgress and seed spaced-repetition review items from
+    this turn's ConversationAnalyzer state. Called unconditionally after
+    every AI turn (independent of whether LangGraph or the plain
+    ConversationAnalyzer path handled video-trigger analysis) since
+    `analyze_message` is a cheap local heuristic, not an LLM call - safe to
+    run alongside either path. Best-effort: a tracking failure must never
+    break the chat response the user is waiting on.
+    """
+    try:
+        turn_state = conversation_analyzer.get_or_create_state(session_id).to_dict()
+        async with db.get_session() as session:
+            await progress_service.record_turn(
+                session, user_id=user_id, subject=subject, session_id=session_id, state=turn_state
+            )
+            await review_service.seed_from_key_discoveries(
+                session, user_id=user_id, subject=subject, discoveries=turn_state.get("key_discoveries", [])
+            )
+    except Exception as e:
+        logger.warning(f"Progress/review tracking failed (continuing): {e}")
 
 # Pydantic Models
 class JournalCreate(BaseModel):
@@ -83,12 +116,16 @@ class ChatMessage(BaseModel):
     use_documents: Optional[bool] = True  # Enable RAG document search
     provider: Optional[str] = None  # LLM provider (ollama, openai, anthropic, etc.)
     model: Optional[str] = None  # Model name (llama3.2, gpt-4o, etc.)
+    mode: Optional[str] = None  # 'exam_prep' | 'deep_learning'; None = use conversation's stored mode, default deep_learning
+    mode_context: Optional[str] = None  # Optional freeform context, e.g. "Physics midterm Friday" (exam_prep only)
 
 class DeleteConversation(BaseModel):
     permanent: Optional[bool] = False
 
 class ConversationUpdate(BaseModel):
     title: Optional[str] = None
+    mode: Optional[str] = None
+    mode_context: Optional[str] = None
 
 class LLMConfigUpdate(BaseModel):
     model: str
@@ -125,10 +162,23 @@ class SessionModelUpdate(BaseModel):
     provider_id: Optional[int] = None
     model: str
 
-class VideoGenerateRequest(BaseModel):
-    topic: str
-    quality: Optional[str] = "high"
-    duration: Optional[int] = 90
+_INTERNAL_REASONING_TAG_RE = re.compile(
+    r"\*{0,2}<pedagogical_plan>\*{0,2}[\s\S]*?</pedagogical_plan>\*{0,2}|<think>[\s\S]*?</think>",
+    re.IGNORECASE,
+)
+
+
+def strip_internal_reasoning(text: str) -> str:
+    """Strip <pedagogical_plan>/<think> scratchpad leaks the model
+    occasionally emits despite MISSION.md instructing it not to (a model
+    steerability gap, not something a prompt tweak reliably fixes).
+    frontend/src/pages/Chat.jsx does the same stripping for the live
+    stream, but that's client-side only - this covers the DB-persisted
+    copy, which export/share read directly and unstripped otherwise."""
+    if not text:
+        return text
+    return _INTERNAL_REASONING_TAG_RE.sub("", text).strip()
+
 
 # Global state
 db: DatabaseManager = None
@@ -155,10 +205,35 @@ def get_youtube_client():
             pass
     return youtube_client
 
+INSECURE_DEFAULT_SECRETS = {
+    "SCORATIS_ENCRYPTION_KEY": "scoratis-default-dev-key-change-in-production-32chars",
+    "JWT_SECRET_KEY": "scoratis-default-dev-jwt-secret-change-in-production",
+}
+
+
+def _guard_against_insecure_production_secrets() -> None:
+    """Refuse to boot in production with secrets still at their insecure
+    dev defaults - a cheap guardrail, not a full security audit."""
+    if settings.ENVIRONMENT != "production":
+        return
+    still_default = [
+        name for name, default in INSECURE_DEFAULT_SECRETS.items()
+        if getattr(settings, name) == default
+    ]
+    if still_default:
+        raise RuntimeError(
+            f"Refusing to start with ENVIRONMENT=production while these secrets are "
+            f"still at their insecure default values: {', '.join(still_default)}. "
+            f"Set real values via environment variables/secrets before deploying."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler"""
     global db, rag_service, web_search_service, memory_service, langgraph_service, video_analyzer_service, scoratis_agent, guardrail_service
+
+    _guard_against_insecure_production_secrets()
 
     # Initialize PostgreSQL database
     db = get_database()
@@ -225,7 +300,7 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"],
+    allow_origins=settings.allowed_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -236,11 +311,18 @@ GENERATED_VIDEOS_DIR = Path(__file__).parent / "generated_videos"
 GENERATED_VIDEOS_DIR.mkdir(exist_ok=True)
 app.mount("/generated_videos", StaticFiles(directory=str(GENERATED_VIDEOS_DIR)), name="generated_videos")
 
+app.include_router(auth_router)
+app.include_router(videos_router)
+app.include_router(quizzes_router)
+app.include_router(progress_router)
+app.include_router(review_router)
+app.include_router(transcripts_router)
+
 # ==================== HEALTH CHECK ====================
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Unauthenticated health check for PaaS/uptime probes - global counts only, no per-user data."""
     stats = await db.get_user_stats()
     return {
         "status": "running",
@@ -252,9 +334,9 @@ async def health_check():
     }
 
 @app.get("/stats")
-async def get_stats():
-    """Get user statistics"""
-    return await db.get_user_stats()
+async def get_stats(current_user: User = Depends(get_current_user)):
+    """Get statistics for the authenticated user"""
+    return await db.get_user_stats(user_id=current_user.id)
 
 
 @app.get("/migrations/status")
@@ -268,13 +350,14 @@ async def get_migration_status():
 @app.get("/journals")
 async def get_journals(
     folder_id: Optional[int] = Query(None),
-    search: Optional[str] = Query(None)
+    search: Optional[str] = Query(None),
+    current_user: User = Depends(get_current_user),
 ):
     """Get all journals with optional filtering"""
-    return await db.get_journals(folder_id=folder_id, search_query=search)
+    return await db.get_journals(user_id=current_user.id, folder_id=folder_id, search_query=search)
 
 @app.post("/journals", status_code=201)
-async def create_journal(journal: JournalCreate):
+async def create_journal(journal: JournalCreate, current_user: User = Depends(get_current_user)):
     """Create a new journal entry with embedding for RAG"""
     if not journal.title.strip() or not journal.content.strip():
         raise HTTPException(status_code=400, detail="Title and content are required")
@@ -282,16 +365,18 @@ async def create_journal(journal: JournalCreate):
     journal_id = await db.create_journal(
         title=journal.title.strip(),
         content=journal.content.strip(),
+        user_id=current_user.id,
         tags=journal.tags,
         folder_id=journal.folder_id
     )
     return {"id": journal_id, "message": "Journal created successfully"}
 
 @app.put("/journals/{journal_id}")
-async def update_journal(journal_id: int, journal: JournalUpdate):
+async def update_journal(journal_id: int, journal: JournalUpdate, current_user: User = Depends(get_current_user)):
     """Update a journal entry (re-generates embedding)"""
     success = await db.update_journal(
         journal_id,
+        user_id=current_user.id,
         title=journal.title,
         content=journal.content,
         tags=journal.tags,
@@ -302,36 +387,38 @@ async def update_journal(journal_id: int, journal: JournalUpdate):
     return {"message": "Journal updated successfully"}
 
 @app.delete("/journals/{journal_id}")
-async def delete_journal(journal_id: int):
+async def delete_journal(journal_id: int, current_user: User = Depends(get_current_user)):
     """Delete a journal entry"""
-    await db.delete_journal(journal_id)
+    await db.delete_journal(journal_id, user_id=current_user.id)
     return {"message": "Journal deleted successfully"}
 
 # ==================== FOLDER ENDPOINTS ====================
 
 @app.get("/folders")
-async def get_folders():
+async def get_folders(current_user: User = Depends(get_current_user)):
     """Get all folders"""
-    return await db.get_folders()
+    return await db.get_folders(user_id=current_user.id)
 
 @app.post("/folders", status_code=201)
-async def create_folder(folder: FolderCreate):
+async def create_folder(folder: FolderCreate, current_user: User = Depends(get_current_user)):
     """Create a new folder"""
     if not folder.name.strip():
         raise HTTPException(status_code=400, detail="Folder name is required")
 
     folder_id = await db.create_folder(
         name=folder.name.strip(),
+        user_id=current_user.id,
         description=folder.description.strip() if folder.description else "",
         color=folder.color
     )
     return {"id": folder_id, "message": "Folder created successfully"}
 
 @app.put("/folders/{folder_id}")
-async def update_folder(folder_id: int, folder: FolderUpdate):
+async def update_folder(folder_id: int, folder: FolderUpdate, current_user: User = Depends(get_current_user)):
     """Update a folder"""
     success = await db.update_folder(
         folder_id,
+        user_id=current_user.id,
         name=folder.name,
         description=folder.description,
         color=folder.color
@@ -341,9 +428,9 @@ async def update_folder(folder_id: int, folder: FolderUpdate):
     return {"message": "Folder updated successfully"}
 
 @app.delete("/folders/{folder_id}")
-async def delete_folder(folder_id: int):
+async def delete_folder(folder_id: int, current_user: User = Depends(get_current_user)):
     """Delete a folder"""
-    await db.delete_folder(folder_id)
+    await db.delete_folder(folder_id, user_id=current_user.id)
     return {"message": "Folder deleted successfully"}
 
 # ==================== CHAT ENDPOINTS ====================
@@ -439,7 +526,7 @@ async def get_llm_providers():
     }
 
 @app.post("/llm/configure")
-async def configure_llm(config: LLMConfigUpdate):
+async def configure_llm(config: LLMConfigUpdate, current_user: User = Depends(get_current_user)):
     """
     Configure the LLM model with validation.
 
@@ -450,6 +537,10 @@ async def configure_llm(config: LLMConfigUpdate):
     - error_type: model_not_installed, server_unavailable, insufficient_memory, timeout, authentication_error
     - message: Human-readable error message
     - suggestion: Actionable fix command
+
+    NOTE: llm_service is currently a process-wide singleton, so this affects
+    every user's requests until changed again - a known limitation to address
+    when per-user LLM configuration isolation is built (not part of this pass).
     """
     provider = config.provider or "ollama"
 
@@ -461,7 +552,7 @@ async def configure_llm(config: LLMConfigUpdate):
             async with db.get_session() as session:
                 from sqlalchemy import select
                 stmt = select(LLMProviderConfig).where(
-                    LLMProviderConfig.user_id == 1,
+                    LLMProviderConfig.user_id == current_user.id,
                     LLMProviderConfig.provider == provider_type
                 )
                 result = await session.execute(stmt)
@@ -608,13 +699,13 @@ async def get_available_llm_providers():
 
 
 @app.get("/llm/providers/configured")
-async def get_configured_providers():
+async def get_configured_providers(current_user: User = Depends(get_current_user)):
     """Get all configured LLM provider configurations from database"""
     async with db.get_session() as session:
         from sqlalchemy import select
         from models import LLMProviderConfig
 
-        stmt = select(LLMProviderConfig).where(LLMProviderConfig.user_id == 1)
+        stmt = select(LLMProviderConfig).where(LLMProviderConfig.user_id == current_user.id)
         result = await session.execute(stmt)
         configs = result.scalars().all()
 
@@ -633,7 +724,7 @@ async def get_configured_providers():
 
 
 @app.post("/llm/providers/configured", status_code=201)
-async def create_provider_config(provider_config: LLMProviderCreate):
+async def create_provider_config(provider_config: LLMProviderCreate, current_user: User = Depends(get_current_user)):
     """Create a new LLM provider configuration with encrypted API key"""
     try:
         provider_type = ProviderType(provider_config.provider.lower())
@@ -650,7 +741,7 @@ async def create_provider_config(provider_config: LLMProviderCreate):
             from sqlalchemy import update
             await session.execute(
                 update(LLMProviderConfig)
-                .where(LLMProviderConfig.user_id == 1)
+                .where(LLMProviderConfig.user_id == current_user.id)
                 .values(is_default=False)
             )
 
@@ -660,7 +751,7 @@ async def create_provider_config(provider_config: LLMProviderCreate):
             encrypted_key = encryption.encrypt(provider_config.api_key)
 
         new_config = LLMProviderConfig(
-            user_id=1,
+            user_id=current_user.id,
             provider=provider_type,
             name=provider_config.name,
             api_key_encrypted=encrypted_key,
@@ -680,7 +771,7 @@ async def create_provider_config(provider_config: LLMProviderCreate):
 
 
 @app.put("/llm/providers/configured/{provider_id}")
-async def update_provider_config(provider_id: int, update_data: LLMProviderUpdate):
+async def update_provider_config(provider_id: int, update_data: LLMProviderUpdate, current_user: User = Depends(get_current_user)):
     """Update an existing LLM provider configuration"""
     encryption = get_encryption_service()
 
@@ -688,7 +779,7 @@ async def update_provider_config(provider_id: int, update_data: LLMProviderUpdat
         from models import LLMProviderConfig
 
         config = await session.get(LLMProviderConfig, provider_id)
-        if not config:
+        if not config or config.user_id != current_user.id:
             raise HTTPException(status_code=404, detail="Provider configuration not found")
 
         # If setting as default, unset other defaults
@@ -696,7 +787,7 @@ async def update_provider_config(provider_id: int, update_data: LLMProviderUpdat
             from sqlalchemy import update
             await session.execute(
                 update(LLMProviderConfig)
-                .where(LLMProviderConfig.user_id == 1)
+                .where(LLMProviderConfig.user_id == current_user.id)
                 .where(LLMProviderConfig.id != provider_id)
                 .values(is_default=False)
             )
@@ -719,13 +810,13 @@ async def update_provider_config(provider_id: int, update_data: LLMProviderUpdat
 
 
 @app.delete("/llm/providers/configured/{provider_id}")
-async def delete_provider_config(provider_id: int):
+async def delete_provider_config(provider_id: int, current_user: User = Depends(get_current_user)):
     """Delete an LLM provider configuration"""
     async with db.get_session() as session:
         from models import LLMProviderConfig
 
         config = await session.get(LLMProviderConfig, provider_id)
-        if not config:
+        if not config or config.user_id != current_user.id:
             raise HTTPException(status_code=404, detail="Provider configuration not found")
 
         await session.delete(config)
@@ -733,13 +824,13 @@ async def delete_provider_config(provider_id: int):
 
 
 @app.post("/llm/providers/{provider_id}/test")
-async def test_provider_config(provider_id: int):
+async def test_provider_config(provider_id: int, current_user: User = Depends(get_current_user)):
     """Test a configured provider by making a simple API call"""
     async with db.get_session() as session:
         from models import LLMProviderConfig
 
         config = await session.get(LLMProviderConfig, provider_id)
-        if not config:
+        if not config or config.user_id != current_user.id:
             raise HTTPException(status_code=404, detail="Provider configuration not found")
 
         provider_info = PROVIDER_INFO.get(config.provider, {})
@@ -761,7 +852,7 @@ async def test_provider_config(provider_id: int):
 
 
 @app.post("/llm/session/model")
-async def set_session_model(update: SessionModelUpdate):
+async def set_session_model(update: SessionModelUpdate, current_user: User = Depends(get_current_user)):
     """Set the LLM model for a specific chat session"""
     encryption = get_encryption_service()
 
@@ -775,7 +866,7 @@ async def set_session_model(update: SessionModelUpdate):
             from models import LLMProviderConfig
 
             config = await session.get(LLMProviderConfig, update.provider_id)
-            if not config:
+            if not config or config.user_id != current_user.id:
                 raise HTTPException(status_code=404, detail="Provider configuration not found")
 
             api_key_encrypted = config.api_key_encrypted
@@ -882,7 +973,7 @@ async def generate_tts(request: TTSRequest):
     raise HTTPException(status_code=500, detail="TTS generation failed")
 
 @app.post("/chat")
-async def chat(message: ChatMessage):
+async def chat(message: ChatMessage, current_user: User = Depends(get_current_user)):
     """Chat with Scoratis AI assistant using RAG + Web Search augmentation"""
     user_message = message.message.strip()
     session_id = message.session_id
@@ -938,7 +1029,7 @@ async def chat(message: ChatMessage):
             conversation_memory[session_id] = []
 
         # Save user message to database with embedding (with subject tagging)
-        conversation_id = await db.add_chat_message(session_id, 'user', user_message, subject=subject)
+        conversation_id = await db.add_chat_message(session_id, 'user', user_message, user_id=current_user.id, subject=subject)
 
         # Add to memory service
         memory_service.add_message(session_id, "user", user_message)
@@ -1033,7 +1124,7 @@ async def chat(message: ChatMessage):
             source = "fallback"
 
         # Save AI response to database with embedding (with subject tagging)
-        await db.add_chat_message(session_id, 'ai', response_text, subject=subject)
+        await db.add_chat_message(session_id, 'ai', strip_internal_reasoning(response_text), user_id=current_user.id, subject=subject)
 
         # Add to memory service
         memory_service.add_message(session_id, "assistant", response_text)
@@ -1056,6 +1147,7 @@ async def chat(message: ChatMessage):
         learning_state_str = "initial"
         turn_count = 0
 
+        analyzer_ran_this_turn = False
         try:
             if langgraph_service:
                 # Use LangGraph for intelligent video analysis (analysis only, no LLM call)
@@ -1078,12 +1170,21 @@ async def chat(message: ChatMessage):
                     user_message=user_message,
                     ai_response=response_text
                 )
+                analyzer_ran_this_turn = True
                 video_available = video_analysis.get('should_offer_video', False)
                 video_topic = video_analysis.get('suggested_video_topic')
                 learning_state_str = video_analysis.get('learning_state', 'initial')
                 turn_count = video_analysis.get('turn_count', 0)
         except Exception as video_err:
             logger.warning(f"Video analysis error (continuing without): {video_err}")
+
+        if not analyzer_ran_this_turn:
+            # LangGraph handled video-trigger analysis above; ConversationAnalyzer's
+            # own state still needs updating so progress/review tracking has fresh data.
+            conversation_analyzer.analyze_message(
+                session_id=session_id, user_message=user_message, ai_response=response_text
+            )
+        await _track_subject_progress(session_id, current_user.id, subject)
 
         return {
             "reply": response_text,
@@ -1112,7 +1213,7 @@ async def chat(message: ChatMessage):
         response_text = generate_fallback(user_message, error_info)
 
         try:
-            await db.add_chat_message(session_id, 'ai', response_text, subject=subject)
+            await db.add_chat_message(session_id, 'ai', strip_internal_reasoning(response_text), user_id=current_user.id, subject=subject)
         except:
             pass
         return {
@@ -1131,7 +1232,7 @@ async def chat(message: ChatMessage):
         }
 
 @app.post("/chat/stream")
-async def chat_stream(message: ChatMessage):
+async def chat_stream(message: ChatMessage, current_user: User = Depends(get_current_user)):
     """Stream chat responses from Scoratis AI with RAG + Web Search"""
     user_message = message.message.strip()
     session_id = message.session_id
@@ -1141,6 +1242,19 @@ async def chat_stream(message: ChatMessage):
 
     # Get subject (defaults to "general")
     subject = message.subject or "general"
+
+    # Resolve learning mode: explicit per-request value wins (frontend sends
+    # this on every call once chosen), otherwise fall back to whatever's
+    # already stored on the conversation, otherwise deep_learning - this
+    # covers every conversation that predates this feature with zero
+    # behavior change.
+    if message.mode:
+        resolved_mode = message.mode
+        resolved_mode_context = message.mode_context
+    else:
+        conv_meta = await db.get_conversation_meta(session_id, user_id=current_user.id)
+        resolved_mode = conv_meta.get("learning_mode") or "deep_learning"
+        resolved_mode_context = conv_meta.get("mode_context")
 
     # === GUARDRAIL CHECK: Validate query is related to subject ===
     if guardrail_service and subject != "general":
@@ -1169,6 +1283,68 @@ async def chat_stream(message: ChatMessage):
         except Exception as guardrail_error:
             logger.warning(f"Guardrail check error (continuing): {guardrail_error}")
 
+    # === Resolve provider/model/key for this request, shared by both the
+    # agentic and non-agentic paths below. The agent has no per-request
+    # provider param, so this also gets applied to the shared llm_service
+    # singleton via set_provider() right before invoking it. ===
+    resolved_provider = ProviderType(settings.DEFAULT_LLM_PROVIDER)
+    resolved_model = settings.DEFAULT_LLM_MODEL
+    resolved_api_key_encrypted: Optional[str] = None
+
+    if message.provider:
+        try:
+            requested_provider = ProviderType(message.provider)
+            local_providers = ['ollama', 'lmstudio', 'localai', 'textgenwebui']
+
+            if message.provider in local_providers:
+                resolved_provider = requested_provider
+                resolved_model = message.model or resolved_model
+                logger.info(f"[MODEL SWITCH] Using local provider: {resolved_provider.value}/{resolved_model}")
+            else:
+                async with db.get_session() as db_session:
+                    from sqlalchemy import select
+                    result = await db_session.execute(
+                        select(LLMProviderConfig).where(
+                            LLMProviderConfig.user_id == current_user.id,
+                            LLMProviderConfig.provider == requested_provider,
+                            LLMProviderConfig.is_active == True
+                        ).order_by(LLMProviderConfig.is_default.desc(), LLMProviderConfig.updated_at.desc())
+                    )
+                    # first(), not scalar_one_or_none() - a user can have more than
+                    # one active config for the same provider (e.g. re-added after
+                    # editing), which isn't an error case worth crashing the request on.
+                    provider_config = result.scalars().first()
+                    encrypted_key = provider_config.api_key_encrypted if provider_config else None
+
+                    if llm_service.litellm.has_api_key(requested_provider, encrypted_key):
+                        resolved_provider = requested_provider
+                        resolved_api_key_encrypted = encrypted_key
+                        resolved_model = message.model or resolved_model
+                        logger.info(f"[MODEL SWITCH] Using cloud provider: {resolved_provider.value}/{resolved_model}")
+                    else:
+                        logger.warning(
+                            f"[MODEL SWITCH] No API key configured for {message.provider} - "
+                            f"using default {resolved_provider.value}/{resolved_model}"
+                        )
+        except ValueError:
+            logger.warning(f"[MODEL SWITCH] Invalid provider: {message.provider} - using default {resolved_provider.value}/{resolved_model}")
+    elif message.model:
+        resolved_model = message.model
+
+    # Several helper calls within this request - RAG query reformulation,
+    # the post-response video-worthiness check, guardrail checks, and the
+    # agent's internal tool-calling - all go through llm_service without
+    # passing an explicit provider/model/key, so they fall back to
+    # llm_service.current_config (a shared, process-wide singleton). Apply
+    # the resolution above to it unconditionally so those calls use the
+    # same provider/key as the main response instead of the stale startup
+    # default.
+    llm_service.set_provider(
+        model=resolved_model,
+        provider=resolved_provider.value,
+        api_key_encrypted=resolved_api_key_encrypted
+    )
+
     # === AGENTIC MODE: Use full agent when use_reasoning is enabled ===
     use_reasoning = message.use_reasoning if message.use_reasoning is not None else False
 
@@ -1184,7 +1360,7 @@ async def chat_stream(message: ChatMessage):
                         message=user_message,
                         subject=subject,
                         db_session=db_session,
-                        user_id=1
+                        user_id=current_user.id
                     ):
                         event_type = event.get("type")
 
@@ -1220,7 +1396,7 @@ async def chat_stream(message: ChatMessage):
                                 final_response = event.get("response") or "I apologize, but I couldn't generate a complete response."
 
                             # Save to database
-                            await db.add_chat_message(session_id, 'ai', final_response, subject=subject)
+                            await db.add_chat_message(session_id, 'ai', strip_internal_reasoning(final_response), user_id=current_user.id, subject=subject, mode=resolved_mode, mode_context=resolved_mode_context)
 
                             # Final event with metadata
                             final_data = {
@@ -1232,7 +1408,8 @@ async def chat_stream(message: ChatMessage):
                                 'model': event.get('metadata', {}).get('model'),
                                 'sources': event.get('metadata', {}).get('sources', []),
                                 'tools_used': event.get('metadata', {}).get('tools_used', 0),
-                                'mode': 'agent'
+                                'mode': 'agent',
+                                'learning_mode': resolved_mode,
                             }
                             yield f"data: {json.dumps(final_data)}\n\n"
 
@@ -1255,8 +1432,8 @@ async def chat_stream(message: ChatMessage):
             }
         )
 
-    # Get subject-specific prompt
-    base_system_prompt = get_subject_prompt(subject)
+    # Get subject-specific prompt for the resolved learning mode
+    base_system_prompt = get_subject_prompt(subject, mode=resolved_mode, mode_context=resolved_mode_context)
     context = subject
 
     # Get or initialize conversation history
@@ -1264,7 +1441,7 @@ async def chat_stream(message: ChatMessage):
         conversation_memory[session_id] = []
 
     # Save user message to database with embedding (with subject tagging)
-    conversation_id = await db.add_chat_message(session_id, 'user', user_message, subject=subject)
+    conversation_id = await db.add_chat_message(session_id, 'user', user_message, user_id=current_user.id, subject=subject)
 
     # Add to memory service
     memory_service.add_message(session_id, "user", user_message)
@@ -1293,33 +1470,39 @@ async def chat_stream(message: ChatMessage):
     if use_documents:
         try:
             async with db.get_session() as db_session:
-                # Try enhanced hybrid search with query reformulation and citations
-                try:
-                    rag_result = await rag_service.get_context_with_citations(
-                        db_session,
-                        user_message,
-                        subject=subject,
-                        conversation_history=conversation_history_for_rag,
-                        use_query_reformulation=True,
-                        llm_service=llm_service,
-                    )
-                    rag_context_xml = rag_result.get("context_xml", "")
-                    rag_sources = rag_result.get("sources", [])
-                    rag_chunk_mapping = rag_result.get("chunk_mapping", {})
+                rag_result = await rag_service.get_context_with_citations(
+                    db_session,
+                    user_message,
+                    subject=subject,
+                    conversation_history=conversation_history_for_rag,
+                    use_query_reformulation=True,
+                    llm_service=llm_service,
+                )
+                rag_context_xml = rag_result.get("context_xml", "")
+                rag_sources = rag_result.get("sources", [])
+                rag_chunk_mapping = rag_result.get("chunk_mapping", {})
 
-                    # Log query reformulation if it occurred
-                    reformulation_info = rag_result.get("reformulation_info")
-                    if reformulation_info:
-                        logger.info(f"Query reformulated: '{reformulation_info.get('original_query')}' -> '{reformulation_info.get('reformulated_query')}'")
-                except Exception as hybrid_error:
-                    logger.warning(f"Hybrid search error, falling back to legacy: {hybrid_error}")
-                    # Fallback to legacy search
-                    relevant_context = await rag_service.get_relevant_context(
-                        db_session, user_message, session_id
-                    )
-                    rag_context_xml = rag_service.format_context_for_llm(relevant_context)
+                # Log query reformulation if it occurred
+                reformulation_info = rag_result.get("reformulation_info")
+                if reformulation_info:
+                    logger.info(f"Query reformulated: '{reformulation_info.get('original_query')}' -> '{reformulation_info.get('reformulated_query')}'")
         except Exception as rag_error:
-            logger.warning(f"RAG search error (continuing without): {rag_error}")
+            logger.warning(f"Document RAG search error (continuing without): {rag_error}")
+
+    # === Long-term memory: journal entries + past conversations ===
+    # Independent of document RAG above - previously this only ran as a
+    # fallback when document search *threw*, meaning journals/past chats were
+    # never actually recalled in normal operation. Runs every turn now,
+    # alongside document context rather than instead of it.
+    memory_context_text = ""
+    try:
+        async with db.get_session() as db_session:
+            relevant_context = await rag_service.get_relevant_context(
+                db_session, user_message, session_id, user_id=current_user.id
+            )
+            memory_context_text = rag_service.format_context_for_llm(relevant_context)
+    except Exception as memory_error:
+        logger.warning(f"Journal/conversation memory search error (continuing without): {memory_error}")
 
     # === Web Search: Proactive search when enabled ===
     web_search_context = ""
@@ -1369,6 +1552,10 @@ async def chat_stream(message: ChatMessage):
     # Add RAG context if available
     if rag_context_xml:
         context_parts.append(f"DOCUMENT CONTEXT:\n{rag_context_xml}")
+
+    # Add recalled journal entries / past conversations if available
+    if memory_context_text:
+        context_parts.append(memory_context_text)
 
     # Add web search context if available
     if web_search_context:
@@ -1433,72 +1620,16 @@ async def chat_stream(message: ChatMessage):
                 }
                 yield f"data: {json.dumps(search_trail_event)}\n\n"
 
-            # Stream the response using selected provider/model if specified
+            # Stream the response using the provider/model/key resolved above
+            # (shared with the agentic branch, so both paths behave identically)
             stream_kwargs = {
                 "messages": conversation_memory[session_id],
                 "system_prompt": system_prompt,
+                "provider": resolved_provider,
+                "model": resolved_model,
             }
-
-            # Add provider/model if specified in request
-            logger.info(f"[MODEL SWITCH] Request provider: {message.provider}, model: {message.model}")
-
-            # Track if we need to fallback
-            use_fallback = False
-            fallback_reason = None
-
-            if message.provider:
-                try:
-                    from models import ProviderType, LLMProviderConfig
-                    provider_type = ProviderType(message.provider)
-
-                    # Check if this is a local provider (no API key needed)
-                    local_providers = ['ollama', 'lmstudio', 'localai', 'textgenwebui']
-
-                    if message.provider in local_providers:
-                        # Local provider - use directly
-                        stream_kwargs["provider"] = provider_type
-                        if message.model:
-                            stream_kwargs["model"] = message.model
-                        logger.info(f"[MODEL SWITCH] Using local provider: {message.provider}/{message.model}")
-                    else:
-                        # Cloud provider - need API key from database
-                        async with db.get_session() as db_session:
-                            from sqlalchemy import select
-                            result = await db_session.execute(
-                                select(LLMProviderConfig).where(
-                                    LLMProviderConfig.provider == provider_type,
-                                    LLMProviderConfig.is_active == True
-                                )
-                            )
-                            provider_config = result.scalar_one_or_none()
-
-                            if provider_config and provider_config.api_key_encrypted:
-                                # Found API key - use cloud provider
-                                stream_kwargs["provider"] = provider_type
-                                stream_kwargs["api_key_encrypted"] = provider_config.api_key_encrypted
-                                if message.model:
-                                    stream_kwargs["model"] = message.model
-                                logger.info(f"[MODEL SWITCH] Using cloud provider: {message.provider}/{message.model}")
-                            else:
-                                # NO API key - fallback to default Ollama
-                                use_fallback = True
-                                fallback_reason = f"No API key configured for {message.provider}"
-
-                except ValueError:
-                    use_fallback = True
-                    fallback_reason = f"Invalid provider: {message.provider}"
-
-            # Handle fallback to default Ollama model
-            if use_fallback:
-                logger.warning(f"[MODEL SWITCH] {fallback_reason} - Falling back to Ollama/{settings.DEFAULT_LLM_MODEL}")
-                stream_kwargs["provider"] = ProviderType.OLLAMA
-                stream_kwargs["model"] = settings.DEFAULT_LLM_MODEL
-                # Remove any API key that might have been set
-                stream_kwargs.pop("api_key_encrypted", None)
-
-            # If no provider specified but model is, just use the model with current provider
-            elif not message.provider and message.model:
-                stream_kwargs["model"] = message.model
+            if resolved_api_key_encrypted:
+                stream_kwargs["api_key_encrypted"] = resolved_api_key_encrypted
                 logger.info(f"[MODEL SWITCH] Using model override only: {message.model}")
 
             logger.info(f"[MODEL SWITCH] Final stream_kwargs keys: {list(stream_kwargs.keys())}")
@@ -1508,7 +1639,7 @@ async def chat_stream(message: ChatMessage):
                 yield f"data: {json.dumps({'chunk': chunk, 'done': False})}\n\n"
 
             # Save complete response to database with embedding (with subject tagging)
-            await db.add_chat_message(session_id, 'ai', full_response, subject=subject)
+            await db.add_chat_message(session_id, 'ai', strip_internal_reasoning(full_response), user_id=current_user.id, subject=subject, mode=resolved_mode, mode_context=resolved_mode_context)
 
             # Add to memory service
             memory_service.add_message(session_id, "assistant", full_response)
@@ -1531,6 +1662,7 @@ async def chat_stream(message: ChatMessage):
             turn_count = 0
             auto_video_info = None  # NEW: For automatic video generation
 
+            analyzer_ran_this_turn = False
             try:
                 # First, get turn count from LangGraph or conversation analyzer
                 lg_result = None  # Initialize for later use
@@ -1549,6 +1681,7 @@ async def chat_stream(message: ChatMessage):
                         user_message=user_message,
                         ai_response=full_response
                     )
+                    analyzer_ran_this_turn = True
                     learning_state_str = video_analysis.get('learning_state', 'initial')
                     turn_count = video_analysis.get('turn_count', 0)
 
@@ -1575,12 +1708,14 @@ async def chat_stream(message: ChatMessage):
                         }
 
                         # Start video generation in background
-                        task_id = await video_service.start_generation(
+                        task_id = await start_video_job(
+                            user_id=current_user.id,
                             topic=decision.topic,
                             quality="high",
                             duration=decision.duration_seconds,
                             context=video_context,
-                            auto_generated=True
+                            session_id=session_id,
+                            auto_generated=True,
                         )
 
                         # Record this generation for cooldown tracking
@@ -1614,6 +1749,12 @@ async def chat_stream(message: ChatMessage):
 
             except Exception as video_err:
                 logger.warning(f"Video analysis/generation error: {video_err}")
+
+            if not analyzer_ran_this_turn:
+                conversation_analyzer.analyze_message(
+                    session_id=session_id, user_message=user_message, ai_response=full_response
+                )
+            await _track_subject_progress(session_id, current_user.id, subject)
 
             # === Citation Processing: Convert [citation:chunk_id] to footnotes ===
             formatted_response = full_response
@@ -1652,7 +1793,8 @@ async def chat_stream(message: ChatMessage):
                 'learning_state': learning_state_str,
                 'turn_count': turn_count,
                 # NEW: Automatic video generation info
-                'auto_video': auto_video_info  # None if not auto-generating
+                'auto_video': auto_video_info,  # None if not auto-generating
+                'learning_mode': resolved_mode,
             }
             yield f"data: {json.dumps(final_data)}\n\n"
 
@@ -1685,7 +1827,7 @@ async def chat_stream(message: ChatMessage):
             }
             yield f"data: {json.dumps(error_data)}\n\n"
             try:
-                await db.add_chat_message(session_id, 'ai', fallback, subject=subject)
+                await db.add_chat_message(session_id, 'ai', fallback, user_id=current_user.id, subject=subject)
                 conversation_memory[session_id].append({
                     "role": "assistant",
                     "content": fallback
@@ -1717,7 +1859,7 @@ async def chat_stream(message: ChatMessage):
             }
             yield f"data: {json.dumps(error_data)}\n\n"
             try:
-                await db.add_chat_message(session_id, 'ai', fallback, subject=subject)
+                await db.add_chat_message(session_id, 'ai', fallback, user_id=current_user.id, subject=subject)
                 conversation_memory[session_id].append({
                     "role": "assistant",
                     "content": fallback
@@ -1736,7 +1878,7 @@ async def chat_stream(message: ChatMessage):
     )
 
 @app.post("/chat/clear")
-async def clear_chat(session_id: str = "default"):
+async def clear_chat(session_id: str = "default", current_user: User = Depends(get_current_user)):
     """Clear conversation memory"""
     if session_id in conversation_memory:
         del conversation_memory[session_id]
@@ -1745,7 +1887,7 @@ async def clear_chat(session_id: str = "default"):
     # Reset conversation analyzer state
     conversation_analyzer.reset_session(session_id)
     # Clear from database
-    await db.clear_conversation(session_id)
+    await db.clear_conversation(session_id, user_id=current_user.id)
     return {"message": "Conversation cleared", "session_id": session_id}
 
 
@@ -1765,6 +1907,11 @@ async def chat_with_attachment(
     use_web_search: bool = Form(True),
     use_reasoning: bool = Form(False),
     use_documents: bool = Form(True),
+    provider: Optional[str] = Form(None),
+    model: Optional[str] = Form(None),
+    mode: Optional[str] = Form(None),
+    mode_context: Optional[str] = Form(None),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Chat with an optional file attachment.
@@ -1828,7 +1975,7 @@ async def chat_with_attachment(
         document_title = Path(file.filename).stem
         async with db.get_session() as session:
             document = Document(
-                user_id=1,
+                user_id=current_user.id,
                 title=document_title,
                 content="",
                 source_type=SourceType.UPLOAD,
@@ -1845,7 +1992,7 @@ async def chat_with_attachment(
 
         # Queue for background processing
         try:
-            from tasks.ingestion_tasks import process_document_task
+            from tasks_pkg.ingestion_tasks import process_document_task
             task = process_document_task.delay(document_id)
             logger.info(f"Document {document_id} queued for processing: {task.id}")
         except Exception as task_error:
@@ -1860,6 +2007,10 @@ async def chat_with_attachment(
         use_web_search=use_web_search,
         use_reasoning=use_reasoning,
         use_documents=use_documents,
+        provider=provider,
+        model=model,
+        mode=mode,
+        mode_context=mode_context,
     )
 
     # Stream response using existing chat_stream logic
@@ -1876,7 +2027,7 @@ async def chat_with_attachment(
 
         # Now stream the actual chat response
         # Re-use the streaming logic from chat_stream
-        response = await chat_stream(chat_message)
+        response = await chat_stream(chat_message, current_user)
 
         # Forward the streaming response
         async for chunk in response.body_iterator:
@@ -1912,7 +2063,7 @@ class GenerateVideoFromChatRequest(BaseModel):
 
 
 @app.post("/chat/generate-video")
-async def generate_video_from_chat(request: GenerateVideoFromChatRequest):
+async def generate_video_from_chat(request: GenerateVideoFromChatRequest, current_user: User = Depends(get_current_user)):
     """
     User-triggered video generation using LangGraph conversation context.
     Generates a 15-30 second focused educational video.
@@ -1959,11 +2110,13 @@ async def generate_video_from_chat(request: GenerateVideoFromChatRequest):
         }
 
         # Start video generation with short duration
-        task_id = await video_service.start_generation(
+        task_id = await start_video_job(
+            user_id=current_user.id,
             topic=topic,
             quality="high",
             duration=20,  # Short focused video
-            context=generation_context
+            context=generation_context,
+            session_id=session_id,
         )
 
         return {
@@ -1995,7 +2148,7 @@ class ContextAwareVideoRequest(BaseModel):
 
 
 @app.post("/chat/video/trigger")
-async def trigger_video_generation(request: VideoTriggerRequest):
+async def trigger_video_generation(request: VideoTriggerRequest, current_user: User = Depends(get_current_user)):
     """Manually trigger video generation based on learning context"""
     state = conversation_analyzer.get_or_create_state(request.session_id)
 
@@ -2018,10 +2171,12 @@ async def trigger_video_generation(request: VideoTriggerRequest):
     video_context = conversation_analyzer.get_video_generation_context(request.session_id)
 
     try:
-        task_id = await video_service.start_generation(
+        task_id = await start_video_job(
+            user_id=current_user.id,
             topic=video_topic,
             quality="high",
-            context=video_context  # Pass context for LLM-based generation
+            context=video_context,  # Pass context for LLM-based generation
+            session_id=request.session_id,
         )
 
         # Mark video as generated in state
@@ -2039,7 +2194,7 @@ async def trigger_video_generation(request: VideoTriggerRequest):
 
 
 @app.post("/chat/video/context-aware")
-async def context_aware_video_generation(request: ContextAwareVideoRequest):
+async def context_aware_video_generation(request: ContextAwareVideoRequest, current_user: User = Depends(get_current_user)):
     """
     Generate a video using conversation context for LLM-based Manim code generation.
     This endpoint analyzes the chat history to create relevant video content.
@@ -2061,10 +2216,12 @@ async def context_aware_video_generation(request: ContextAwareVideoRequest):
     state = conversation_analyzer.get_or_create_state(request.session_id)
 
     try:
-        task_id = await video_service.start_generation(
+        task_id = await start_video_job(
+            user_id=current_user.id,
             topic=topic,
             quality="high",
-            context=video_context if request.use_context else None
+            context=video_context if request.use_context else None,
+            session_id=request.session_id,
         )
 
         # Mark video as generated
@@ -2102,40 +2259,54 @@ async def get_video_context(session_id: str):
     }
 
 @app.get("/chat/history")
-async def get_conversation_history(limit: int = Query(20, le=50)):
+async def get_conversation_history(limit: int = Query(20, le=50), current_user: User = Depends(get_current_user)):
     """Get conversation history"""
-    conversations = await db.get_conversations(limit=limit)
+    conversations = await db.get_conversations(user_id=current_user.id, limit=limit)
     return {"conversations": conversations}
 
 @app.get("/chat/conversations")
-async def get_all_conversations(limit: int = Query(50, le=100)):
+async def get_all_conversations(limit: int = Query(50, le=100), current_user: User = Depends(get_current_user)):
     """Get all conversations for sidebar"""
-    conversations = await db.get_conversations(limit=limit)
+    conversations = await db.get_conversations(user_id=current_user.id, limit=limit)
     return {"conversations": conversations}
 
 @app.get("/chat/conversation/{conversation_id}")
-async def get_conversation_messages(conversation_id: str):
+async def get_conversation_messages(conversation_id: str, current_user: User = Depends(get_current_user)):
     """Get messages for a conversation"""
     # Handle both integer IDs and session IDs
     try:
         conv_id = int(conversation_id)
-        messages = await db.get_conversation_messages_by_id(conv_id)
+        messages = await db.get_conversation_messages_by_id(conv_id, user_id=current_user.id)
+        # The real session_id, distinct from this numeric conversation_id - the
+        # frontend needs it for share/export calls, which key off session_id.
+        session_id = await db.get_conversation_session_id(conv_id, user_id=current_user.id)
     except ValueError:
-        messages = await db.get_conversation_messages(conversation_id)
-    return {"messages": messages, "conversation_id": conversation_id}
+        messages = await db.get_conversation_messages(conversation_id, user_id=current_user.id)
+        session_id = conversation_id
+    meta = await db.get_conversation_meta(session_id, user_id=current_user.id) if session_id else {}
+    return {
+        "messages": messages,
+        "conversation_id": conversation_id,
+        "session_id": session_id,
+        "subject": meta.get("subject"),
+        "learning_mode": meta.get("learning_mode"),
+        "mode_context": meta.get("mode_context"),
+    }
 
 @app.put("/chat/conversation/{conversation_id}")
-async def update_conversation(conversation_id: int, data: ConversationUpdate):
-    """Update conversation (rename)"""
+async def update_conversation(conversation_id: int, data: ConversationUpdate, current_user: User = Depends(get_current_user)):
+    """Update conversation (rename, mode switch)"""
     if data.title:
-        await db.update_conversation_title(conversation_id, data.title)
+        await db.update_conversation_title(conversation_id, data.title, user_id=current_user.id)
+    if data.mode:
+        await db.update_conversation_mode(conversation_id, data.mode, data.mode_context, user_id=current_user.id)
     return {"message": "Conversation updated"}
 
 @app.delete("/chat/conversation/{conversation_id}")
-async def delete_conversation(conversation_id: int, data: DeleteConversation = None):
+async def delete_conversation(conversation_id: int, data: DeleteConversation = None, current_user: User = Depends(get_current_user)):
     """Delete a conversation"""
     permanent = data.permanent if data else False
-    await db.delete_conversation(conversation_id, permanent=permanent)
+    await db.delete_conversation(conversation_id, user_id=current_user.id, permanent=permanent)
     return {"message": "Conversation deleted" if permanent else "Moved to trash"}
 
 # RAG Search endpoint for debugging/testing
@@ -2167,6 +2338,7 @@ async def upload_document(
     title: str = Form(...),
     subject: str = Form(...),  # Required: subject for subject-isolated RAG
     folder_id: Optional[int] = Form(None),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Upload a document for RAG processing with subject tagging.
@@ -2218,7 +2390,7 @@ async def upload_document(
     # Create document record with subject tagging
     async with db.get_session() as session:
         document = Document(
-            user_id=1,  # Default user
+            user_id=current_user.id,
             title=title.strip(),
             content="",  # Will be populated during processing
             source_type=SourceType.UPLOAD,
@@ -2235,7 +2407,7 @@ async def upload_document(
 
     # Queue for background processing
     try:
-        from tasks.ingestion_tasks import process_document_task
+        from tasks_pkg.ingestion_tasks import process_document_task
         task = process_document_task.delay(document_id)
         task_id = task.id
     except Exception as e:
@@ -2258,13 +2430,14 @@ async def list_documents(
     source_type: Optional[str] = Query(None),
     limit: int = Query(50, le=100),
     offset: int = Query(0),
+    current_user: User = Depends(get_current_user),
 ):
     """List all documents for the current user"""
     async with db.get_session() as session:
         from sqlalchemy import select
 
         query = select(Document).where(
-            Document.user_id == 1,
+            Document.user_id == current_user.id,
             Document.is_deleted == False
         )
 
@@ -2293,7 +2466,7 @@ async def list_documents(
 
 
 @app.get("/v1/documents/{document_id}")
-async def get_document(document_id: int):
+async def get_document(document_id: int, current_user: User = Depends(get_current_user)):
     """Get a specific document with its chunks"""
     async with db.get_session() as session:
         from sqlalchemy import select
@@ -2306,7 +2479,7 @@ async def get_document(document_id: int):
         )
         document = result.scalar_one_or_none()
 
-        if not document:
+        if not document or document.user_id != current_user.id:
             raise HTTPException(status_code=404, detail="Document not found")
 
         # Get chunks
@@ -2324,7 +2497,7 @@ async def get_document(document_id: int):
 
 
 @app.get("/v1/documents/{document_id}/status")
-async def get_document_status(document_id: int):
+async def get_document_status(document_id: int, current_user: User = Depends(get_current_user)):
     """Get processing status for a document"""
     async with db.get_session() as session:
         from sqlalchemy import select, func
@@ -2335,7 +2508,7 @@ async def get_document_status(document_id: int):
         )
         document = result.scalar_one_or_none()
 
-        if not document:
+        if not document or document.user_id != current_user.id:
             raise HTTPException(status_code=404, detail="Document not found")
 
         # Count chunks asynchronously (avoid sync relationship access in async context)
@@ -2353,7 +2526,7 @@ async def get_document_status(document_id: int):
 
 
 @app.delete("/v1/documents/{document_id}")
-async def delete_document(document_id: int, permanent: bool = Query(False)):
+async def delete_document(document_id: int, permanent: bool = Query(False), current_user: User = Depends(get_current_user)):
     """Delete a document (soft delete by default)"""
     async with db.get_session() as session:
         from sqlalchemy import select
@@ -2363,7 +2536,7 @@ async def delete_document(document_id: int, permanent: bool = Query(False)):
         )
         document = result.scalar_one_or_none()
 
-        if not document:
+        if not document or document.user_id != current_user.id:
             raise HTTPException(status_code=404, detail="Document not found")
 
         if permanent:
@@ -2498,37 +2671,9 @@ async def detect_visuals(topic: str = Query(..., min_length=1)):
     visuals = video_service.detect_visuals(topic)
     return {"visuals": visuals, "topic": topic}
 
-@app.post("/videos/generate")
-async def generate_video(request: VideoGenerateRequest):
-    """Start video generation task"""
-    if not request.topic.strip():
-        raise HTTPException(status_code=400, detail="Topic is required")
-
-    task_id = await video_service.start_generation(
-        topic=request.topic.strip(),
-        quality=request.quality or "high",
-        duration=request.duration or 90
-    )
-
-    return {
-        "task_id": task_id,
-        "message": "Video generation started",
-        "topic": request.topic
-    }
-
-@app.get("/videos/status/{task_id}")
-async def get_generation_status(task_id: str):
-    """Get status of a video generation task"""
-    status = video_service.get_task_status(task_id)
-    if not status:
-        raise HTTPException(status_code=404, detail="Task not found")
-    return status
-
-@app.get("/videos/generated")
-async def get_generated_videos():
-    """Get list of generated videos"""
-    videos = video_service.get_generated_videos()
-    return {"videos": videos}
+# NOTE: POST /videos/generate, GET /videos/status/{task_id}, GET /videos/generated
+# now live in api_pkg/routes/videos.py (Celery-backed, replaces the old
+# in-memory-tracked pipeline below this comment used to call into).
 
 
 # ==================== AGENTIC CHAT ENDPOINTS ====================
@@ -2542,7 +2687,7 @@ class AgenticChatMessage(BaseModel):
 
 
 @app.post("/agent/chat")
-async def agentic_chat(message: AgenticChatMessage):
+async def agentic_chat(message: AgenticChatMessage, current_user: User = Depends(get_current_user)):
     """
     Non-streaming agentic chat endpoint.
 
@@ -2571,7 +2716,7 @@ async def agentic_chat(message: AgenticChatMessage):
                 message=message.message.strip(),
                 subject=message.subject or "general",
                 db_session=db_session,
-                user_id=1  # Default user
+                user_id=current_user.id
             )
 
             # Extract response, ensuring it's never None or empty
@@ -2580,8 +2725,8 @@ async def agentic_chat(message: AgenticChatMessage):
                 ai_response = "I apologize, but I couldn't generate a response. Please try again."
 
             # Save to database
-            await db.add_chat_message(message.session_id, 'user', message.message)
-            await db.add_chat_message(message.session_id, 'ai', ai_response)
+            await db.add_chat_message(message.session_id, 'user', message.message, user_id=current_user.id)
+            await db.add_chat_message(message.session_id, 'ai', ai_response, user_id=current_user.id)
 
             return {
                 "reply": ai_response,
@@ -2601,7 +2746,7 @@ async def agentic_chat(message: AgenticChatMessage):
 
 
 @app.post("/agent/chat/stream")
-async def agentic_chat_stream(message: AgenticChatMessage):
+async def agentic_chat_stream(message: AgenticChatMessage, current_user: User = Depends(get_current_user)):
     """
     Streaming agentic chat endpoint.
 
@@ -2624,7 +2769,7 @@ async def agentic_chat_stream(message: AgenticChatMessage):
             message=message.message,
             session_id=message.session_id,
             subject=message.subject
-        ))
+        ), current_user)
 
     async def generate_agent_stream():
         full_response = ""
@@ -2635,7 +2780,7 @@ async def agentic_chat_stream(message: AgenticChatMessage):
                     message=message.message.strip(),
                     subject=message.subject or "general",
                     db_session=db_session,
-                    user_id=1
+                    user_id=current_user.id
                 ):
                     event_type = event.get("type")
 
@@ -2663,8 +2808,8 @@ async def agentic_chat_stream(message: AgenticChatMessage):
                             final_response = event.get("response") or "I apologize, but I couldn't generate a complete response."
 
                         # Save to database
-                        await db.add_chat_message(message.session_id, 'user', message.message)
-                        await db.add_chat_message(message.session_id, 'ai', final_response)
+                        await db.add_chat_message(message.session_id, 'user', message.message, user_id=current_user.id)
+                        await db.add_chat_message(message.session_id, 'ai', final_response, user_id=current_user.id)
 
                         # Final event with metadata
                         final_data = {

@@ -1,0 +1,40 @@
+# Fly.io app config for the Scoratis frontend static SPA (nginx, see Dockerfile).
+# Deploy from this directory: `fly launch` (first time) or `fly deploy`.
+# BACKEND_URL should point at the backend Fly app's public URL (set below, or
+# override with `fly secrets set BACKEND_URL=...` / a plain env var if not sensitive).
+
+app = "scoratis-frontend"
+primary_region = "iad"
+
+[build]
+
+[env]
+  BACKEND_URL = "https://scoratis-backend.fly.dev"
+  # Fly has no Docker-Compose-style embedded DNS - use a public resolver so
+  # nginx can look up the backend's public hostname (see nginx.conf.template).
+  DNS_RESOLVER = "1.1.1.1"
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [[services.http_checks]]
+    path = "/"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256

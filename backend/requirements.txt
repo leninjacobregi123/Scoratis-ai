@@ -35,10 +35,24 @@ sentence-transformers==3.3.1
 duckduckgo-search==6.3.7
 
 # TTS
-edge-tts==6.1.18
+# Unofficial wrapper around Microsoft Edge's internal TTS API - it embeds a
+# "trusted client token" that Microsoft periodically rotates, which breaks
+# older pinned versions with a 403 on the websocket handshake (confirmed:
+# 6.1.18 was stale, 7.2.8 works). Use a floor, not an exact pin, so this
+# doesn't silently go stale again.
+edge-tts>=7.2.0
+
+# Video generation - tasks_pkg/video_tasks.py shells out to `python -m manim`,
+# services/agent/tools.py imports it directly. Requires the system ffmpeg +
+# LaTeX packages installed in backend/Dockerfile.
+manim>=0.18.0
+pydub>=0.25.0
+ffmpeg-python>=0.2.0
 
 # Utilities
-numpy<2.0.0
+# manim>=0.18 requires numpy>=2.1; verified sentence-transformers, scipy,
+# pgvector, and langgraph all import cleanly under numpy 2.5.
+numpy>=2.1.0
 scipy>=1.11.0
 lxml>=5.0.0
 
@@ -51,6 +65,12 @@ litellm>=1.52.0
 
 # Encryption for API keys
 cryptography>=42.0.0
+
+# Authentication (JWT + password hashing)
+pyjwt>=2.9.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+email-validator>=2.1.0
 
 # === NEW: Professional RAG System Dependencies ===
 

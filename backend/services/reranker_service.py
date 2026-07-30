@@ -41,12 +41,18 @@ def get_cross_encoder():
     if _cross_encoder is None:
         try:
             from sentence_transformers import CrossEncoder
+            import torch
 
             model_name = "cross-encoder/ms-marco-MiniLM-L-6-v2"
             logger.info(f"Loading cross-encoder model: {model_name}")
 
-            _cross_encoder = CrossEncoder(model_name, max_length=512, device='cpu')
-            logger.info("Cross-encoder model loaded successfully")
+            device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            logger.info(f"Using device: {device} for cross-encoder")
+
+            _cross_encoder = CrossEncoder(model_name, max_length=512, device=device)
+            # Explicitly move to device to be sure
+            _cross_encoder.model.to(device)
+            logger.info(f"Cross-encoder model loaded successfully on {device}")
 
         except ImportError:
             logger.warning(

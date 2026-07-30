@@ -23,11 +23,11 @@ const VideoVault = () => {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-          {videos.filter(video => video && video.filename).map((video) => (
-            <div key={video.filename} className="bg-bg-secondary rounded-lg shadow-md overflow-hidden group">
-              <a href={`/generated_videos/${video.filename}`} target="_blank" rel="noreferrer" className="block relative">
+          {videos.filter(video => video && video.path).map((video) => (
+            <div key={video.id} className="bg-bg-secondary rounded-lg shadow-md overflow-hidden group">
+              <a href={video.path} target="_blank" rel="noreferrer" className="block relative">
                 <img
-                  src={`/generated_videos/${video.filename.replace('.mp4', '.jpg')}`}
+                  src={video.path.replace('.mp4', '.jpg')}
                   alt={video.topic || 'Video'}
                   className="w-full h-48 object-cover"
                   onError={(e) => { e.target.style.display = 'none'; }}
@@ -38,7 +38,7 @@ const VideoVault = () => {
               </a>
               <div className="p-4">
                 <h3 className="font-semibold text-text-primary truncate">{video.topic || 'Untitled Video'}</h3>
-                <p className="text-sm text-text-tertiary">{video.timestamp ? new Date(video.timestamp).toLocaleString() : 'Unknown date'}</p>
+                <p className="text-sm text-text-tertiary">{video.created_at ? new Date(video.created_at).toLocaleString() : 'Unknown date'}</p>
               </div>
             </div>
           ))}

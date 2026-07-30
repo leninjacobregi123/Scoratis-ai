@@ -1,0 +1,89 @@
+server {
+    listen 8080;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # DNS_RESOLVER + variable-based proxy_pass below make nginx resolve the
+    # backend hostname lazily per-request instead of once at config load -
+    # a static `proxy_pass http://host:port/` fails nginx's startup entirely
+    # ("host not found in upstream") if the backend isn't resolvable yet, a
+    # real race in docker-compose when the frontend container starts first.
+    resolver ${DNS_RESOLVER} valid=10s;
+
+    # Mirrors vite.config.js's dev-server proxy rules so the same relative
+    # API paths used by the frontend code work unchanged in production.
+    location /api/ {
+        # `set` must run before `rewrite ... break` - break halts the whole
+        # rewrite-phase directive chain, so a `set` written after it never executes.
+        set $backend ${BACKEND_URL};
+        rewrite ^/api/(.*)$ /$1 break;
+        proxy_pass $backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /auth/ {
+        set $backend ${BACKEND_URL};
+        proxy_pass $backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /chat/ {
+        set $backend ${BACKEND_URL};
+        proxy_pass $backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off; # /chat/stream is server-sent events
+    }
+
+    location /agent/ {
+        set $backend ${BACKEND_URL};
+        proxy_pass $backend;
+        proxy_set_header Host $host;
+    }
+
+    location /subjects {
+        set $backend ${BACKEND_URL};
+        proxy_pass $backend;
+        proxy_set_header Host $host;
+    }
+
+    location /v1/ {
+        set $backend ${BACKEND_URL};
+        proxy_pass $backend;
+        proxy_set_header Host $host;
+    }
+
+    location = /health {
+        set $backend ${BACKEND_URL};
+        proxy_pass $backend;
+        proxy_set_header Host $host;
+    }
+
+    location /generated_videos/ {
+        set $backend ${BACKEND_URL};
+        proxy_pass $backend;
+        proxy_set_header Host $host;
+    }
+
+    location /audio/ {
+        set $backend ${BACKEND_URL};
+        proxy_pass $backend;
+        proxy_set_header Host $host;
+    }
+
+    location / {
+        try_files $uri /index.html;
+    }
+
+    gzip on;
+    gzip_types text/plain text/css application/javascript application/json image/svg+xml;
+}
