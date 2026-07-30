@@ -100,7 +100,18 @@ def db_session(sync_engine) -> Generator[Session, None, None]:
 def test_client(db_session) -> Generator[TestClient, None, None]:
     """Create a test client with database dependency override."""
     # Import here to avoid circular imports
+    import database
     from main import app
+
+    # database.get_database() is a module-level singleton, but each
+    # TestClient(app) below drives its own event loop for this test's
+    # lifespan/requests. If a previous test already constructed the
+    # DatabaseManager, its async_engine's pooled asyncpg connections are
+    # bound to that earlier (now-closed) loop - reusing them here raises
+    # "Future ... attached to a different loop". Resetting the singleton
+    # before each test forces a fresh async_engine, created lazily on first
+    # use, so it binds to *this* test's loop instead.
+    database._db_manager = None
 
     with TestClient(app) as client:
         yield client
