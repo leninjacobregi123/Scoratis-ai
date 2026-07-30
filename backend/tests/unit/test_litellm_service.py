@@ -227,7 +227,17 @@ class TestLiteLLMServiceTestProvider:
         """Test successful provider test."""
         from models import ProviderType
 
-        with patch.object(litellm_service, "generate", return_value="Hello"):
+        # Same bug as test_test_provider_failure below: test_provider() calls
+        # validate_config(), not generate() - mocking generate() was a no-op.
+        # Since OLLAMA doesn't require an API key, validate_config() fell
+        # through to a REAL litellm call against localhost:11434 - this only
+        # ever "passed" on machines that happen to have Ollama running
+        # locally (true here in dev, false in CI - confirmed failing there
+        # with a real ConnectionError to localhost:11434).
+        with patch.object(
+            litellm_service, "validate_config",
+            return_value=(True, "Successfully validated model", None)
+        ):
             result = await litellm_service.test_provider(
                 provider=ProviderType.OLLAMA,
                 model="llama3.2"
