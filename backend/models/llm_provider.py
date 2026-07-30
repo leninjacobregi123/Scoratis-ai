@@ -47,7 +47,14 @@ class LLMProviderConfig(Base):
 
     # Provider identification
     provider: Mapped[str] = mapped_column(
-        SQLEnum(ProviderType, name="provider_type", create_type=True),
+        # values_callable: SQLAlchemy's Enum type stores the Python enum
+        # MEMBER NAME by default (e.g. "GROQ"), not its .value - without
+        # this, it mismatches the lowercase labels migration 007 actually
+        # creates in Postgres ('groq', 'openai', ...) and every write fails
+        # with InvalidTextRepresentationError. Same pattern as
+        # VideoJobStatus/ReviewSourceType below - see their comments.
+        SQLEnum(ProviderType, name="provider_type", create_type=True,
+                values_callable=lambda enum_cls: [e.value for e in enum_cls]),
         nullable=False
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
