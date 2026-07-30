@@ -1,6 +1,6 @@
 """
 VideoJob Model
-Tracks Manim video-generation jobs run by the Celery worker (tasks_pkg/video_tasks.py).
+Tracks Manim video-generation jobs run by the Celery worker (tasks/video_tasks.py).
 
 Replaces the old in-memory `VideoGenerationService.tasks` dict in video_service.py,
 which lost all state on process restart and couldn't be shared across multiple

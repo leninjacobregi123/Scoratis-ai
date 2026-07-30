@@ -7,7 +7,7 @@ Create Date: 2026-07-23
 Replaces the in-memory task-tracking dict in video_service.py
 (VideoGenerationService.tasks) with real persistence, so generation state
 survives worker restarts and is visible across multiple API/worker
-processes. See backend/tasks_pkg/video_tasks.py for the Celery task that
+processes. See backend/tasks/video_tasks.py for the Celery task that
 writes to this table.
 """
 from typing import Sequence, Union

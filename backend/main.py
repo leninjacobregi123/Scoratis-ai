@@ -1992,7 +1992,7 @@ async def chat_with_attachment(
 
         # Queue for background processing
         try:
-            from tasks_pkg.ingestion_tasks import process_document_task
+            from tasks.ingestion_tasks import process_document_task
             task = process_document_task.delay(document_id)
             logger.info(f"Document {document_id} queued for processing: {task.id}")
         except Exception as task_error:
@@ -2407,7 +2407,7 @@ async def upload_document(
 
     # Queue for background processing
     try:
-        from tasks_pkg.ingestion_tasks import process_document_task
+        from tasks.ingestion_tasks import process_document_task
         task = process_document_task.delay(document_id)
         task_id = task.id
     except Exception as e:

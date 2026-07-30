@@ -41,7 +41,7 @@ celery_app = Celery(
     "scoratis",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
-    include=["tasks_pkg.ingestion_tasks", "tasks_pkg.video_tasks"],
+    include=["tasks.ingestion_tasks", "tasks.video_tasks"],
 )
 
 # Celery configuration
@@ -55,8 +55,8 @@ celery_app.conf.update(
 
     # Task routing
     task_routes={
-        "tasks_pkg.ingestion_tasks.*": {"queue": "ingestion"},
-        "tasks_pkg.video_tasks.*": {"queue": "video"},
+        "tasks.ingestion_tasks.*": {"queue": "ingestion"},
+        "tasks.video_tasks.*": {"queue": "video"},
     },
 
     # Task defaults
@@ -85,19 +85,19 @@ celery_app.conf.update(
 
 # Task retry settings
 celery_app.conf.task_annotations = {
-    "tasks_pkg.ingestion_tasks.process_document_task": {
+    "tasks.ingestion_tasks.process_document_task": {
         "rate_limit": "10/m",
         "max_retries": 3,
         "default_retry_delay": 60,
     },
-    "tasks_pkg.ingestion_tasks.generate_embeddings_task": {
+    "tasks.ingestion_tasks.generate_embeddings_task": {
         "rate_limit": "20/m",
         "max_retries": 3,
         "default_retry_delay": 30,
     },
     # Video rendering (script gen + Manim render + ffmpeg mux) runs minutes,
     # not seconds - the global 300s/600s limits above would kill it mid-render.
-    "tasks_pkg.video_tasks.render_video_task": {
+    "tasks.video_tasks.render_video_task": {
         "rate_limit": "5/m",
         "max_retries": 1,
         "default_retry_delay": 30,

@@ -1,7 +1,7 @@
 """
 Video generation routes - Celery-backed, replacing the old in-memory/
 simulated pipeline in video_service.py (see services/video_job_service.py
-and tasks_pkg/video_tasks.py for the real implementation).
+and tasks/video_tasks.py for the real implementation).
 
 Keeps the same URL shape and response fields the frontend already polls
 (POST /videos/generate -> {task_id}, GET /videos/status/{task_id} ->

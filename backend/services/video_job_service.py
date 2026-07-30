@@ -3,7 +3,7 @@ Shared helper for starting a Celery-backed video generation job.
 
 Every endpoint that used to call video_service.start_generation() (the old
 in-memory-tracked, maestro-studio-dependent pipeline) now goes through this
-instead. See backend/tasks_pkg/video_tasks.py for the actual rendering.
+instead. See backend/tasks/video_tasks.py for the actual rendering.
 """
 import logging
 from typing import Any, Dict, Optional
@@ -34,7 +34,7 @@ async def start_video_job(
     Returns the job id (used as the polling identifier, same role the old
     system's task_id string played).
     """
-    from tasks_pkg.video_tasks import render_video_task
+    from tasks.video_tasks import render_video_task
 
     db = get_database()
     async with db.get_session() as session:

@@ -75,7 +75,7 @@ class CoquiTTSService:
         console script - the console script only resolves if this process's
         PATH happens to include the venv's bin directory, which isn't
         guaranteed depending on how the backend was launched (same issue
-        fixed in tasks_pkg/video_tasks.py's narration synthesis).
+        fixed in tasks/video_tasks.py's narration synthesis).
         `sys.executable` always correctly identifies this interpreter's
         environment regardless of PATH.
         """
