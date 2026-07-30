@@ -456,7 +456,10 @@ function MessageCard({
                 src={avatarImage}
                 alt={tutor?.name || 'Scoratis'}
                 className="w-full h-full object-cover"
-                onError={(e) => { e.target.style.display = 'none'; }}
+                onError={(e) => {
+                  if (e.target.src.endsWith('/socrates-nobg.png')) { e.target.style.display = 'none'; return; }
+                  e.target.src = '/socrates-nobg.png';
+                }}
               />
             </div>
           )}
@@ -1841,7 +1844,10 @@ export default function Chat() {
                     src={headerTutor?.portrait}
                     alt={headerTutor?.name || 'Scoratis'}
                     className="w-full h-full object-cover"
-                    onError={(e) => { e.target.style.display = 'none'; }}
+                    onError={(e) => {
+                      if (e.target.src.endsWith('/socrates-nobg.png')) { e.target.style.display = 'none'; return; }
+                      e.target.src = '/socrates-nobg.png';
+                    }}
                   />
                 </div>
                 <div className="flex flex-col">
@@ -2034,7 +2040,7 @@ export default function Chat() {
 
         {/* Welcome screen - Theme-aware centered design with tutor portrait */}
         {messages.length <= 1 && !learningMode && !isRestoringConversation && (
-          <div className="flex-1 flex items-center justify-center p-8 -mt-20">
+          <div className="flex-1 flex items-center justify-center p-8">
             <div className="text-center max-w-xl w-full">
               <h1 className={`text-2xl font-light mb-2 ${isDark ? 'text-white' : 'text-text-primary'}`}
                   style={{ fontFamily: 'Georgia, serif' }}>
@@ -2098,7 +2104,7 @@ export default function Chat() {
         {messages.length <= 1 && learningMode && (() => {
           const welcomeTutor = getSubjectTutor(currentSubject?.id || subjectFromUrl);
           return (
-            <div className="flex-1 flex items-center justify-center p-8 -mt-20">
+            <div className="flex-1 flex items-center justify-center p-8">
               <div className="text-center max-w-lg">
                 {/* Tutor portrait */}
                 <div className="flex justify-center mb-6">
@@ -2108,7 +2114,10 @@ export default function Chat() {
                         src={welcomeTutor?.portrait || getSubjectImage(currentSubject?.id, 'avatar')}
                         alt={welcomeTutor?.name || 'Scoratis'}
                         className="w-full h-full object-cover"
-                        onError={(e) => { e.target.style.display = 'none'; }}
+                        onError={(e) => {
+                          if (e.target.src.endsWith('/socrates-nobg.png')) { e.target.style.display = 'none'; return; }
+                          e.target.src = '/socrates-nobg.png';
+                        }}
                       />
                     </div>
                     {currentSubject && (

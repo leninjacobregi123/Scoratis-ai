@@ -306,12 +306,16 @@ export const DEFAULT_THEME = {
     title: 'Classical Philosopher',
     years: '470-399 BC',
     quote: '"I know that I know nothing."',
-    portrait: 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/bc/Socrate_du_Louvre.jpg/220px-Socrate_du_Louvre.jpg',
+    // Bundled locally rather than hotlinked - external image hosts
+    // (Wikimedia, Unsplash) are not reliable enough for core UI: they can
+    // rate-limit, block hotlinking, or move/rename files without notice,
+    // and this is the default tutor shown whenever no subject is selected.
+    portrait: '/socrates-nobg.png',
   },
   images: {
     header: 'https://images.unsplash.com/photo-1555993539-1732b0258235?w=1200&q=80',
     welcome: 'https://images.unsplash.com/photo-1603565816030-6b389eeb23cb?w=800&q=80',
-    avatar: 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/bc/Socrate_du_Louvre.jpg/220px-Socrate_du_Louvre.jpg',
+    avatar: '/socrates-nobg.png',
   },
 };
 

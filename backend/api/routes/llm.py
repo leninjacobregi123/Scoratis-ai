@@ -245,38 +245,45 @@ async def create_provider_config(provider_config: LLMProviderCreate, current_use
     encryption = get_encryption_service()
     db = get_database()
 
-    async with db.get_session() as session:
-        # If setting as default, unset other defaults
-        if provider_config.is_default:
-            await session.execute(
-                update(LLMProviderConfig)
-                .where(LLMProviderConfig.user_id == current_user.id)
-                .values(is_default=False)
+    try:
+        async with db.get_session() as session:
+            # If setting as default, unset other defaults
+            if provider_config.is_default:
+                await session.execute(
+                    update(LLMProviderConfig)
+                    .where(LLMProviderConfig.user_id == current_user.id)
+                    .values(is_default=False)
+                )
+
+            # Encrypt API key if provided
+            encrypted_key = None
+            if provider_config.api_key:
+                encrypted_key = encryption.encrypt(provider_config.api_key)
+
+            new_config = LLMProviderConfig(
+                user_id=current_user.id,
+                provider=provider_type,
+                name=provider_config.name,
+                api_key_encrypted=encrypted_key,
+                base_url=provider_config.base_url or PROVIDER_INFO.get(provider_type, {}).get("default_base_url"),
+                is_active=True,
+                is_default=provider_config.is_default or False,
             )
 
-        # Encrypt API key if provided
-        encrypted_key = None
-        if provider_config.api_key:
-            encrypted_key = encryption.encrypt(provider_config.api_key)
+            session.add(new_config)
+            await session.flush()
 
-        new_config = LLMProviderConfig(
-            user_id=current_user.id,
-            provider=provider_type,
-            name=provider_config.name,
-            api_key_encrypted=encrypted_key,
-            base_url=provider_config.base_url or PROVIDER_INFO.get(provider_type, {}).get("default_base_url"),
-            is_active=True,
-            is_default=provider_config.is_default or False,
-        )
-
-        session.add(new_config)
-        await session.flush()
-
-        return {
-            "id": new_config.id,
-            "message": f"Provider {provider_config.name} configured successfully",
-            "provider": new_config.to_dict()
-        }
+            return {
+                "id": new_config.id,
+                "message": f"Provider {provider_config.name} configured successfully",
+                "provider": new_config.to_dict()
+            }
+    except Exception:
+        # Full exception (incl. the SQL statement/params on an IntegrityError)
+        # goes to the server log only - it can include the API key value,
+        # so it must never be echoed back in the client-facing detail.
+        logger.exception(f"Failed to save provider config for user {current_user.id}, provider={provider_config.provider}")
+        raise HTTPException(status_code=500, detail="Failed to save provider configuration. Please try again or contact support if this persists.")
 
 
 @router.put("/providers/configured/{provider_id}")

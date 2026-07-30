@@ -3083,25 +3083,56 @@ const Gallery = () => {
 
         {/* Non-3D fallback when WebGL can't be created */}
         {webglUnavailable && (
-          <div className="absolute inset-0 z-0 overflow-y-auto p-12 flex flex-col items-center">
-            <h1 className="text-3xl font-serif italic mb-2 text-[#4a5a40]">Scoratis</h1>
-            <p className="text-sm text-[#8a8a7a] mb-10 text-center max-w-md">
-              Your browser can't render the 3D gallery, so here's the subject list instead.
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 w-full max-w-4xl">
-              {SUBJECT_CHANNELS.map((subject) => (
-                <button
-                  key={subject.id}
-                  onClick={() => handleSubjectClick(subject)}
-                  className="flex items-center gap-3 bg-[#faf6ed] border border-[#d4cfb8] rounded-xl p-4 text-left hover:bg-[#f0ebe0] transition-colors shadow-sm"
-                >
-                  <span className="text-3xl">{subject.icon}</span>
-                  <div>
-                    <div className="font-semibold text-[#4a5a40]">{subject.name}</div>
-                    <div className="text-xs text-[#8a8a7a]">{subject.description}</div>
-                  </div>
-                </button>
-              ))}
+          <div className="absolute inset-0 z-0 overflow-y-auto">
+            <div className="min-h-full flex flex-col items-center px-6 py-16">
+              {/* Brand mark */}
+              <div className="w-14 h-14 rounded-full overflow-hidden shadow-md border border-[#d4cfb8] mb-5 bg-[#faf6ed]">
+                <img
+                  src="/socrates-nobg.png"
+                  alt="Scoratis"
+                  className="w-full h-full object-contain p-1.5"
+                />
+              </div>
+
+              <h1 className="text-3xl font-serif italic text-[#4a5a40] mb-3 text-center">
+                Choose a subject to begin
+              </h1>
+
+              {/* Quiet technical note, not the headline */}
+              <span className="inline-flex items-center gap-2 text-[11px] tracking-wide uppercase text-[#a0a090] border border-[#d4cfb8] rounded-full px-3 py-1 mb-12">
+                3D view unavailable in this browser - showing subjects directly
+              </span>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 w-full max-w-4xl">
+                {SUBJECT_CHANNELS.map((subject) => (
+                  <button
+                    key={subject.id}
+                    onClick={() => handleSubjectClick(subject)}
+                    className="group flex items-start gap-4 bg-[#faf6ed] border border-[#d4cfb8] rounded-2xl p-5 text-left
+                               shadow-sm transition-all duration-200
+                               hover:shadow-lg hover:-translate-y-0.5 hover:border-[#4a5a40]/40"
+                  >
+                    <span
+                      className="flex items-center justify-center w-12 h-12 rounded-full text-2xl flex-shrink-0 shadow-inner"
+                      style={{ backgroundColor: `${subject.color}1f`, border: `1px solid ${subject.color}55` }}
+                    >
+                      {subject.icon}
+                    </span>
+                    <div className="min-w-0">
+                      <div className="font-semibold text-[#4a5a40] mb-0.5 flex items-center gap-2">
+                        {subject.name}
+                        <span
+                          className="opacity-0 group-hover:opacity-100 transition-opacity text-xs"
+                          style={{ color: subject.color }}
+                        >
+                          &rarr;
+                        </span>
+                      </div>
+                      <div className="text-xs text-[#8a8a7a] leading-relaxed">{subject.description}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         )}
