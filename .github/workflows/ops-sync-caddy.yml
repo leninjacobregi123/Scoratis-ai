@@ -1,0 +1,46 @@
+name: Ops - Sync Caddy Config Only
+
+# Pushes just the Caddyfile, caddy-maintenance/, and docker-compose.prod.yml
+# to the VM and recreates ONLY the caddy container (no --build, no other
+# service touched). For changes that only affect the reverse proxy/error
+# page - deliberately does not go through the full CD pipeline, which
+# rebuilds and restarts every service including backend/frontend/worker.
+# Manual trigger only.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  sync-caddy:
+    name: Sync Caddy config to production VM
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up deploy SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VM_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Sync Caddyfile, maintenance page, and compose file
+        run: |
+          rsync -az -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
+            Caddyfile caddy-maintenance docker-compose.prod.yml \
+            ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:~/scoratis-deploy/
+
+      - name: Recreate caddy container only
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
+            "cd ~/scoratis-deploy && sudo docker compose --env-file .env.production -f docker-compose.prod.yml up -d caddy"
+
+      - name: Show container status
+        if: always()
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
+            "sudo docker compose -f ~/scoratis-deploy/docker-compose.prod.yml ps"
