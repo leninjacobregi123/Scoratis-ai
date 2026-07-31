@@ -23,12 +23,12 @@ QUIZ_SYSTEM_PROMPT = (
     "Output only valid JSON, no commentary, no markdown fences."
 )
 
-QUIZ_PROMPT_TEMPLATE = """Write {num_questions} multiple-choice practice questions about "{topic}" (subject: {subject}).
+QUIZ_PROMPT_TEMPLATE = """Write {num_questions} multiple-choice practice questions about "{topic}".
 
 {context_block}
 
 Each question must have exactly 4 options with exactly one correct answer.
-Base questions on the reference material above when it's relevant; otherwise use your own subject knowledge.
+Base questions on the reference material above when it's relevant; otherwise use your own knowledge.
 
 Respond with ONLY this JSON shape (no markdown fences):
 {{
@@ -116,7 +116,6 @@ async def generate_quiz(
     db: AsyncSession,
     *,
     user_id: int,
-    subject: str,
     topic: str,
     num_questions: int = 5,
 ) -> Quiz:
@@ -128,7 +127,7 @@ async def generate_quiz(
     rag_service = get_rag_service()
     chunk_results = []
     try:
-        chunk_results = await rag_service.multi_level_search(db, topic, user_id, subject=subject)
+        chunk_results = await rag_service.multi_level_search(db, topic, user_id)
     except Exception as e:
         logger.warning(f"Quiz generation: retrieval failed, continuing without context: {e}")
 
@@ -139,10 +138,10 @@ async def generate_quiz(
             context_lines.append(f"[chunk_id={chunk_id}] {chunk.content[:600]}")
         context_block = "\n".join(context_lines)
     else:
-        context_block = "No reference material available - use your own subject-matter knowledge."
+        context_block = "No reference material available - use your own knowledge."
 
     prompt = QUIZ_PROMPT_TEMPLATE.format(
-        num_questions=num_questions, topic=topic, subject=subject, context_block=context_block
+        num_questions=num_questions, topic=topic, context_block=context_block
     )
 
     # Small local reasoning models can spend 2000+ tokens narrating before
@@ -167,7 +166,7 @@ async def generate_quiz(
 
     document_ids = sorted({c.document_id for c in chunk_by_id.values()}) or None
 
-    quiz = Quiz(user_id=user_id, subject=subject, topic=topic, source_document_ids=document_ids)
+    quiz = Quiz(user_id=user_id, topic=topic, source_document_ids=document_ids)
     db.add(quiz)
     await db.flush()
 

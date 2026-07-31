@@ -26,7 +26,6 @@ class FolderUpdate(BaseModel):
 class ChatMessage(BaseModel):
     message: str
     session_id: Optional[str] = "default"
-    subject: Optional[str] = "general"
     attachment_ids: Optional[List[int]] = None
     use_web_search: Optional[bool] = True
     use_reasoning: Optional[bool] = False

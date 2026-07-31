@@ -38,8 +38,6 @@ QUERY_REFORMULATION_PROMPT = """You are a search query optimization expert. Your
 ## Chat History (for context):
 {chat_history}
 
-## Current Subject/Topic: {subject}
-
 ## User's Original Query:
 {query}
 
@@ -59,7 +57,6 @@ Only respond with the JSON object, no other text."""
 SIMPLE_EXPANSION_PROMPT = """Expand this search query with related terms and synonyms to improve retrieval.
 
 Query: {query}
-Subject: {subject}
 
 Return only the expanded query as a single line, adding 2-3 related terms in parentheses.
 Example: "photosynthesis" -> "photosynthesis (light reactions, chloroplast, carbon fixation)"
@@ -89,7 +86,6 @@ class QueryReformulationService:
         self,
         query: str,
         chat_history: Optional[List[Dict[str, str]]] = None,
-        subject: str = "general",
         use_llm: bool = True
     ) -> ReformulatedQuery:
         """
@@ -98,7 +94,6 @@ class QueryReformulationService:
         Args:
             query: The user's raw query
             chat_history: Recent conversation messages [{"role": "user/assistant", "content": "..."}]
-            subject: Current subject context (physics, biology, etc.)
             use_llm: Whether to use LLM for reformulation (False = simple expansion only)
 
         Returns:
@@ -118,19 +113,18 @@ class QueryReformulationService:
 
         # If no LLM or LLM disabled, use simple expansion
         if not use_llm or not self.llm_service:
-            return await self._simple_expansion(query, subject)
+            return await self._simple_expansion(query)
 
         try:
-            return await self._llm_reformulation(query, chat_history, subject)
+            return await self._llm_reformulation(query, chat_history)
         except Exception as e:
             logger.warning(f"LLM reformulation failed, using simple expansion: {e}")
-            return await self._simple_expansion(query, subject)
+            return await self._simple_expansion(query)
 
     async def _llm_reformulation(
         self,
         query: str,
         chat_history: Optional[List[Dict[str, str]]],
-        subject: str
     ) -> ReformulatedQuery:
         """Use LLM for intelligent query reformulation"""
 
@@ -151,7 +145,6 @@ class QueryReformulationService:
         # Build prompt
         prompt = QUERY_REFORMULATION_PROMPT.format(
             chat_history=history_text,
-            subject=subject,
             query=query
         )
 
@@ -197,20 +190,14 @@ class QueryReformulationService:
     async def _simple_expansion(
         self,
         query: str,
-        subject: str
     ) -> ReformulatedQuery:
         """Simple rule-based query expansion without LLM"""
 
         keywords = self._extract_keywords(query)
 
-        # Add subject context to query if not already present
-        expanded = query
-        if subject and subject != "general" and subject.lower() not in query.lower():
-            expanded = f"{query} ({subject})"
-
         return ReformulatedQuery(
             original_query=query,
-            reformulated_query=expanded,
+            reformulated_query=query,
             sub_queries=[],
             keywords=keywords,
             query_type=self._detect_query_type(query),
@@ -254,7 +241,6 @@ class QueryReformulationService:
     async def decompose_complex_query(
         self,
         query: str,
-        subject: str = "general"
     ) -> List[str]:
         """
         Decompose a complex query into multiple simpler sub-queries.
@@ -262,7 +248,6 @@ class QueryReformulationService:
 
         Args:
             query: Complex user query
-            subject: Subject context
 
         Returns:
             List of simpler sub-queries

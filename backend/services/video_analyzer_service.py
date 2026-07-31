@@ -71,7 +71,6 @@ class VideoAnalyzerService:
         session_id: str,
         user_message: str,
         ai_response: str,
-        subject: str,
         turn_count: int = 0
     ) -> VisualizationDecision:
         """
@@ -107,7 +106,7 @@ class VideoAnalyzerService:
 
         try:
             result = await self._ai_video_analysis(
-                session_id, user_message, ai_response, subject, turn_count
+                session_id, user_message, ai_response, turn_count
             )
 
             if result.should_generate and result.confidence >= self.MIN_CONFIDENCE:
@@ -129,7 +128,6 @@ class VideoAnalyzerService:
         session_id: str,
         user_message: str,
         ai_response: str,
-        subject: str,
         turn_count: int
     ) -> VisualizationDecision:
         """
@@ -154,7 +152,6 @@ class VideoAnalyzerService:
 Analyze this conversation and decide if a short educational video (15-30 seconds) would enhance learning.
 
 ## CONTEXT
-Subject Area: {subject}
 Conversation Turn: {turn_count}{context_info}
 
 ## CURRENT EXCHANGE

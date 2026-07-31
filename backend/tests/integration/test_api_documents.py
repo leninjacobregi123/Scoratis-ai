@@ -48,7 +48,7 @@ class TestDocumentUpload:
         files = {
             "file": ("test.txt", BytesIO(file_content), "text/plain")
         }
-        data = {"title": "Test Document", "subject": "general"}
+        data = {"title": "Test Document"}
 
         with patch("tasks.ingestion_tasks.process_document_task") as mock_task:
             mock_task.delay = MagicMock(return_value=MagicMock(id="fake-task-id"))
@@ -61,7 +61,7 @@ class TestDocumentUpload:
     def test_upload_document_requires_file(self, test_client: TestClient):
         """Test that upload requires a file."""
         _override_auth(test_client)
-        response = test_client.post("/v1/upload", data={"title": "Test", "subject": "general"})
+        response = test_client.post("/v1/upload", data={"title": "Test"})
 
         assert response.status_code == 422  # Validation error
 

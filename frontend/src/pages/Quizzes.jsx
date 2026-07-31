@@ -1,11 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { GraduationCap, Loader, CheckCircle2, XCircle, RotateCcw, Sparkles } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 
 export default function Quizzes() {
   const api = useApi();
-  const [subjects, setSubjects] = useState([]);
-  const [subject, setSubject] = useState('physics');
   const [topic, setTopic] = useState('');
   const [numQuestions, setNumQuestions] = useState(5);
   const [generating, setGenerating] = useState(false);
@@ -16,13 +14,6 @@ export default function Quizzes() {
   const [result, setResult] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => {
-    api.get('/subjects').then((data) => {
-      setSubjects(data.subjects || []);
-      if (data.subjects?.length) setSubject(data.subjects[0].id);
-    }).catch(() => {});
-  }, [api]);
-
   const handleGenerate = useCallback(async (e) => {
     e.preventDefault();
     if (!topic.trim()) return;
@@ -32,7 +23,6 @@ export default function Quizzes() {
     setAnswers({});
     try {
       const generated = await api.post('/quizzes/generate', {
-        subject,
         topic: topic.trim(),
         num_questions: Number(numQuestions),
       });
@@ -42,7 +32,7 @@ export default function Quizzes() {
     } finally {
       setGenerating(false);
     }
-  }, [api, subject, topic, numQuestions]);
+  }, [api, topic, numQuestions]);
 
   const handleSubmit = useCallback(async () => {
     if (!quiz) return;
@@ -79,18 +69,6 @@ export default function Quizzes() {
 
         {!quiz && (
           <form onSubmit={handleGenerate} className="bg-bg-card border border-border-color rounded-2xl p-6 space-y-4">
-            <div>
-              <label className="block text-sm text-text-muted mb-1.5">Subject</label>
-              <select
-                value={subject}
-                onChange={(e) => setSubject(e.target.value)}
-                className="w-full px-3 py-2.5 bg-bg-tertiary border border-border-color rounded-xl text-text-primary focus:outline-none focus:border-accent-olive"
-              >
-                {subjects.length > 0 ? subjects.map((s) => (
-                  <option key={s.id} value={s.id}>{s.icon} {s.name}</option>
-                )) : <option value="physics">Physics</option>}
-              </select>
-            </div>
             <div>
               <label className="block text-sm text-text-muted mb-1.5">Topic</label>
               <input
@@ -136,7 +114,6 @@ export default function Quizzes() {
           <div className="space-y-5">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold text-text-primary">{quiz.topic}</h2>
-              <span className="text-xs text-text-muted capitalize">{quiz.subject.replace(/_/g, ' ')}</span>
             </div>
 
             {quiz.questions.map((q, i) => (

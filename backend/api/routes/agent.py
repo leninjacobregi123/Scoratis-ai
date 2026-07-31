@@ -8,7 +8,6 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Optional
 
 from api.routes.chat import chat_stream
 from api.schemas import ChatMessage
@@ -27,7 +26,6 @@ class AgenticChatMessage(BaseModel):
     """Request model for agentic chat"""
     message: str
     session_id: str = "default"
-    subject: Optional[str] = "general"
 
 
 @router.post("/chat")
@@ -61,7 +59,6 @@ async def agentic_chat(message: AgenticChatMessage, current_user: User = Depends
             result = await scoratis_agent.invoke(
                 session_id=message.session_id,
                 message=message.message.strip(),
-                subject=message.subject or "general",
                 db_session=db_session,
                 user_id=current_user.id
             )
@@ -78,7 +75,6 @@ async def agentic_chat(message: AgenticChatMessage, current_user: User = Depends
             return {
                 "reply": ai_response,
                 "session_id": message.session_id,
-                "subject": message.subject,
                 "sources": result.get("sources", []),
                 "tools_used": result.get("tools_used", []),
                 "model": result.get("model"),
@@ -118,7 +114,6 @@ async def agentic_chat_stream(message: AgenticChatMessage, current_user: User = 
         return await chat_stream(ChatMessage(
             message=message.message,
             session_id=message.session_id,
-            subject=message.subject
         ), current_user)
 
     async def generate_agent_stream():
@@ -128,7 +123,6 @@ async def agentic_chat_stream(message: AgenticChatMessage, current_user: User = 
                 async for event in scoratis_agent.stream(
                     session_id=message.session_id,
                     message=message.message.strip(),
-                    subject=message.subject or "general",
                     db_session=db_session,
                     user_id=current_user.id
                 ):
@@ -167,7 +161,6 @@ async def agentic_chat_stream(message: AgenticChatMessage, current_user: User = 
                             'done': True,
                             'full_response': final_response,
                             'session_id': message.session_id,
-                            'subject': message.subject,
                             'model': event.get('metadata', {}).get('model'),
                             'sources': event.get('metadata', {}).get('sources', []),
                             'tools_used': event.get('metadata', {}).get('tools_used', 0),

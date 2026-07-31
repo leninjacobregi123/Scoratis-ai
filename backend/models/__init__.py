@@ -14,7 +14,6 @@ from .document import Document, SourceType, DocumentStatus
 from .chunk import Chunk
 from .video_job import VideoJob, VideoJobStatus
 from .quiz import Quiz, QuizQuestion, QuizAttempt
-from .subject_progress import SubjectProgress
 from .review_item import ReviewItem, ReviewSourceType
 
 __all__ = [
@@ -39,7 +38,6 @@ __all__ = [
     "Quiz",
     "QuizQuestion",
     "QuizAttempt",
-    "SubjectProgress",
     "ReviewItem",
     "ReviewSourceType",
 ]

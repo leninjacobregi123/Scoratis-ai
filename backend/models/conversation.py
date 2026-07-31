@@ -2,7 +2,7 @@
 Conversation Model
 """
 
-from sqlalchemy import Integer, String, Text, DateTime, ForeignKey, Index
+from sqlalchemy import Integer, String, Text, DateTime, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from typing import Optional, List, TYPE_CHECKING
@@ -17,11 +17,6 @@ if TYPE_CHECKING:
 class Conversation(Base):
     __tablename__ = "conversations"
 
-    # Composite index for efficient user+subject queries
-    __table_args__ = (
-        Index("idx_conversations_user_subject", "user_id", "subject"),
-    )
-
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     session_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     title: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
@@ -34,9 +29,6 @@ class Conversation(Base):
     updated_at: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
-
-    # Subject for topic isolation (physics, chemistry, biology, etc.)
-    subject: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
 
     # Set when the user shares this conversation - grants unauthenticated
     # read-only access via GET /shared/{token} (see api/routes/transcripts.py)

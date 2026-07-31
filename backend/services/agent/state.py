@@ -508,7 +508,6 @@ class AgentState(TypedDict):
     Key Fields:
     - messages: Full conversation history (managed by add_messages reducer)
     - session_id: Unique conversation identifier (thread_id for checkpointing)
-    - subject: Current subject channel (physics, chemistry, etc.)
     - learning: Learning progression tracking
     - rag_context: Retrieved context from knowledge base
     - pending_tool_calls: Tools the agent wants to execute
@@ -531,7 +530,6 @@ class AgentState(TypedDict):
 
     # === Session Context ===
     session_id: str
-    subject: str  # physics, chemistry, math, etc.
     user_id: int
 
     # === Current Turn State ===
@@ -577,7 +575,6 @@ class AgentState(TypedDict):
 
 def create_initial_state(
     session_id: str,
-    subject: str = "general",
     user_id: int = 1,
     enable_verification: bool = True
 ) -> AgentState:
@@ -585,7 +582,6 @@ def create_initial_state(
     return AgentState(
         messages=[],
         session_id=session_id,
-        subject=subject,
         user_id=user_id,
         current_input="",
         final_response=None,

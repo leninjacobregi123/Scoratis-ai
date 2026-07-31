@@ -23,19 +23,16 @@ async def seed_from_key_discoveries(
     db: AsyncSession,
     *,
     user_id: int,
-    subject: str,
     discoveries: List[str],
 ) -> int:
     """Create a due-now ReviewItem for each newly confirmed concept that
-    doesn't already have one for this user+subject. Returns count created."""
+    doesn't already have one for this user. Returns count created."""
     if not discoveries:
         return 0
 
-    subject = subject or "general"
     existing = await db.execute(
         select(ReviewItem.concept).where(
             ReviewItem.user_id == user_id,
-            ReviewItem.subject == subject,
             ReviewItem.source_type == ReviewSourceType.KEY_DISCOVERY,
         )
     )
@@ -48,7 +45,6 @@ async def seed_from_key_discoveries(
             continue
         db.add(ReviewItem(
             user_id=user_id,
-            subject=subject,
             concept=concept,
             source_type=ReviewSourceType.KEY_DISCOVERY,
         ))
@@ -64,14 +60,12 @@ async def seed_from_missed_quiz_questions(
     db: AsyncSession,
     *,
     user_id: int,
-    subject: str,
     questions: list,
 ) -> int:
     """`questions` is a list of QuizQuestion objects the user answered wrong."""
     if not questions:
         return 0
 
-    subject = subject or "general"
     question_ids = [q.id for q in questions]
     existing = await db.execute(
         select(ReviewItem.source_id).where(
@@ -88,7 +82,6 @@ async def seed_from_missed_quiz_questions(
             continue
         db.add(ReviewItem(
             user_id=user_id,
-            subject=subject,
             concept=q.question_text,
             source_type=ReviewSourceType.QUIZ_QUESTION,
             source_id=q.id,
@@ -138,16 +131,12 @@ async def get_due_items(
     db: AsyncSession,
     *,
     user_id: int,
-    subject: str = None,
     limit: int = 50,
 ) -> List[ReviewItem]:
     stmt = select(ReviewItem).where(
         ReviewItem.user_id == user_id,
         ReviewItem.due_at <= datetime.now(timezone.utc),
-    )
-    if subject:
-        stmt = stmt.where(ReviewItem.subject == subject)
-    stmt = stmt.order_by(ReviewItem.due_at.asc()).limit(limit)
+    ).order_by(ReviewItem.due_at.asc()).limit(limit)
 
     result = await db.execute(stmt)
     return list(result.scalars().all())

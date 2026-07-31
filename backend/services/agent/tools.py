@@ -106,15 +106,13 @@ class ToolDefinition:
 def create_search_knowledge_base_tool(
     db_session: AsyncSession,
     rag_service: Any,
-    user_id: int = 1,
-    subject: Optional[str] = None
+    user_id: int = 1
 ) -> Callable[..., Awaitable[Dict[str, Any]]]:
     """
     Factory for the knowledge base search tool.
     Searches journals, documents, and past conversations.
 
     Enhanced with:
-    - Subject filtering (subject-isolated knowledge spaces)
     - Query reformulation (automatic query optimization)
     - Cross-encoder re-ranking (improved relevance)
     - Contextual grouping (chunks grouped by document)
@@ -140,7 +138,7 @@ def create_search_knowledge_base_tool(
             if use_enhanced and hasattr(rag_service, 'enhanced_search'):
                 from services.rag_service import SearchFilters
 
-                filters = SearchFilters(subject=subject)
+                filters = SearchFilters()
                 results = await rag_service.enhanced_search(
                     db_session,
                     query,
@@ -185,7 +183,7 @@ def create_search_knowledge_base_tool(
             else:
                 # Fallback to basic search
                 results = await rag_service.get_context_with_citations(
-                    db_session, query, user_id, subject=subject
+                    db_session, query, user_id
                 )
 
                 sources = results.get("sources", [])[:limit_int]
@@ -386,31 +384,6 @@ def create_get_learning_context_tool(
             }
 
     return get_learning_context
-
-
-def create_analyze_for_video_tool(
-    llm_service: Any,
-    subject: str
-) -> Callable[..., Awaitable[Dict[str, Any]]]:
-    """Factory for analyzing content for video generation potential."""
-    async def analyze_for_video(
-        topic: str,
-        explanation: str,
-        learning_state: str = "engaged"
-    ) -> Dict[str, Any]:
-        """
-        Analyze if a topic/explanation would benefit from video visualization.
-        Returns whether video should be generated and what type.
-        """
-        # This is a simplified version - the full analysis happens in the graph
-        return {
-            "success": True,
-            "topic": topic,
-            "analyzed": True,
-            "message": "Video analysis will be performed by the main agent loop"
-        }
-
-    return analyze_for_video
 
 
 def create_remember_discovery_tool(

@@ -30,7 +30,6 @@ class ReviewItem(Base):
     user_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    subject: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     concept: Mapped[str] = mapped_column(String(1000), nullable=False)
 
     source_type: Mapped[ReviewSourceType] = mapped_column(
@@ -58,7 +57,6 @@ class ReviewItem(Base):
     def to_dict(self) -> dict:
         return {
             "id": self.id,
-            "subject": self.subject,
             "concept": self.concept,
             "source_type": self.source_type.value,
             "ease_factor": round(self.ease_factor, 2),

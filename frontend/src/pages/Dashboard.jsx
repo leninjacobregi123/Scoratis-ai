@@ -119,7 +119,6 @@ function Dashboard() {
     <div className="flex h-screen bg-bg-primary">
       <Sidebar
         stats={stats}
-        showGalleryLink={true}
         collapsed={sidebarCollapsed}
         onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
         recentChats={conversations}

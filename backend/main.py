@@ -19,15 +19,12 @@ from services import get_rag_service, get_web_search_service, get_memory_service
 from services.langgraph_service import initialize_langgraph_service
 from services.video_analyzer_service import init_video_analyzer_service
 from services.agent import create_agent, ScoratisAgent
-from services.guardrail_service import get_guardrail_service, GuardrailService
 from config import settings
 from api.routes.auth import router as auth_router
 from api.routes.videos import router as videos_router
 from api.routes.quizzes import router as quizzes_router
-from api.routes.progress import router as progress_router
 from api.routes.review import router as review_router
 from api.routes.transcripts import router as transcripts_router
-from api.routes.subjects import router as subjects_router
 from api.routes.health import router as health_router
 from api.routes.journals import router as journals_router
 from api.routes.llm import router as llm_router
@@ -50,7 +47,6 @@ memory_service = None
 langgraph_service = None
 video_analyzer_service = None
 scoratis_agent: ScoratisAgent = None
-guardrail_service: GuardrailService = None
 
 INSECURE_DEFAULT_SECRETS = {
     "SCORATIS_ENCRYPTION_KEY": "scoratis-default-dev-key-change-in-production-32chars",
@@ -78,7 +74,7 @@ def _guard_against_insecure_production_secrets() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler"""
-    global db, rag_service, web_search_service, memory_service, langgraph_service, video_analyzer_service, scoratis_agent, guardrail_service
+    global db, rag_service, web_search_service, memory_service, langgraph_service, video_analyzer_service, scoratis_agent
 
     _guard_against_insecure_production_secrets()
 
@@ -128,11 +124,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Scoratis Agent initialization failed (using fallback): {e}")
 
-    # Initialize Guardrail Service for subject validation
-    guardrail_service = get_guardrail_service(llm_service)
-    logger.info("Guardrail service initialized for subject validation")
-
-    print("Scoratis FastAPI Server Started (PostgreSQL + RAG + Web Search + LangGraph + Agent + Auto-Video + Guardrails)")
+    print("Scoratis FastAPI Server Started (PostgreSQL + RAG + Web Search + LangGraph + Agent + Auto-Video)")
     yield
     print("Scoratis FastAPI Server Stopped")
 
@@ -161,10 +153,8 @@ app.mount("/generated_videos", StaticFiles(directory=str(GENERATED_VIDEOS_DIR)),
 app.include_router(auth_router)
 app.include_router(videos_router)
 app.include_router(quizzes_router)
-app.include_router(progress_router)
 app.include_router(review_router)
 app.include_router(transcripts_router)
-app.include_router(subjects_router)
 app.include_router(health_router)
 app.include_router(journals_router)
 app.include_router(llm_router)

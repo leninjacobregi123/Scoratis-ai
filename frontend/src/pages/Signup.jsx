@@ -1,16 +1,17 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { UserPlus } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import GoogleSignInButton from '../components/GoogleSignInButton';
 
 export default function Signup() {
-  const { signup } = useAuth();
+  const { signup, loginWithGoogle } = useAuth();
   const navigate = useNavigate();
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const googleEnabled = Boolean(import.meta.env.VITE_GOOGLE_CLIENT_ID);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -32,12 +33,22 @@ export default function Signup() {
     }
   };
 
+  const handleGoogleCredential = useCallback(async (credential) => {
+    setError('');
+    try {
+      await loginWithGoogle(credential);
+      navigate('/app', { replace: true });
+    } catch (err) {
+      setError(err.message || 'Google sign-in failed');
+    }
+  }, [loginWithGoogle, navigate]);
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-bg-primary px-4">
+    <div className="min-h-screen flex items-center justify-center bg-bg-primary grid-bg px-4">
       <div className="w-full max-w-md bg-bg-card border border-border-color rounded-3xl p-8 shadow-xl">
         <div className="flex items-center justify-center mb-8">
-          <div className="w-14 h-14 rounded-2xl bg-accent-olive/10 flex items-center justify-center">
-            <UserPlus className="w-7 h-7 text-accent-olive" />
+          <div className="w-16 h-16 rounded-full overflow-hidden border border-border-color shadow-md bg-bg-tertiary">
+            <img src="/socrates-nobg.png" alt="Scoratis" className="w-full h-full object-contain p-1.5" />
           </div>
         </div>
         <h1
@@ -52,6 +63,17 @@ export default function Signup() {
           <div className="mb-6 px-4 py-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-sm">
             {error}
           </div>
+        )}
+
+        {googleEnabled && (
+          <>
+            <GoogleSignInButton onCredential={handleGoogleCredential} />
+            <div className="flex items-center gap-3 my-6">
+              <div className="flex-1 h-px bg-border-color" />
+              <span className="text-xs uppercase tracking-wider text-text-muted">or</span>
+              <div className="flex-1 h-px bg-border-color" />
+            </div>
+          </>
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4">

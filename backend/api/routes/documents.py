@@ -24,19 +24,17 @@ router = APIRouter(tags=["documents"])
 async def upload_document(
     file: UploadFile = File(...),
     title: str = Form(...),
-    subject: str = Form(...),  # Required: subject for subject-isolated RAG
     folder_id: Optional[int] = Form(None),
     current_user: User = Depends(get_current_user),
 ):
     """
-    Upload a document for RAG processing with subject tagging.
+    Upload a document for RAG processing.
 
     Supported file types: PDF, DOCX, TXT, HTML, MD
 
     The document will be:
     1. Saved to storage
-    2. Tagged with subject for subject-isolated retrieval
-    3. Queued for background processing (parsing, chunking, embedding)
+    2. Queued for background processing (parsing, chunking, embedding)
 
     Returns document ID and task ID for status tracking.
     """
@@ -77,7 +75,7 @@ async def upload_document(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
 
-    # Create document record with subject tagging
+    # Create document record
     async with db.get_session() as session:
         document = Document(
             user_id=current_user.id,
@@ -89,7 +87,6 @@ async def upload_document(
             file_size=file_size,
             document_metadata={"original_filename": file.filename},
             status=DocumentStatus.PENDING,
-            subject=subject.strip(),  # Tag with subject for subject-isolated RAG
         )
         session.add(document)
         await session.flush()

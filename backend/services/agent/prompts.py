@@ -23,14 +23,12 @@ class PromptSection(str, Enum):
     CITATION_RULES = "citation_rules"
     RAG_CONTEXT = "rag_context"
     RESPONSE_FORMAT = "response_format"
-    SUBJECT_CONTEXT = "subject_context"
     LEARNING_STATE = "learning_state"
 
 
 @dataclass
 class PromptConfig:
     """Configuration for prompt assembly"""
-    subject: str = "general"
     include_tools: bool = True
     include_citations: bool = True
     include_rag_context: bool = True
@@ -347,113 +345,10 @@ However, I found some helpful information on the web:
 ```"""
 
 
-SUBJECT_CONTEXTS = {
-    "physics": """## PHYSICS TUTOR MODE
+TUTOR_MODE_BLOCK = """## TUTOR MODE
 
-Focus areas: Mechanics, thermodynamics, electromagnetism, waves, quantum physics, relativity.
-
-Teaching approach for physics:
-- Emphasize physical intuition before mathematical formalism
-- Use real-world examples and thought experiments
-- Connect concepts across different physics domains
-- Encourage visualization of physical phenomena""",
-
-    "chemistry": """## CHEMISTRY TUTOR MODE
-
-Focus areas: Atomic structure, bonding, reactions, thermodynamics, kinetics, organic chemistry.
-
-Teaching approach for chemistry:
-- Build from atomic/molecular level understanding
-- Use molecular visualizations and models
-- Connect theory to laboratory observations
-- Emphasize reaction mechanisms and patterns""",
-
-    "mathematics": """## MATHEMATICS TUTOR MODE
-
-Focus areas: Algebra, calculus, geometry, statistics, linear algebra, discrete math.
-
-Teaching approach for mathematics:
-- Start with concrete examples before abstraction
-- Show multiple solution approaches
-- Connect to real-world applications
-- Build intuition before formal proofs""",
-
-    "biology": """## BIOLOGY TUTOR MODE
-
-Focus areas: Cell biology, genetics, evolution, ecology, anatomy, biochemistry.
-
-Teaching approach for biology:
-- Connect structure to function
-- Use evolutionary thinking as a framework
-- Relate molecular to organism level
-- Emphasize interconnections in living systems""",
-
-    "computer_science": """## COMPUTER SCIENCE TUTOR MODE
-
-Focus areas: Programming, algorithms, data structures, systems, AI/ML, databases.
-
-Teaching approach for CS:
-- Start with problem-solving before syntax
-- Use step-by-step algorithm walkthroughs
-- Encourage hands-on coding practice
-- Connect theory to practical applications""",
-
-    "history": """## HISTORY TUTOR MODE
-
-Focus areas: World history, civilizations, events, historical analysis, historiography.
-
-Teaching approach for history:
-- Provide context and connections between events
-- Use primary sources when relevant
-- Encourage critical analysis of narratives
-- Connect past to present""",
-
-    "philosophy": """## PHILOSOPHY TUTOR MODE
-
-Focus areas: Ethics, logic, metaphysics, epistemology, political philosophy.
-
-Teaching approach for philosophy:
-- Engage with arguments rather than just positions
-- Use thought experiments
-- Encourage reasoned debate
-- Connect to practical implications""",
-
-    "english": """## ENGLISH TUTOR MODE
-
-Focus areas: Literature, writing, grammar, analysis, creative writing.
-
-Teaching approach for English:
-- Close reading and textual analysis
-- Writing process and revision
-- Connect themes across works
-- Encourage creative expression""",
-
-    "psychology": """## PSYCHOLOGY TUTOR MODE
-
-Focus areas: Cognitive, behavioral, developmental, social, clinical psychology.
-
-Teaching approach for psychology:
-- Connect theory to observable behavior
-- Use research findings and methodology
-- Discuss ethical considerations
-- Apply concepts to everyday life""",
-
-    "economics": """## ECONOMICS TUTOR MODE
-
-Focus areas: Micro, macro, finance, international economics, econometrics.
-
-Teaching approach for economics:
-- Use models to build intuition
-- Connect to real-world markets and policy
-- Discuss assumptions and limitations
-- Balance theory with empirical evidence""",
-
-    "general": """## GENERAL TUTOR MODE
-
-You are a versatile tutor capable of helping with any subject.
-Adapt your teaching style to the topic at hand.
-When a specific subject becomes clear, adjust your approach accordingly."""
-}
+You are a versatile tutor capable of helping with any topic.
+Adapt your teaching style to the topic at hand."""
 
 
 # =============================================================================
@@ -467,7 +362,6 @@ class PromptBuilder:
     Usage:
         builder = PromptBuilder()
         prompt = builder.build(PromptConfig(
-            subject="physics",
             include_tools=True,
             rag_context_xml="<context>...</context>"
         ))
@@ -483,9 +377,8 @@ class PromptBuilder:
         # Always include identity
         sections.append(IDENTITY_BLOCK)
 
-        # Subject-specific context
-        subject_context = SUBJECT_CONTEXTS.get(config.subject, SUBJECT_CONTEXTS["general"])
-        sections.append(subject_context)
+        # Tutor mode context
+        sections.append(TUTOR_MODE_BLOCK)
 
         # Teaching method
         sections.append(TEACHING_METHOD_BLOCK)
@@ -534,7 +427,6 @@ class PromptBuilder:
 
 
 def build_system_prompt(
-    subject: str = "general",
     include_tools: bool = True,
     include_citations: bool = True,
     rag_context_xml: str = "",
@@ -546,7 +438,6 @@ def build_system_prompt(
     Convenience function to build a system prompt.
 
     Args:
-        subject: Subject channel (physics, chemistry, etc.)
         include_tools: Whether to include tool instructions
         include_citations: Whether to include citation instructions
         rag_context_xml: RAG context to include
@@ -558,7 +449,6 @@ def build_system_prompt(
         Complete system prompt string
     """
     config = PromptConfig(
-        subject=subject,
         include_tools=include_tools,
         include_citations=include_citations,
         include_rag_context=bool(rag_context_xml),
@@ -572,10 +462,9 @@ def build_system_prompt(
     return builder.build(config)
 
 
-def build_minimal_prompt(subject: str = "general") -> str:
+def build_minimal_prompt() -> str:
     """Build a minimal prompt without tools or RAG (for fallback)"""
     return build_system_prompt(
-        subject=subject,
         include_tools=False,
         include_citations=False
     )

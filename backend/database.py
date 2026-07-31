@@ -379,15 +379,13 @@ class DatabaseManager:
         *,
         user_id: int,
         title: Optional[str] = None,
-        subject: Optional[str] = None,
     ) -> int:
-        """Create a new conversation record with optional subject"""
+        """Create a new conversation record"""
         async with self.get_session() as session:
             conv = Conversation(
                 session_id=session_id,
                 title=title,
                 user_id=user_id,
-                subject=subject,
             )
             session.add(conv)
             await session.flush()
@@ -424,11 +422,10 @@ class DatabaseManager:
         message: str,
         *,
         user_id: int,
-        subject: Optional[str] = None,
         mode: Optional[str] = None,
         mode_context: Optional[str] = None,
     ) -> int:
-        """Add a message to the conversation with embedding and subject tagging"""
+        """Add a message to the conversation with embedding"""
         async with self.get_session() as session:
             # Get or create conversation
             stmt = select(Conversation).where(
@@ -442,16 +439,12 @@ class DatabaseManager:
                 conv = Conversation(
                     session_id=session_id,
                     user_id=user_id,
-                    subject=subject,
                     learning_mode=mode,
                     mode_context=mode_context,
                 )
                 session.add(conv)
                 await session.flush()
             else:
-                if subject and not conv.subject:
-                    # Update subject if not already set
-                    conv.subject = subject
                 if mode and not conv.learning_mode:
                     # Initial mode capture only - the header toggle uses
                     # update_conversation_mode() for unconditional changes
@@ -526,7 +519,7 @@ class DatabaseManager:
     async def get_conversation_meta(
         self, session_id: str, *, user_id: int
     ) -> Dict[str, Optional[str]]:
-        """Look up a conversation's (subject, learning_mode, mode_context) by
+        """Look up a conversation's (learning_mode, mode_context) by
         session_id - used by chat_stream to resolve mode when the frontend
         doesn't send one explicitly, and by GET /chat/conversation/{id} to
         restore mode when reopening an existing conversation. Values are
@@ -534,7 +527,7 @@ class DatabaseManager:
         callers should default learning_mode to 'deep_learning'."""
         async with self.get_session() as session:
             stmt = select(
-                Conversation.subject, Conversation.learning_mode, Conversation.mode_context
+                Conversation.learning_mode, Conversation.mode_context
             ).where(
                 Conversation.session_id == session_id,
                 Conversation.user_id == user_id,
@@ -542,8 +535,8 @@ class DatabaseManager:
             result = await session.execute(stmt)
             row = result.first()
             if not row:
-                return {"subject": None, "learning_mode": None, "mode_context": None}
-            return {"subject": row[0], "learning_mode": row[1], "mode_context": row[2]}
+                return {"learning_mode": None, "mode_context": None}
+            return {"learning_mode": row[0], "mode_context": row[1]}
 
     async def get_conversation_messages_by_id(
         self, conversation_id: int, *, user_id: int
@@ -598,7 +591,6 @@ class DatabaseManager:
                     "id": conv.id,
                     "session_id": conv.session_id,
                     "title": conv.title,
-                    "subject": conv.subject,
                     "learning_mode": conv.learning_mode,
                     "mode_context": conv.mode_context,
                     "message_count": row.message_count,

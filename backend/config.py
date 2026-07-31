@@ -89,6 +89,13 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 14
 
+    # Google Sign-In (Google Identity Services ID-token flow - no client
+    # secret needed). Create a Web application OAuth Client ID at
+    # https://console.cloud.google.com/apis/credentials with this app's
+    # origin(s) as "Authorized JavaScript origins". Empty disables the
+    # Google button on the frontend and the /auth/google endpoint.
+    GOOGLE_CLIENT_ID: str = ""
+
     # LangSmith Observability
     LANGCHAIN_TRACING_V2: bool = False
     LANGCHAIN_ENDPOINT: str = "https://api.smith.langchain.com"

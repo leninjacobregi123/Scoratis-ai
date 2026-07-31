@@ -43,12 +43,10 @@ class SearchFilters:
     Filters for RAG search queries.
 
     Supports:
-    - Subject filtering (physics, biology, etc.)
     - Date range filtering (created_at)
     - File type filtering (pdf, docx, txt, etc.)
     - Source type filtering (upload, journal, chat)
     """
-    subject: Optional[str] = None
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
     file_types: Optional[List[str]] = None  # ['pdf', 'docx', 'txt']
@@ -64,10 +62,6 @@ class SearchFilters:
         """
         conditions = []
         params = {}
-
-        if self.subject:
-            conditions.append("d.subject = :subject")
-            params["subject"] = self.subject
 
         if self.start_date:
             conditions.append("d.created_at >= :start_date")
@@ -169,7 +163,6 @@ class HybridRAGService:
         db: AsyncSession,
         query: str,
         user_id: int = 1,
-        subject: Optional[str] = None,
         limit: Optional[int] = None,
         query_embedding: Optional[List[float]] = None,
     ) -> List[ChunkResult]:
@@ -186,7 +179,6 @@ class HybridRAGService:
             db: Async database session
             query: Search query
             user_id: User ID to filter documents
-            subject: Subject to filter documents (physics, biology, etc.)
             limit: Maximum results (default: SEARCH_CHUNK_LIMIT)
             query_embedding: Pre-computed embedding (optional, for efficiency)
 
@@ -203,11 +195,8 @@ class HybridRAGService:
             return []
 
         try:
-            # Build subject filter clause
-            subject_filter = "AND d.subject = :subject" if subject else ""
-
             # Hybrid search with CTEs
-            sql = text(f"""
+            sql = text("""
                 WITH semantic_search AS (
                     SELECT
                         c.id as chunk_id,
@@ -225,7 +214,6 @@ class HybridRAGService:
                         AND d.is_deleted = false
                         AND d.status = 'COMPLETED'
                         AND c.embedding IS NOT NULL
-                        {subject_filter}
                     ORDER BY c.embedding <=> CAST(:query_embedding AS vector)
                     LIMIT :limit
                 ),
@@ -249,7 +237,6 @@ class HybridRAGService:
                         AND d.is_deleted = false
                         AND d.status = 'COMPLETED'
                         AND to_tsvector('english', c.content) @@ plainto_tsquery('english', :query)
-                        {subject_filter}
                     ORDER BY ts_rank(
                         to_tsvector('english', c.content),
                         plainto_tsquery('english', :query)
@@ -282,8 +269,6 @@ class HybridRAGService:
                 "rrf_k": self.rrf_k,
                 "limit": limit,
             }
-            if subject:
-                params["subject"] = subject
 
             result = await db.execute(sql, params)
 
@@ -320,7 +305,6 @@ class HybridRAGService:
         db: AsyncSession,
         query: str,
         user_id: int = 1,
-        subject: Optional[str] = None,
         limit: Optional[int] = None,
         query_embedding: Optional[List[float]] = None,
     ) -> List[DocumentResult]:
@@ -331,7 +315,6 @@ class HybridRAGService:
             db: Async database session
             query: Search query
             user_id: User ID to filter documents
-            subject: Subject to filter documents (physics, biology, etc.)
             limit: Maximum results (default: SEARCH_DOCUMENT_LIMIT)
             query_embedding: Pre-computed embedding (optional, for efficiency)
 
@@ -348,10 +331,7 @@ class HybridRAGService:
             return []
 
         try:
-            # Build subject filter clause
-            subject_filter = "AND subject = :subject" if subject else ""
-
-            sql = text(f"""
+            sql = text("""
                 WITH semantic_search AS (
                     SELECT
                         id,
@@ -367,7 +347,6 @@ class HybridRAGService:
                         AND is_deleted = false
                         AND status = 'COMPLETED'
                         AND embedding IS NOT NULL
-                        {subject_filter}
                     ORDER BY embedding <=> CAST(:query_embedding AS vector)
                     LIMIT :limit
                 ),
@@ -389,7 +368,6 @@ class HybridRAGService:
                         AND is_deleted = false
                         AND status = 'COMPLETED'
                         AND to_tsvector('english', content) @@ plainto_tsquery('english', :query)
-                        {subject_filter}
                     ORDER BY ts_rank(
                         to_tsvector('english', content),
                         plainto_tsquery('english', :query)
@@ -421,8 +399,6 @@ class HybridRAGService:
                 "rrf_k": self.rrf_k,
                 "limit": limit,
             }
-            if subject:
-                params["subject"] = subject
 
             result = await db.execute(sql, params)
 
@@ -453,7 +429,6 @@ class HybridRAGService:
         db: AsyncSession,
         query: str,
         user_id: int = 1,
-        subject: Optional[str] = None,
     ) -> List[ChunkResult]:
         """
         Perform multi-level retrieval with PARALLEL document and chunk search.
@@ -468,7 +443,6 @@ class HybridRAGService:
             db: Async database session
             query: Search query
             user_id: User ID
-            subject: Subject to filter documents (physics, biology, etc.)
 
         Returns:
             List of ChunkResult with boosted scores
@@ -483,10 +457,10 @@ class HybridRAGService:
         # Note: SQLAlchemy AsyncSession doesn't support concurrent operations on same session
         # The embedding generation (async) is the main performance gain
         doc_results = await self.hybrid_document_search(
-            db, query, user_id, subject=subject, query_embedding=query_embedding
+            db, query, user_id, query_embedding=query_embedding
         )
         chunk_results = await self.hybrid_chunk_search(
-            db, query, user_id, subject=subject, query_embedding=query_embedding
+            db, query, user_id, query_embedding=query_embedding
         )
 
         doc_scores = {doc.document_id: doc.rrf_score for doc in doc_results}
@@ -534,7 +508,6 @@ class HybridRAGService:
         db: AsyncSession,
         query: str,
         user_id: int = 1,
-        subject: Optional[str] = None,
         conversation_history: Optional[List[Dict[str, str]]] = None,
         use_query_reformulation: bool = True,
         llm_service: Any = None,
@@ -552,7 +525,6 @@ class HybridRAGService:
             db: Async database session
             query: Search query
             user_id: User ID
-            subject: Subject to filter documents (physics, biology, etc.)
             conversation_history: Recent chat messages for query reformulation
             use_query_reformulation: Whether to use LLM to reformulate query
             llm_service: LLM service for query reformulation
@@ -572,7 +544,6 @@ class HybridRAGService:
                 reformulated = await query_service.reformulate_query(
                     query=query,
                     chat_history=conversation_history,
-                    subject=subject or "general",
                     use_llm=True
                 )
 
@@ -589,8 +560,8 @@ class HybridRAGService:
                 logger.warning(f"Query reformulation failed, using original: {e}")
                 search_query = query
 
-        # Step 2: Perform multi-level search with subject filtering
-        results = await self.multi_level_search(db, search_query, user_id, subject=subject)
+        # Step 2: Perform multi-level search
+        results = await self.multi_level_search(db, search_query, user_id)
 
         if not results:
             return {
@@ -880,13 +851,9 @@ class HybridRAGService:
                 from services.query_service import get_query_service
                 query_service = get_query_service()
 
-                # Get subject from filters
-                subject = filters.subject if filters else None
-
                 reformulated = await query_service.reformulate_query(
                     query=query,
                     chat_history=chat_history,
-                    subject=subject or "general",
                     use_llm=False  # Use simple expansion (no LLM service injected yet)
                 )
                 search_query = reformulated.reformulated_query
@@ -901,7 +868,6 @@ class HybridRAGService:
         if filters:
             filter_conditions, filter_params = filters.to_sql_conditions()
             search_info["filters_applied"] = {
-                "subject": filters.subject,
                 "start_date": str(filters.start_date) if filters.start_date else None,
                 "end_date": str(filters.end_date) if filters.end_date else None,
                 "file_types": filters.file_types,
@@ -911,12 +877,8 @@ class HybridRAGService:
             filter_conditions = ""
             filter_params = {}
 
-        # === Step 3: Hybrid Search with filters ===
-        # Use the existing hybrid search with subject filtering
-        subject = filters.subject if filters else None
-        chunk_results = await self.multi_level_search(
-            db, search_query, user_id, subject=subject
-        )
+        # === Step 3: Hybrid Search ===
+        chunk_results = await self.multi_level_search(db, search_query, user_id)
 
         if not chunk_results:
             return {
@@ -1024,7 +986,6 @@ class HybridRAGService:
         db: AsyncSession,
         query: str,
         user_id: int = 1,
-        subject: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         file_types: Optional[List[str]] = None,
@@ -1038,7 +999,6 @@ class HybridRAGService:
             db: Database session
             query: Search query
             user_id: User ID
-            subject: Subject filter
             start_date: Filter documents created after this date
             end_date: Filter documents created before this date
             file_types: List of file types to include
@@ -1049,7 +1009,6 @@ class HybridRAGService:
             Search results with context and sources
         """
         filters = SearchFilters(
-            subject=subject,
             start_date=start_date,
             end_date=end_date,
             file_types=file_types,

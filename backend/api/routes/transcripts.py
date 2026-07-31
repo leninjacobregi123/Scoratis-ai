@@ -104,7 +104,6 @@ async def get_shared_transcript(
 
     return {
         "title": conversation.title,
-        "subject": conversation.subject,
         "messages": [
             {"role": m.sender, "content": m.message, "timestamp": m.timestamp.isoformat() if m.timestamp else None}
             for m in messages

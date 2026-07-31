@@ -1,6 +1,6 @@
 """
 Quiz Models
-Auto-generated practice questions, tied to a subject and (optionally) the
+Auto-generated practice questions, tied to a topic and (optionally) the
 documents/chunks the questions were drawn from, so a wrong answer can point
 back at its source the same way chat citations do (see Chunk.to_citation_dict).
 """
@@ -26,7 +26,6 @@ class Quiz(Base):
     user_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    subject: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     topic: Mapped[str] = mapped_column(String(500), nullable=False)
     source_document_ids: Mapped[Optional[List[int]]] = mapped_column(JSONB, nullable=True)
 
@@ -44,7 +43,6 @@ class Quiz(Base):
     def to_dict(self, include_answers: bool = False) -> dict:
         return {
             "id": self.id,
-            "subject": self.subject,
             "topic": self.topic,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "questions": [q.to_dict(include_answer=include_answers) for q in self.questions],

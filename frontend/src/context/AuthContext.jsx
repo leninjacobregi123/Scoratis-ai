@@ -78,12 +78,26 @@ export function AuthProvider({ children }) {
     await fetchMe()
   }, [fetchMe])
 
+  const loginWithGoogle = useCallback(async (credential) => {
+    const response = await fetch('/auth/google', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credential }),
+    })
+    if (!response.ok) {
+      throw new Error(await parseErrorDetail(response))
+    }
+    const tokens = await response.json()
+    setTokens(tokens)
+    await fetchMe()
+  }, [fetchMe])
+
   const logout = useCallback(() => {
     clearTokens()
     setUser(null)
   }, [])
 
-  const value = { user, loading, isAuthenticated: !!user, login, signup, logout }
+  const value = { user, loading, isAuthenticated: !!user, login, signup, loginWithGoogle, logout }
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

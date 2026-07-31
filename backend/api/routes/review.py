@@ -2,8 +2,6 @@
 Spaced-repetition review routes. See services/review_service.py for the
 SM-2 scheduling algorithm.
 """
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -22,13 +20,12 @@ class GradeRequest(BaseModel):
 
 @router.get("/due")
 async def get_due_reviews(
-    subject: Optional[str] = None,
     limit: int = Query(50, le=200),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
     items = await review_service.get_due_items(
-        session, user_id=current_user.id, subject=subject, limit=limit
+        session, user_id=current_user.id, limit=limit
     )
     return {"due": [item.to_dict() for item in items]}
 

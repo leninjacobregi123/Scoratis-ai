@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { useOutletContext, useSearchParams } from 'react-router-dom';
+import { useOutletContext } from 'react-router-dom';
 import {
   ArrowUp, MessageSquare, Plus,
   MoreVertical, Trash2, Edit2, Check, X,
@@ -11,10 +11,9 @@ import SocratesLogo from '../3d/SocratesLogo';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import SubjectBackground from '../components/SubjectBackground';
 import LLMSwitcher from '../components/LLMSwitcher';
 import ModeSwitcher from '../components/ModeSwitcher';
-import { getSubjectTheme, DEFAULT_THEME, getSubjectImage, getSubjectTutor, isDarkTheme, getStandardizedThemeClasses } from '../config/subjectThemes';
+import { THEME, TUTOR, THEME_IMAGES, getStandardizedThemeClasses } from '../config/subjectThemes';
 import { parseCitations, buildSourceMap, hasCitations } from '../utils/citations';
 import { getAuthHeaders } from '../utils/auth';
 import { CitationNumber, CitationPopup, CitationList, SourcesBadge, FootnotesSection } from '../components/Citation';
@@ -312,40 +311,6 @@ function stripPedagogicalPlan(content) {
     .trim();
 }
 
-// Guardrail Warning Card - displays when query is blocked
-function GuardrailCard({ message, suggestedSubject, onSwitchSubject }) {
-  const subjectName = suggestedSubject?.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase());
-
-  return (
-    <div className="bg-amber-50 border border-amber-300 rounded-xl p-4 my-4 animate-fade-in">
-      <div className="flex items-start gap-3">
-        <div className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center flex-shrink-0">
-          <svg className="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-          </svg>
-        </div>
-        <div className="flex-1">
-          <h4 className="font-semibold text-amber-900 mb-2">Topic Guidance</h4>
-          <div className="text-amber-800 text-sm leading-relaxed whitespace-pre-wrap">
-            {message}
-          </div>
-          {suggestedSubject && (
-            <button
-              onClick={() => onSwitchSubject(suggestedSubject)}
-              className="mt-3 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-              </svg>
-              Switch to {subjectName}
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // Message card - Claude.ai inspired professional design
 function MessageCard({
   message,
@@ -361,13 +326,9 @@ function MessageCard({
   videoRecommendation,
   onAcceptVideo,
   onDismissVideo,
-  currentSubject,
   theme,
-  subjectId,
   sources,
   workflow,
-  guardrailInfo,
-  onSwitchSubject,
   onCitationClick,
   // New props for enhanced features
   searchTrail,
@@ -383,14 +344,11 @@ function MessageCard({
   const [activeCitation, setActiveCitation] = useState(null);
   const [showSourcesList, setShowSourcesList] = useState(false);
 
-  // Get tutor info for this subject
-  const tutor = useMemo(() => getSubjectTutor(subjectId), [subjectId]);
-
   // Get theme classes (use defaults if no theme provided)
-  const t = theme || DEFAULT_THEME;
+  const t = theme || THEME;
 
   // Get avatar image for AI responses (use tutor portrait)
-  const avatarImage = tutor?.portrait || getSubjectImage(subjectId, 'avatar');
+  const avatarImage = TUTOR.portrait;
 
   // Process content to hide pedagogical plan for AI messages
   const strippedContent = isUser ? message.content : stripPedagogicalPlan(message.content);
@@ -454,7 +412,7 @@ function MessageCard({
             <div className="w-10 h-10 rounded-full overflow-hidden border-2 border-gray-300 shadow-md flex-shrink-0">
               <img
                 src={avatarImage}
-                alt={tutor?.name || 'Scoratis'}
+                alt={TUTOR.name}
                 className="w-full h-full object-cover"
                 onError={(e) => {
                   if (e.target.src.endsWith('/socrates-nobg.png')) { e.target.style.display = 'none'; return; }
@@ -465,10 +423,10 @@ function MessageCard({
           )}
           <div className={`flex flex-col ${isUser ? 'items-end' : ''}`}>
             <span className={`text-sm font-medium ${isUser ? 'text-text-muted' : t.classes.aiMsgAccent}`}>
-              {isUser ? 'You' : tutor?.name || 'Scoratis'}
+              {isUser ? 'You' : TUTOR.name}
             </span>
-            {!isUser && tutor?.title && (
-              <span className="text-xs text-text-muted/70">{tutor.title}</span>
+            {!isUser && (
+              <span className="text-xs text-text-muted/70">{TUTOR.title}</span>
             )}
           </div>
           <span className="text-xs text-text-muted/60">·</span>
@@ -484,18 +442,6 @@ function MessageCard({
           </div>
         ) : (
           <div>
-            {/* Guardrail Warning - shown when topic is blocked */}
-            {guardrailInfo?.triggered && (
-              <GuardrailCard
-                message={message.content}
-                suggestedSubject={guardrailInfo.suggestedSubject}
-                onSwitchSubject={onSwitchSubject}
-              />
-            )}
-
-            {/* Normal AI Response (hidden if guardrail triggered) */}
-            {!guardrailInfo?.triggered && (
-              <>
             {/* Agentic Workflow Display - shows tool usage, thinking, etc. */}
             {workflow && workflow.hasTools && (
               <AgenticWorkflow
@@ -635,7 +581,7 @@ function MessageCard({
                     ) : (
                       <>
                         <Volume2 className="w-4 h-4" />
-                        Listen to {tutor?.name || 'Scoratis'}
+                        Listen to {TUTOR.name}
                       </>
                     )}
                   </button>
@@ -710,8 +656,6 @@ function MessageCard({
                 )}
               </div>
             )}
-              </>
-            )}
           </div>
         )}
       </div>
@@ -720,8 +664,8 @@ function MessageCard({
 }
 
 // Typing indicator - Theme-aware
-function TypingIndicator({ currentSubject, theme, isDark }) {
-  const displayName = currentSubject ? `${currentSubject.icon} ${currentSubject.name}` : 'Socrates';
+function TypingIndicator({ theme, isDark }) {
+  const displayName = 'Socrates';
 
   return (
     <div className={`py-6 animate-fade-in ${isDark ? 'bg-white/5' : 'bg-bg-secondary/50'}`}>
@@ -811,18 +755,12 @@ function ConversationItem({ conversation, isActive, onClick, onDelete, onRename,
 
 export default function Chat() {
   const { initialSessionId, onConversationCreated, setActiveSessionId: setParentActiveSessionId } = useOutletContext();
-  const [searchParams] = useSearchParams();
   const [conversations, setConversations] = useState([]);
   const [activeConversationId, setActiveConversationId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState(() => initialSessionId || 'session_' + Date.now());
-
-  // Subject channel state (from Gallery)
-  const [currentSubject, setCurrentSubject] = useState(null);
-  const subjectFromUrl = searchParams.get('subject');
-  const isFreshSession = searchParams.get('fresh') === 'true';
 
   // Per-message video state (inline display)
   const [messageVideos, setMessageVideos] = useState({});       // {msgId: {path, topic}}
@@ -834,9 +772,6 @@ export default function Chat() {
 
   // Citation/Sources state for RAG
   const [messageSources, setMessageSources] = useState({}); // {msgId: sources[]}
-
-  // Guardrail state - tracks messages blocked by subject guardrails
-  const [guardrailMessages, setGuardrailMessages] = useState({}); // {msgId: {triggered, suggestedSubject}}
 
   // Search trail state - tracks which sources were searched
   const [messageSearchTrails, setMessageSearchTrails] = useState({}); // {msgId: {attempts: []}}
@@ -913,7 +848,7 @@ export default function Chat() {
   // fetch is in flight, flashing the "What are you here for today?" screen
   // on every reopen even though the mode will be restored a moment later.
   const [isRestoringConversation, setIsRestoringConversation] = useState(
-    () => !!initialSessionId && !searchParams.get('subject')
+    () => !!initialSessionId
   );
 
   const messagesEndRef = useRef(null);
@@ -968,71 +903,24 @@ export default function Chat() {
     setShareMenuOpen(false);
   }, [sessionId]);
 
-  // Get theme based on current subject (with standardized classes for new components)
-  const theme = useMemo(() => {
-    const subjectId = currentSubject?.id || subjectFromUrl;
-    const baseTheme = getSubjectTheme(subjectId);
-    const standardizedClasses = getStandardizedThemeClasses(subjectId);
-    return {
-      ...baseTheme,
-      classes: standardizedClasses
-    };
-  }, [currentSubject, subjectFromUrl]);
-
-  // Check if current theme is dark
-  const isDark = useMemo(() => isDarkTheme(currentSubject?.id || subjectFromUrl), [currentSubject, subjectFromUrl]);
-
-  // Load subject details from URL
-  useEffect(() => {
-    const loadSubject = async () => {
-      if (subjectFromUrl) {
-        try {
-          const subjectData = await api.get(`/subjects/${subjectFromUrl}`);
-          setCurrentSubject(subjectData);
-
-          // Set subject-specific welcome message
-          if (!initialSessionId || isFreshSession) {
-            const welcomeMessages = {
-              physics: "Welcome to **Physics**! I'm ready to guide you through the laws of nature. What phenomenon would you like to understand? A falling apple, perhaps, or the dance of electrons?",
-              chemistry: "Welcome to **Chemistry**! Let's explore the world of atoms and molecules together. What substance or reaction has caught your curiosity?",
-              biology: "Welcome to **Biology**! Life is full of wonders waiting to be understood. What aspect of living systems shall we explore?",
-              mathematics: "Welcome to **Mathematics**! Numbers and patterns are the language of the universe. What mathematical concept would you like to discover?",
-              computer_science: "Welcome to **Computer Science**! Let's think like machines while remaining human. What algorithm or concept shall we decode together?",
-              english: "Welcome to **English**! Words have power to move mountains. What text or writing skill shall we examine?",
-              history: "Welcome to **History**! Those who understand the past can shape the future. What era or event draws your interest?",
-              philosophy: "Welcome to **Philosophy**! The most important questions have no easy answers. What fundamental truth shall we seek together?",
-              psychology: "Welcome to **Psychology**! The human mind is the greatest mystery. What aspect of thought or behavior shall we examine?",
-              economics: "Welcome to **Economics**! Every choice has a cost. What economic puzzle shall we unravel?",
-              geography: "Welcome to **Geography**! The world is shaped by place and space. What corner of our planet shall we explore?",
-              art: "Welcome to **Art**! Beauty and meaning intertwine in visual forms. What artwork or technique shall we examine?",
-              music: "Welcome to **Music**! Sound becomes emotion through structure. What musical concept shall we listen into?",
-              general: "Welcome, seeker of wisdom! I'm here to guide your learning through questions. What shall we explore together?"
-            };
-
-            setMessages([{
-              id: Date.now(),
-              role: 'ai',
-              content: `# ${subjectData.icon} ${subjectData.name}\n\n${welcomeMessages[subjectFromUrl] || welcomeMessages.general}`,
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-            }]);
-          }
-        } catch (error) {
-          console.error('Failed to load subject:', error);
-        }
-      }
-    };
-    loadSubject();
-  }, [subjectFromUrl, isFreshSession]);
+  // Theme is now static (single unified Scoratis experience, no more
+  // per-subject lookup) - kept as a variable since many places below still
+  // reference theme.classes/isDark.
+  const theme = useMemo(() => ({
+    ...THEME,
+    classes: getStandardizedThemeClasses()
+  }), []);
+  const isDark = false;
 
   useEffect(() => {
     loadConversations();
-    if (initialSessionId && !subjectFromUrl) {
+    if (initialSessionId) {
       setIsRestoringConversation(true);
       loadConversation(initialSessionId);
     } else {
       setIsRestoringConversation(false);
     }
-  }, [initialSessionId, subjectFromUrl]);
+  }, [initialSessionId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -1404,12 +1292,6 @@ export default function Chat() {
     });
   };
 
-  // Handle switching subject from guardrail suggestion
-  const handleSwitchSubject = useCallback((suggestedSubject) => {
-    // Navigate to the suggested subject channel
-    window.location.href = `/chat?subject=${suggestedSubject}&fresh=true`;
-  }, []);
-
   // Fetch documents for canvas panel
   const fetchCanvasDocuments = useCallback(async () => {
     try {
@@ -1486,7 +1368,6 @@ export default function Chat() {
         const formData = new FormData();
         formData.append('message', content);
         formData.append('session_id', sessionId);
-        formData.append('subject', currentSubject?.id || subjectFromUrl || 'general');
         formData.append('file', selectedFile);
         formData.append('use_web_search', chatOptions.useWebSearch);
         formData.append('use_reasoning', chatOptions.useReasoning);
@@ -1517,7 +1398,6 @@ export default function Chat() {
           body: JSON.stringify({
             message: content,
             session_id: sessionId,
-            subject: currentSubject?.id || subjectFromUrl || 'general',
             use_web_search: chatOptions.useWebSearch,
             use_reasoning: chatOptions.useReasoning,
             use_documents: chatOptions.useDocuments,
@@ -1714,20 +1594,6 @@ export default function Chat() {
               }
 
               if (data.done) {
-                // Check for guardrail triggered response
-                if (data.guardrail_triggered) {
-                  setGuardrailMessages(prev => ({
-                    ...prev,
-                    [newMessageId]: {
-                      triggered: true,
-                      suggestedSubject: data.suggested_subject,
-                      source: data.source
-                    }
-                  }));
-                  // Don't fetch TTS for guardrail messages
-                  return;
-                }
-
                 // Mark agentic workflow complete
                 handleWorkflowComplete();
                 setMessageWorkflows(prev => ({
@@ -1813,7 +1679,7 @@ export default function Chat() {
   };
 
   return (
-    <SubjectBackground subjectId={currentSubject?.id || subjectFromUrl}>
+    <div className="relative h-full w-full flex flex-col">
       <div className="flex-1 flex relative overflow-hidden">
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col min-w-0">
@@ -1825,7 +1691,7 @@ export default function Chat() {
           <div
             className="absolute inset-0 overflow-hidden"
             style={{
-              backgroundImage: `url(${getSubjectImage(currentSubject?.id || subjectFromUrl, 'header')})`,
+              backgroundImage: `url(${THEME_IMAGES.header})`,
               backgroundSize: 'cover',
               backgroundPosition: 'center',
             }}
@@ -1834,15 +1700,12 @@ export default function Chat() {
           <div className="absolute inset-0 overflow-hidden bg-gradient-to-r from-black/70 via-black/50 to-black/40" />
 
           {/* Header content - Left side */}
-          {(() => {
-            const headerTutor = getSubjectTutor(currentSubject?.id || subjectFromUrl);
-            return (
-              <div className="relative z-50 flex items-center gap-4">
+          <div className="relative z-50 flex items-center gap-4">
                 {/* Tutor portrait - larger */}
                 <div className="w-16 h-16 rounded-full overflow-hidden border-3 border-white/70 shadow-xl flex-shrink-0">
                   <img
-                    src={headerTutor?.portrait}
-                    alt={headerTutor?.name || 'Scoratis'}
+                    src={TUTOR.portrait}
+                    alt={TUTOR.name}
                     className="w-full h-full object-cover"
                     onError={(e) => {
                       if (e.target.src.endsWith('/socrates-nobg.png')) { e.target.style.display = 'none'; return; }
@@ -1852,14 +1715,11 @@ export default function Chat() {
                 </div>
                 <div className="flex flex-col">
                   <span className="font-semibold text-xl text-white drop-shadow-md">
-                    {headerTutor?.name || 'Scoratis'}
+                    {TUTOR.name}
                   </span>
                   <span className="text-sm text-white/90">
-                    {currentSubject ? `${currentSubject.icon} ${currentSubject.name}` : headerTutor?.title || 'Socratic Tutor'}
+                    {TUTOR.title}
                   </span>
-                  {headerTutor?.title && currentSubject && (
-                    <span className="text-xs text-white/70 mt-0.5">{headerTutor.title}</span>
-                  )}
                 </div>
 
                 {/* LLM Model Switcher - Left side */}
@@ -1880,9 +1740,7 @@ export default function Chat() {
                     <ModeSwitcher currentMode={learningMode} onModeChange={handleModeChange} />
                   </div>
                 )}
-              </div>
-            );
-          })()}
+          </div>
 
           {/* Right side - Loading indicator and Canvas toggle */}
           <div className="relative z-10 flex items-center gap-3">
@@ -1972,12 +1830,8 @@ export default function Chat() {
                 onAcceptVideo={handleAcceptVideoOffer}
                 onDismissVideo={handleDismissVideoOffer}
                 workflow={messageWorkflows[msg.id] || (msg.id === streamingMessageId ? workflowState : null)}
-                currentSubject={currentSubject}
                 theme={theme}
-                subjectId={currentSubject?.id || subjectFromUrl}
                 sources={messageSources[msg.id]}
-                guardrailInfo={guardrailMessages[msg.id]}
-                onSwitchSubject={handleSwitchSubject}
                 onCitationClick={handleCitationClick}
                 searchTrail={messageSearchTrails[msg.id]}
                 clarification={messageClarifications[msg.id]}
@@ -2025,7 +1879,7 @@ export default function Chat() {
                         ))}
                       </div>
                       <span className={`text-sm ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-                        {getSubjectTutor(currentSubject?.id || subjectFromUrl)?.name || 'Scoratis'} is formulating a response...
+                        {TUTOR.name} is formulating a response...
                       </span>
                     </div>
                   )}
@@ -2033,7 +1887,7 @@ export default function Chat() {
               </div>
             )}
 
-            {loading && !isWebSearching && <TypingIndicator currentSubject={currentSubject} theme={theme} isDark={isDark} />}
+            {loading && !isWebSearching && <TypingIndicator theme={theme} isDark={isDark} />}
             <div ref={messagesEndRef} />
           </div>
         </div>
@@ -2047,7 +1901,7 @@ export default function Chat() {
                 What are you here for today?
               </h1>
               <p className={`text-sm mb-8 ${isDark ? 'text-gray-400' : 'text-text-muted'}`}>
-                This shapes how {currentSubject?.name || 'Scoratis'} teaches you - you can change it anytime from the header.
+                This shapes how Scoratis teaches you - you can change it anytime from the header.
               </p>
               <div className="grid sm:grid-cols-2 gap-4 text-left">
                 <button
@@ -2101,9 +1955,7 @@ export default function Chat() {
           </div>
         )}
 
-        {messages.length <= 1 && learningMode && (() => {
-          const welcomeTutor = getSubjectTutor(currentSubject?.id || subjectFromUrl);
-          return (
+        {messages.length <= 1 && learningMode && (
             <div className="flex-1 flex items-center justify-center p-8">
               <div className="text-center max-w-lg">
                 {/* Tutor portrait */}
@@ -2111,8 +1963,8 @@ export default function Chat() {
                   <div className="relative">
                     <div className={`w-36 h-36 rounded-full overflow-hidden shadow-2xl border-4 ring-4 ${isDark ? 'border-white/30 ring-white/10' : 'border-white/90 ring-gray-200'}`}>
                       <img
-                        src={welcomeTutor?.portrait || getSubjectImage(currentSubject?.id, 'avatar')}
-                        alt={welcomeTutor?.name || 'Scoratis'}
+                        src={TUTOR.portrait}
+                        alt={TUTOR.name}
                         className="w-full h-full object-cover"
                         onError={(e) => {
                           if (e.target.src.endsWith('/socrates-nobg.png')) { e.target.style.display = 'none'; return; }
@@ -2120,63 +1972,45 @@ export default function Chat() {
                         }}
                       />
                     </div>
-                    {currentSubject && (
-                      <div className={`absolute -bottom-2 -right-2 w-10 h-10 rounded-full flex items-center justify-center text-xl shadow-lg border-2 ${isDark ? 'bg-white/20 border-white/30' : 'bg-gray-800 border-white'}`}>
-                        {currentSubject.icon}
-                      </div>
-                    )}
                   </div>
                 </div>
 
                 {/* Tutor name and title */}
                 <h2 className={`text-2xl font-medium mb-1 ${isDark ? 'text-white' : 'text-text-primary'}`}
                     style={{ fontFamily: 'Georgia, serif' }}>
-                  {welcomeTutor?.name || 'Scoratis'}
+                  {TUTOR.name}
                 </h2>
                 <p className={`text-sm font-medium mb-1 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-                  {welcomeTutor?.title || 'Your Socratic Tutor'}
+                  {TUTOR.title}
                 </p>
-                {welcomeTutor?.years && (
-                  <p className={`text-xs mb-4 ${isDark ? 'text-gray-400' : 'text-text-muted/70'}`}>
-                    {welcomeTutor.years}
-                  </p>
-                )}
+                <p className={`text-xs mb-4 ${isDark ? 'text-gray-400' : 'text-text-muted/70'}`}>
+                  {TUTOR.years}
+                </p>
 
-                {/* Subject name */}
                 <h1 className={`text-xl font-light mb-2 ${isDark ? 'text-white' : 'text-text-primary'}`}
                     style={{ fontFamily: 'Georgia, serif' }}>
-                  {currentSubject ? `${currentSubject.icon} ${currentSubject.name}` : 'Welcome to Scoratis'}
+                  Welcome to Scoratis
                 </h1>
 
                 {/* Tutor quote */}
                 <p className={`text-base mb-8 italic px-4 ${isDark ? 'text-gray-300' : 'text-text-muted'}`}>
-                  {welcomeTutor?.quote || '"The unexamined life is not worth living."'}
+                  {TUTOR.quote}
                 </p>
 
                 <div className="space-y-3">
                   {(learningMode === 'exam_prep'
-                    ? (currentSubject ? [
-                        { label: `Explain a ${currentSubject.name} concept fast`, prompt: `Explain a fundamental concept in ${currentSubject.name} clearly and directly - I have an exam soon.` },
-                        { label: 'Quiz me quickly', prompt: `Quiz me on the basics of ${currentSubject.name}.` },
-                        { label: 'Summarize key points', prompt: `Summarize the most important things to know about ${currentSubject.name} for an exam.` },
-                        { label: 'Practice problem', prompt: `Give me a practice problem on ${currentSubject.name}.` }
-                      ] : [
+                    ? [
                         { label: 'Explain a concept fast', prompt: 'Explain recursion in programming clearly and directly - I have an exam soon.' },
                         { label: 'Quiz me quickly', prompt: 'Quiz me on a topic of your choice to help me study.' },
                         { label: 'Summarize key points', prompt: 'Summarize the key points I should know about quantum mechanics for an exam.' },
                         { label: 'Practice problem', prompt: 'Give me a practice problem to work through.' }
-                      ])
-                    : (currentSubject ? [
-                        { label: `Explain a ${currentSubject.name} concept`, prompt: `Help me understand a fundamental concept in ${currentSubject.name}.` },
-                        { label: 'Challenge my understanding', prompt: `Challenge my assumptions about ${currentSubject.name}.` },
-                        { label: 'Guide my learning', prompt: `Guide me through studying the basics of ${currentSubject.name}.` },
-                        { label: 'Ask me questions', prompt: `Ask me Socratic questions to test my knowledge of ${currentSubject.name}.` }
-                      ] : [
+                      ]
+                    : [
                         { label: 'Explore a concept', prompt: 'Help me understand the concept of recursion in programming.' },
                         { label: 'Challenge my thinking', prompt: 'Challenge my assumptions about the nature of consciousness.' },
                         { label: 'Guide my learning', prompt: 'Guide me through studying the basics of quantum mechanics.' },
                         { label: 'Help me understand', prompt: 'Ask me Socratic questions about the causes of World War I.' }
-                      ])
+                      ]
                   ).map((item, i) => (
                     <button
                       key={i}
@@ -2193,8 +2027,7 @@ export default function Chat() {
                 </div>
               </div>
             </div>
-          );
-        })()}
+        )}
 
         {/* Input area - Theme-aware floating bar */}
         <div className={`pt-4 pb-6 ${isDark ? 'bg-gradient-to-t from-black/60 via-black/30 to-transparent' : 'bg-gradient-to-t from-white/80 via-white/60 to-transparent'}`}>
@@ -2317,7 +2150,7 @@ export default function Chat() {
                         sendMessage();
                       }
                     }}
-                    placeholder={currentSubject ? `Ask ${getSubjectTutor(currentSubject.id)?.name || 'Scoratis'} about ${currentSubject.name}...` : 'Ask a question...'}
+                    placeholder="Ask a question..."
                     className="w-full bg-transparent text-lg leading-7 outline-none resize-none min-h-[32px] max-h-40 text-gray-800 placeholder-gray-400"
                     rows={1}
                     disabled={loading}
@@ -2369,7 +2202,7 @@ export default function Chat() {
 
             {/* Subtle hint text */}
             <p className={`text-center text-xs mt-2 ${isDark ? 'text-gray-400' : 'text-gray-400'}`}>
-              {currentSubject ? `Learning ${currentSubject.name} with ${getSubjectTutor(currentSubject.id)?.name || 'Scoratis'}` : 'Socratic learning powered by AI'}
+              Socratic learning powered by AI
             </p>
           </div>
         </div>
@@ -2390,6 +2223,6 @@ export default function Chat() {
         onOpenDocument={handleCitationClick}
       />
     </div>
-  </SubjectBackground>
+    </div>
   );
 }

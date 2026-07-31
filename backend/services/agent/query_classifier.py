@@ -119,13 +119,12 @@ class QueryClassifier:
             re.compile(p, re.IGNORECASE) for p in self.SUBSTANTIVE_INDICATORS
         ]
 
-    def classify(self, query: str, subject: Optional[str] = None) -> QueryClassification:
+    def classify(self, query: str) -> QueryClassification:
         """
         Classify a user query to determine if tools are needed.
 
         Args:
             query: The user's query text
-            subject: Optional subject context (e.g., "physics", "history")
 
         Returns:
             QueryClassification with type and whether to skip tools
@@ -178,16 +177,6 @@ class QueryClassifier:
                     confidence=0.6
                 )
 
-        # If subject is specified and query is about that subject, likely substantive
-        if subject and len(query) > 20:
-            return QueryClassification(
-                is_trivial=False,
-                query_type="substantive",
-                skip_tools=False,
-                reason=f"Query in context of subject '{subject}' - check knowledge base",
-                confidence=0.7
-            )
-
         # Default: Treat as substantive (err on the side of searching)
         return QueryClassification(
             is_trivial=False,
@@ -197,13 +186,13 @@ class QueryClassifier:
             confidence=0.5
         )
 
-    def is_trivial(self, query: str, subject: Optional[str] = None) -> bool:
+    def is_trivial(self, query: str) -> bool:
         """Quick check if query is trivial."""
-        return self.classify(query, subject).is_trivial
+        return self.classify(query).is_trivial
 
-    def should_skip_tools(self, query: str, subject: Optional[str] = None) -> bool:
+    def should_skip_tools(self, query: str) -> bool:
         """Quick check if tools should be skipped."""
-        return self.classify(query, subject).skip_tools
+        return self.classify(query).skip_tools
 
 
 # Singleton instance

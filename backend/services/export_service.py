@@ -17,7 +17,6 @@ def build_markdown_transcript(conversation: Conversation, messages: List[ChatMes
     lines = [
         f"# {conversation.title or 'Untitled Conversation'}",
         "",
-        f"*Subject: {conversation.subject or 'general'}*  ",
         f"*Exported from Scoratis*",
         "",
         "---",

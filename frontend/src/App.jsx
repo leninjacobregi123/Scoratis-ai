@@ -1,5 +1,4 @@
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
-import Gallery from './pages/Gallery';
 import Dashboard from './pages/Dashboard';
 import Home from './pages/Home';
 import Chat from './pages/Chat';
@@ -7,7 +6,6 @@ import VideoVault from './pages/VideoVault';
 import Settings from './pages/Settings';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
-import Progress from './pages/Progress';
 import Review from './pages/Review';
 import Quizzes from './pages/Quizzes';
 import SharedTranscript from './pages/SharedTranscript';
@@ -19,12 +17,27 @@ function RequireAuth({ children }) {
   const location = useLocation();
 
   if (loading) {
-    return <div className="min-h-screen flex items-center justify-center bg-bg-primary text-text-muted">Loading...</div>;
+    return <div className="min-h-screen flex items-center justify-center bg-bg-primary grid-bg text-text-muted">Loading...</div>;
   }
   if (!isAuthenticated) {
     return <Navigate to="/login" state={{ from: location.pathname }} replace />;
   }
   return children;
+}
+
+// Landing ("/") used to be the 3D Gallery itself, forcing every visitor -
+// logged in or not - through its loading screen and subject picker before
+// they could even sign in. Auth now comes first: signed-in users go
+// straight to the app, everyone else goes straight to login. The Gallery
+// and the whole subject-selection concept it existed for have since been
+// removed entirely - Scoratis is one unified experience now.
+function Landing() {
+  const { isAuthenticated, loading } = useAuth();
+
+  if (loading) {
+    return <div className="min-h-screen flex items-center justify-center bg-bg-primary grid-bg text-text-muted">Loading...</div>;
+  }
+  return <Navigate to={isAuthenticated ? '/app' : '/login'} replace />;
 }
 
 function App() {
@@ -33,8 +46,7 @@ function App() {
     <Router>
       <AuthProvider>
         <Routes>
-          {/* 3D Gallery Landing Page - stays public/browsable */}
-          <Route path="/" element={<Gallery />} />
+          <Route path="/" element={<Landing />} />
 
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
@@ -53,7 +65,6 @@ function App() {
             <Route path="home" element={<Home />} />
             <Route path="scoratis" element={<Chat />} />
             <Route path="videos" element={<VideoVault />} />
-            <Route path="progress" element={<Progress />} />
             <Route path="review" element={<Review />} />
             <Route path="quizzes" element={<Quizzes />} />
             <Route path="settings" element={<Settings />} />

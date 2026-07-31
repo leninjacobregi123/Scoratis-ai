@@ -84,7 +84,7 @@ export default function Review() {
         ) : (
           <>
             <div className="text-sm text-text-muted mb-3 text-center">
-              {index + 1} of {items.length} · <span className="capitalize">{current.subject.replace(/_/g, ' ')}</span>
+              {index + 1} of {items.length}
             </div>
 
             <div

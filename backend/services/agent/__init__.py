@@ -37,7 +37,6 @@ Usage:
     result = await agent.invoke(
         session_id="conv_123",
         message="Explain photosynthesis",
-        subject="biology",
         db_session=db_session
     )
 
@@ -45,7 +44,6 @@ Usage:
     async for event in agent.stream(
         session_id="conv_123",
         message="Explain photosynthesis",
-        subject="biology",
         db_session=db_session
     ):
         if event["type"] == "token":
@@ -109,7 +107,6 @@ from .prompts import (
     PromptBuilder,
     build_system_prompt,
     build_minimal_prompt,
-    SUBJECT_CONTEXTS,
 )
 
 # Graph (main agent)
@@ -181,7 +178,6 @@ __all__ = [
     "PromptBuilder",
     "build_system_prompt",
     "build_minimal_prompt",
-    "SUBJECT_CONTEXTS",
     # Agent
     "ScoratisAgent",
     "create_agent",

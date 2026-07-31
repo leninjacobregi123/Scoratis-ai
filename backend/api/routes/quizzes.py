@@ -3,7 +3,6 @@ Quiz routes: generate, fetch, submit. See services/quiz_service.py for the
 LLM-generation and scoring logic.
 """
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -13,14 +12,13 @@ from sqlalchemy.orm import selectinload
 
 from core.auth import get_current_user, get_db
 from models import Quiz, QuizQuestion, User
-from services import quiz_service, progress_service, review_service
+from services import quiz_service, review_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/quizzes", tags=["quizzes"])
 
 
 class QuizGenerateRequest(BaseModel):
-    subject: str = Field(min_length=1, max_length=100)
     topic: str = Field(min_length=1, max_length=500)
     num_questions: int = Field(default=5, ge=1, le=15)
 
@@ -51,7 +49,6 @@ async def generate_quiz(
         quiz = await quiz_service.generate_quiz(
             session,
             user_id=current_user.id,
-            subject=request.subject.strip(),
             topic=request.topic.strip(),
             num_questions=request.num_questions,
         )
@@ -63,19 +60,20 @@ async def generate_quiz(
 
 @router.get("")
 async def list_quizzes(
-    subject: Optional[str] = None,
     limit: int = Query(20, le=100),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
-    stmt = select(Quiz).where(Quiz.user_id == current_user.id)
-    if subject:
-        stmt = stmt.where(Quiz.subject == subject)
-    stmt = stmt.order_by(Quiz.created_at.desc()).limit(limit)
+    stmt = (
+        select(Quiz)
+        .where(Quiz.user_id == current_user.id)
+        .order_by(Quiz.created_at.desc())
+        .limit(limit)
+    )
 
     result = await session.execute(stmt)
     quizzes = result.scalars().all()
-    return {"quizzes": [{"id": q.id, "subject": q.subject, "topic": q.topic,
+    return {"quizzes": [{"id": q.id, "topic": q.topic,
                           "created_at": q.created_at.isoformat() if q.created_at else None} for q in quizzes]}
 
 
@@ -102,14 +100,10 @@ async def submit_quiz(
         session, quiz=quiz, user_id=current_user.id, answers=request.answers
     )
 
-    await progress_service.record_quiz_result(
-        session, user_id=current_user.id, subject=quiz.subject, score=attempt.score
-    )
-
     missed_ids = attempt.answers.get("missed_question_ids", [])
     missed_questions = [q for q in quiz.questions if q.id in missed_ids]
     await review_service.seed_from_missed_quiz_questions(
-        session, user_id=current_user.id, subject=quiz.subject, questions=missed_questions
+        session, user_id=current_user.id, questions=missed_questions
     )
 
     return {

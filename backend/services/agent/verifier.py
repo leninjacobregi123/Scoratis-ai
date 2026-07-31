@@ -144,10 +144,6 @@ def build_verification_prompt(
         prompt_parts.append("")
 
     # Add context
-    if context.get("subject"):
-        prompt_parts.append(f"## SUBJECT CONTEXT: {context['subject']}")
-        prompt_parts.append("")
-
     if context.get("learning_state"):
         state = context["learning_state"]
         prompt_parts.append(f"## LEARNING STATE: {state.get('state', 'initial')}")
@@ -193,7 +189,7 @@ class ResponseVerifier:
             user_query: The original user question
             response: The response to verify
             sources: Available sources for fact-checking
-            context: Additional context (subject, learning state, etc.)
+            context: Additional context (learning state, etc.)
 
         Returns:
             VerificationState with verification results

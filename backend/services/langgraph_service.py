@@ -71,7 +71,6 @@ class ConversationState(TypedDict):
 
     # Session identification
     session_id: str
-    subject: str  # physics, chemistry, etc.
 
     # Learning state tracking
     learning_state: Dict[str, Any]
@@ -100,7 +99,6 @@ VIDEO_ANALYSIS_PROMPT = """You are an intelligent video generation advisor analy
 Your task is to determine if a short animated video (15-30 seconds) would enhance the student's understanding.
 
 ## CONTEXT
-Subject Area: {subject}
 Previous Topics Discussed: {topics_discussed}
 Student's Learning State: {learning_state}
 
@@ -263,15 +261,14 @@ class LangGraphService:
             return {"current_ai_response": "LLM service not available"}
 
         messages = state.get("messages", [])
-        subject = state.get("subject", "general")
         rag_context = state.get("rag_context")
 
         try:
             # Import here to avoid circular imports
-            from prompts import get_subject_prompt
+            from prompts import get_system_prompt
 
             # Build system prompt with RAG context
-            system_prompt = get_subject_prompt(subject)
+            system_prompt = get_system_prompt()
             if rag_context:
                 system_prompt = f"{system_prompt}\n\n## RELEVANT CONTEXT\n{rag_context}"
 
@@ -302,7 +299,6 @@ class LangGraphService:
         """Analyze if content is suitable for video visualization using pure AI analysis."""
         user_message = state.get("current_user_message", "")
         ai_response = state.get("current_ai_response", "")
-        subject = state.get("subject", "general")
         learning_state = state.get("learning_state", {})
 
         # Skip analysis for very short responses
@@ -321,7 +317,6 @@ class LangGraphService:
                 analysis = await self._llm_video_analysis(
                     user_message=user_message,
                     ai_response=ai_response,
-                    subject=subject,
                     learning_state=learning_state
                 )
                 return {
@@ -351,7 +346,6 @@ class LangGraphService:
         self,
         user_message: str,
         ai_response: str,
-        subject: str,
         learning_state: Dict
     ) -> VideoAnalysisResult:
         """Pure AI-based video analysis - no hardcoded patterns."""
@@ -359,7 +353,6 @@ class LangGraphService:
         current_state = learning_state.get("current_state", "initial")
 
         prompt = VIDEO_ANALYSIS_PROMPT.format(
-            subject=subject,
             topics_discussed=", ".join(topics_discussed[-5:]) if topics_discussed else "none",
             learning_state=current_state,
             user_message=user_message[:500],
@@ -429,7 +422,6 @@ class LangGraphService:
         session_id: str,
         user_message: str,
         ai_response: str,
-        subject: str = "general"
     ) -> Dict[str, Any]:
         """
         Analyze a conversation turn for video potential.
@@ -443,12 +435,11 @@ class LangGraphService:
 
         # Get or create state for tracking
         if session_id not in self._fallback_states:
-            self._fallback_states[session_id] = self._create_initial_state(session_id, subject)
+            self._fallback_states[session_id] = self._create_initial_state(session_id)
 
         state = self._fallback_states[session_id]
         state["current_user_message"] = user_message
         state["current_ai_response"] = ai_response
-        state["subject"] = subject
 
         # Update message history
         messages = list(state.get("messages", []))
@@ -487,7 +478,6 @@ class LangGraphService:
         self,
         session_id: str,
         message: str,
-        subject: str = "general"
     ) -> Dict[str, Any]:
         """
         Process a user message through the LangGraph pipeline.
@@ -509,11 +499,10 @@ class LangGraphService:
                 if existing and existing.values:
                     initial_state = existing.values
                 else:
-                    initial_state = self._create_initial_state(session_id, subject)
+                    initial_state = self._create_initial_state(session_id)
 
                 # Update with new message
                 initial_state["current_user_message"] = message
-                initial_state["subject"] = subject
 
                 # Run the graph
                 result = await self.graph.ainvoke(initial_state, config=config)
@@ -524,14 +513,13 @@ class LangGraphService:
                 # Fall through to fallback
 
         # Fallback processing
-        return await self._fallback_process(session_id, message, subject)
+        return await self._fallback_process(session_id, message)
 
-    def _create_initial_state(self, session_id: str, subject: str) -> ConversationState:
+    def _create_initial_state(self, session_id: str) -> ConversationState:
         """Create initial conversation state."""
         return {
             "messages": [],
             "session_id": session_id,
-            "subject": subject,
             "learning_state": LearningStateData().model_dump(),
             "video_analysis": None,
             "video_eligible": False,
@@ -563,16 +551,14 @@ class LangGraphService:
         self,
         session_id: str,
         message: str,
-        subject: str
     ) -> Dict[str, Any]:
         """Fallback processing when LangGraph is not available."""
         # Get or create state
         if session_id not in self._fallback_states:
-            self._fallback_states[session_id] = self._create_initial_state(session_id, subject)
+            self._fallback_states[session_id] = self._create_initial_state(session_id)
 
         state = self._fallback_states[session_id]
         state["current_user_message"] = message
-        state["subject"] = subject
 
         # Process through nodes manually
         state.update(await self._process_input_node(state))

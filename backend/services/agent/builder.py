@@ -52,7 +52,6 @@ class ToolDependencies:
     langgraph_service: Any = None
     llm_service: Any = None
     session_id: str = ""
-    subject: str = "general"
     user_id: int = 1
     # Agentic components
     orchestrator: Any = None
@@ -142,7 +141,6 @@ class ToolBuilder:
                 self.deps.db_session,
                 self.deps.rag_service,
                 self.deps.user_id,
-                subject=self.deps.subject  # Subject-filtered RAG
             )
 
         elif name == "search_journals":
@@ -275,7 +273,6 @@ def build_tools(
     langgraph_service: Any = None,
     llm_service: Any = None,
     session_id: str = "",
-    subject: str = "general",
     user_id: int = 1,
     tool_names: Optional[List[str]] = None,
     orchestrator: Any = None,
@@ -295,7 +292,6 @@ def build_tools(
         langgraph_service: LangGraph service for state management
         llm_service: LLM service for AI operations
         session_id: Current session identifier
-        subject: Current subject channel
         user_id: Current user ID
         tool_names: Optional list of specific tools to build (builds all if None)
         orchestrator: Sub-agent orchestrator for delegation
@@ -314,7 +310,6 @@ def build_tools(
         langgraph_service=langgraph_service,
         llm_service=llm_service,
         session_id=session_id,
-        subject=subject,
         user_id=user_id,
         orchestrator=orchestrator,
         verifier=verifier,

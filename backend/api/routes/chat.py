@@ -4,7 +4,7 @@ streaming (SSE) chat, TTS, file-attachment chat, video-generation triggers,
 and conversation history CRUD.
 
 Service singletons (rag_service, web_search_service, memory_service,
-langgraph_service, video_analyzer_service, scoratis_agent, guardrail_service,
+langgraph_service, video_analyzer_service, scoratis_agent,
 db) are resolved fresh via their own module's get_xxx()/get_database()
 getter functions at the top of each route/handler that needs them, rather
 than importing main.py's module-level globals directly - each service
@@ -37,12 +37,11 @@ from coqui_tts_service import coqui_tts_service, TUTOR_VOICES
 from database import get_database
 from llm_service import llm_service
 from models import ProviderType, PROVIDER_INFO, LLMProviderConfig, Document, SourceType, DocumentStatus, User
-from prompts import detect_video_potential, get_subject_prompt, SUBJECT_CHANNELS, CITATION_INSTRUCTIONS, RAG_CONTEXT_AWARENESS
-from services import get_rag_service, get_web_search_service, get_memory_service, progress_service, review_service
+from prompts import detect_video_potential, get_system_prompt, CITATION_INSTRUCTIONS, RAG_CONTEXT_AWARENESS
+from services import get_rag_service, get_web_search_service, get_memory_service, review_service
 from services.agent import get_agent
 from services.citation_processor import get_citation_processor
 from services.encryption_service import get_encryption_service
-from services.guardrail_service import get_guardrail_service, GuardrailResult
 from services.langgraph_service import get_langgraph_service
 from services.litellm_service import LLMGenerationError, LLMError
 from services.video_analyzer_service import get_video_analyzer_service
@@ -53,27 +52,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["chat"])
 
 
-async def _track_subject_progress(session_id: str, user_id: int, subject: str) -> None:
-    """Update SubjectProgress and seed spaced-repetition review items from
-    this turn's ConversationAnalyzer state. Called unconditionally after
-    every AI turn (independent of whether LangGraph or the plain
-    ConversationAnalyzer path handled video-trigger analysis) since
-    `analyze_message` is a cheap local heuristic, not an LLM call - safe to
-    run alongside either path. Best-effort: a tracking failure must never
-    break the chat response the user is waiting on.
+async def _seed_review_items(session_id: str, user_id: int) -> None:
+    """Seed spaced-repetition review items from this turn's
+    ConversationAnalyzer state. Called unconditionally after every AI turn
+    (independent of whether LangGraph or the plain ConversationAnalyzer path
+    handled video-trigger analysis) since `analyze_message` is a cheap local
+    heuristic, not an LLM call - safe to run alongside either path.
+    Best-effort: a seeding failure must never break the chat response the
+    user is waiting on.
     """
     try:
         db = get_database()
         turn_state = conversation_analyzer.get_or_create_state(session_id).to_dict()
         async with db.get_session() as session:
-            await progress_service.record_turn(
-                session, user_id=user_id, subject=subject, session_id=session_id, state=turn_state
-            )
             await review_service.seed_from_key_discoveries(
-                session, user_id=user_id, subject=subject, discoveries=turn_state.get("key_discoveries", [])
+                session, user_id=user_id, discoveries=turn_state.get("key_discoveries", [])
             )
     except Exception as e:
-        logger.warning(f"Progress/review tracking failed (continuing): {e}")
+        logger.warning(f"Review-item seeding failed (continuing): {e}")
 
 
 import re
@@ -217,7 +213,6 @@ async def chat(message: ChatMessage, current_user: User = Depends(get_current_us
     """Chat with Scoratis AI assistant using RAG + Web Search augmentation"""
     db = get_database()
     from main import conversation_memory
-    guardrail_service = get_guardrail_service()
     langgraph_service = get_langgraph_service()
     memory_service = get_memory_service()
     rag_service = get_rag_service()
@@ -228,55 +223,15 @@ async def chat(message: ChatMessage, current_user: User = Depends(get_current_us
     if not user_message:
         raise HTTPException(status_code=400, detail="No message provided")
 
-    # Get subject (defaults to "general")
-    subject = message.subject or "general"
-
-    # === GUARDRAIL CHECK: Validate query is related to subject ===
-    guardrail_result = None
-    if guardrail_service and subject != "general":
-        try:
-            guardrail_result = await guardrail_service.check_query_async(
-                query=user_message,
-                subject=subject,
-                use_llm=False  # Use fast keyword matching for /chat, LLM for /chat/stream
-            )
-
-            if guardrail_result.result == GuardrailResult.BLOCKED:
-                # Return early with guardrail message
-                redirection_msg = guardrail_service.get_redirection_response(
-                    guardrail_result, subject, user_message
-                )
-                return {
-                    "reply": redirection_msg,
-                    "source": "guardrail",
-                    "search_used": False,
-                    "session_id": session_id,
-                    "context": subject,
-                    "conversation_id": None,
-                    "model": None,
-                    "video_available": False,
-                    "video_topic": None,
-                    "video_concepts": [],
-                    "video_type": None,
-                    "learning_state": "initial",
-                    "turn_count": 0,
-                    "guardrail_triggered": True,
-                    "suggested_subject": guardrail_result.suggested_subject,
-                }
-        except Exception as guardrail_error:
-            logger.warning(f"Guardrail check error (continuing): {guardrail_error}")
-
-    # Get subject-specific prompt (all subjects use Socratic + scaffolding approach)
-    base_system_prompt = get_subject_prompt(subject)
-    context = subject
+    base_system_prompt = get_system_prompt()
 
     try:
         # Get or initialize conversation history
         if session_id not in conversation_memory:
             conversation_memory[session_id] = []
 
-        # Save user message to database with embedding (with subject tagging)
-        conversation_id = await db.add_chat_message(session_id, 'user', user_message, user_id=current_user.id, subject=subject)
+        # Save user message to database with embedding
+        conversation_id = await db.add_chat_message(session_id, 'user', user_message, user_id=current_user.id)
 
         # Add to memory service
         memory_service.add_message(session_id, "user", user_message)
@@ -370,8 +325,8 @@ async def chat(message: ChatMessage, current_user: User = Depends(get_current_us
             response_text = generate_fallback(user_message, error_info)
             source = "fallback"
 
-        # Save AI response to database with embedding (with subject tagging)
-        await db.add_chat_message(session_id, 'ai', strip_internal_reasoning(response_text), user_id=current_user.id, subject=subject)
+        # Save AI response to database with embedding
+        await db.add_chat_message(session_id, 'ai', strip_internal_reasoning(response_text), user_id=current_user.id)
 
         # Add to memory service
         memory_service.add_message(session_id, "assistant", response_text)
@@ -402,7 +357,6 @@ async def chat(message: ChatMessage, current_user: User = Depends(get_current_us
                     session_id=session_id,
                     user_message=user_message,
                     ai_response=response_text,
-                    subject=subject
                 )
                 video_available = lg_result.get("video_available", False)
                 video_topic = lg_result.get("video_topic")
@@ -427,18 +381,17 @@ async def chat(message: ChatMessage, current_user: User = Depends(get_current_us
 
         if not analyzer_ran_this_turn:
             # LangGraph handled video-trigger analysis above; ConversationAnalyzer's
-            # own state still needs updating so progress/review tracking has fresh data.
+            # own state still needs updating so review-item seeding has fresh data.
             conversation_analyzer.analyze_message(
                 session_id=session_id, user_message=user_message, ai_response=response_text
             )
-        await _track_subject_progress(session_id, current_user.id, subject)
+        await _seed_review_items(session_id, current_user.id)
 
         return {
             "reply": response_text,
             "source": source,
             "search_used": search_used,
             "session_id": session_id,
-            "context": context,
             "conversation_id": conversation_id,
             "model": current_config.get("model") if current_config else None,
             # New video fields for user-triggered generation
@@ -460,7 +413,7 @@ async def chat(message: ChatMessage, current_user: User = Depends(get_current_us
         response_text = generate_fallback(user_message, error_info)
 
         try:
-            await db.add_chat_message(session_id, 'ai', strip_internal_reasoning(response_text), user_id=current_user.id, subject=subject)
+            await db.add_chat_message(session_id, 'ai', strip_internal_reasoning(response_text), user_id=current_user.id)
         except:
             pass
         return {
@@ -483,7 +436,6 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
     """Stream chat responses from Scoratis AI with RAG + Web Search"""
     db = get_database()
     from main import conversation_memory
-    guardrail_service = get_guardrail_service()
     langgraph_service = get_langgraph_service()
     memory_service = get_memory_service()
     rag_service = get_rag_service()
@@ -495,9 +447,6 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
 
     if not user_message:
         raise HTTPException(status_code=400, detail="No message provided")
-
-    # Get subject (defaults to "general")
-    subject = message.subject or "general"
 
     # Resolve learning mode: explicit per-request value wins (frontend sends
     # this on every call once chosen), otherwise fall back to whatever's
@@ -511,33 +460,6 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
         conv_meta = await db.get_conversation_meta(session_id, user_id=current_user.id)
         resolved_mode = conv_meta.get("learning_mode") or "deep_learning"
         resolved_mode_context = conv_meta.get("mode_context")
-
-    # === GUARDRAIL CHECK: Validate query is related to subject ===
-    if guardrail_service and subject != "general":
-        try:
-            guardrail_result = await guardrail_service.check_query_async(
-                query=user_message,
-                subject=subject,
-                use_llm=True  # Use LLM for streaming endpoint (more thorough)
-            )
-
-            if guardrail_result.result == GuardrailResult.BLOCKED:
-                # Return guardrail response as a stream
-                redirection_msg = guardrail_service.get_redirection_response(
-                    guardrail_result, subject, user_message
-                )
-
-                async def guardrail_stream():
-                    # Stream the guardrail message
-                    yield f"data: {json.dumps({'chunk': redirection_msg, 'done': False})}\n\n"
-                    yield f"data: {json.dumps({'done': True, 'guardrail_triggered': True, 'suggested_subject': guardrail_result.suggested_subject, 'source': 'guardrail'})}\n\n"
-
-                return StreamingResponse(
-                    guardrail_stream(),
-                    media_type="text/event-stream"
-                )
-        except Exception as guardrail_error:
-            logger.warning(f"Guardrail check error (continuing): {guardrail_error}")
 
     # === Resolve provider/model/key for this request, shared by both the
     # agentic and non-agentic paths below. The agent has no per-request
@@ -588,8 +510,8 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
         resolved_model = message.model
 
     # Several helper calls within this request - RAG query reformulation,
-    # the post-response video-worthiness check, guardrail checks, and the
-    # agent's internal tool-calling - all go through llm_service without
+    # the post-response video-worthiness check, and the agent's internal
+    # tool-calling - all go through llm_service without
     # passing an explicit provider/model/key, so they fall back to
     # llm_service.current_config (a shared, process-wide singleton). Apply
     # the resolution above to it unconditionally so those calls use the
@@ -614,7 +536,6 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                     async for event in scoratis_agent.stream(
                         session_id=session_id,
                         message=user_message,
-                        subject=subject,
                         db_session=db_session,
                         user_id=current_user.id
                     ):
@@ -652,7 +573,7 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                                 final_response = event.get("response") or "I apologize, but I couldn't generate a complete response."
 
                             # Save to database
-                            await db.add_chat_message(session_id, 'ai', strip_internal_reasoning(final_response), user_id=current_user.id, subject=subject, mode=resolved_mode, mode_context=resolved_mode_context)
+                            await db.add_chat_message(session_id, 'ai', strip_internal_reasoning(final_response), user_id=current_user.id, mode=resolved_mode, mode_context=resolved_mode_context)
 
                             # Final event with metadata
                             final_data = {
@@ -660,7 +581,6 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                                 'done': True,
                                 'full_response': final_response,
                                 'session_id': session_id,
-                                'subject': subject,
                                 'model': event.get('metadata', {}).get('model'),
                                 'sources': event.get('metadata', {}).get('sources', []),
                                 'tools_used': event.get('metadata', {}).get('tools_used', 0),
@@ -688,16 +608,15 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
             }
         )
 
-    # Get subject-specific prompt for the resolved learning mode
-    base_system_prompt = get_subject_prompt(subject, mode=resolved_mode, mode_context=resolved_mode_context)
-    context = subject
+    # Get the system prompt for the resolved learning mode
+    base_system_prompt = get_system_prompt(mode=resolved_mode, mode_context=resolved_mode_context)
 
     # Get or initialize conversation history
     if session_id not in conversation_memory:
         conversation_memory[session_id] = []
 
-    # Save user message to database with embedding (with subject tagging)
-    conversation_id = await db.add_chat_message(session_id, 'user', user_message, user_id=current_user.id, subject=subject)
+    # Save user message to database with embedding
+    conversation_id = await db.add_chat_message(session_id, 'user', user_message, user_id=current_user.id)
 
     # Add to memory service
     memory_service.add_message(session_id, "user", user_message)
@@ -712,7 +631,7 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
     if len(conversation_memory[session_id]) > 20:
         conversation_memory[session_id] = conversation_memory[session_id][-20:]
 
-    # === RAG: Get relevant context with hybrid search (subject-filtered) ===
+    # === RAG: Get relevant context with hybrid search ===
     # Only search documents if use_documents option is enabled
     rag_context_xml = ""
     rag_sources = []
@@ -729,7 +648,6 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                 rag_result = await rag_service.get_context_with_citations(
                     db_session,
                     user_message,
-                    subject=subject,
                     conversation_history=conversation_history_for_rag,
                     use_query_reformulation=True,
                     llm_service=llm_service,
@@ -894,8 +812,8 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                 full_response += chunk
                 yield f"data: {json.dumps({'chunk': chunk, 'done': False})}\n\n"
 
-            # Save complete response to database with embedding (with subject tagging)
-            await db.add_chat_message(session_id, 'ai', strip_internal_reasoning(full_response), user_id=current_user.id, subject=subject, mode=resolved_mode, mode_context=resolved_mode_context)
+            # Save complete response to database with embedding
+            await db.add_chat_message(session_id, 'ai', strip_internal_reasoning(full_response), user_id=current_user.id, mode=resolved_mode, mode_context=resolved_mode_context)
 
             # Add to memory service
             memory_service.add_message(session_id, "assistant", full_response)
@@ -927,7 +845,6 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                         session_id=session_id,
                         user_message=user_message,
                         ai_response=full_response,
-                        subject=subject
                     )
                     learning_state_str = lg_result.get("learning_state", "initial")
                     turn_count = lg_result.get("turn_count", 0)
@@ -948,7 +865,6 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                         session_id=session_id,
                         user_message=user_message,
                         ai_response=full_response,
-                        subject=subject,
                         turn_count=turn_count
                     )
 
@@ -1010,7 +926,7 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                 conversation_analyzer.analyze_message(
                     session_id=session_id, user_message=user_message, ai_response=full_response
                 )
-            await _track_subject_progress(session_id, current_user.id, subject)
+            await _seed_review_items(session_id, current_user.id)
 
             # === Citation Processing: Convert [citation:chunk_id] to footnotes ===
             formatted_response = full_response
@@ -1083,7 +999,7 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
             }
             yield f"data: {json.dumps(error_data)}\n\n"
             try:
-                await db.add_chat_message(session_id, 'ai', fallback, user_id=current_user.id, subject=subject)
+                await db.add_chat_message(session_id, 'ai', fallback, user_id=current_user.id)
                 conversation_memory[session_id].append({
                     "role": "assistant",
                     "content": fallback
@@ -1115,7 +1031,7 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
             }
             yield f"data: {json.dumps(error_data)}\n\n"
             try:
-                await db.add_chat_message(session_id, 'ai', fallback, user_id=current_user.id, subject=subject)
+                await db.add_chat_message(session_id, 'ai', fallback, user_id=current_user.id)
                 conversation_memory[session_id].append({
                     "role": "assistant",
                     "content": fallback
@@ -1161,7 +1077,6 @@ async def get_session_state(session_id: str):
 async def chat_with_attachment(
     message: str = Form(...),
     session_id: str = Form("default"),
-    subject: str = Form("general"),
     file: Optional[UploadFile] = File(None),
     use_web_search: bool = Form(True),
     use_reasoning: bool = Form(False),
@@ -1231,7 +1146,7 @@ async def chat_with_attachment(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
 
-        # Create document record with subject tagging
+        # Create document record
         document_title = Path(file.filename).stem
         async with db.get_session() as session:
             document = Document(
@@ -1244,7 +1159,6 @@ async def chat_with_attachment(
                 file_size=file_size,
                 document_metadata={"original_filename": file.filename, "attached_to_chat": True},
                 status=DocumentStatus.PENDING,
-                subject=subject,  # Tag with subject for subject-isolated RAG
             )
             session.add(document)
             await session.flush()
@@ -1262,7 +1176,6 @@ async def chat_with_attachment(
     chat_message = ChatMessage(
         message=user_message,
         session_id=session_id,
-        subject=subject,
         attachment_ids=[document_id] if document_id else None,
         use_web_search=use_web_search,
         use_reasoning=use_reasoning,
@@ -1552,7 +1465,6 @@ async def get_conversation_messages(conversation_id: str, current_user: User = D
         "messages": messages,
         "conversation_id": conversation_id,
         "session_id": session_id,
-        "subject": meta.get("subject"),
         "learning_mode": meta.get("learning_mode"),
         "mode_context": meta.get("mode_context"),
     }

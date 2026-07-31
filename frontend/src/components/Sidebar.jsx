@@ -1,4 +1,4 @@
-import { Home, MessageCircle, Search, GalleryHorizontalEnd, Settings, ChevronLeft, ChevronRight, Clock, Plus, LogOut, BarChart3, Brain, GraduationCap } from 'lucide-react';
+import { Home, MessageCircle, Search, Settings, ChevronLeft, ChevronRight, Clock, Plus, LogOut, Brain, GraduationCap } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import SocratesLogo from '../3d/SocratesLogo';
 import { useAuth } from '../context/AuthContext';
@@ -7,14 +7,12 @@ const navItems = [
   { id: 'home', label: 'Home', icon: Home, path: '/app/home' },
   { id: 'scoratis', label: 'Scoratis AI', icon: MessageCircle, path: '/app/scoratis', primary: true },
   { id: 'quizzes', label: 'Quizzes', icon: GraduationCap, path: '/app/quizzes' },
-  { id: 'progress', label: 'Progress', icon: BarChart3, path: '/app/progress' },
   { id: 'review', label: 'Review', icon: Brain, path: '/app/review' },
   { id: 'settings', label: 'AI Settings', icon: Settings, path: '/app/settings' },
 ];
 
 export default function Sidebar({
   stats,
-  showGalleryLink = false,
   collapsed = false,
   onToggle,
   recentChats = [],
@@ -188,18 +186,6 @@ export default function Sidebar({
           title="New chat"
         >
           <Plus className="w-5 h-5" />
-        </button>
-      )}
-
-      {/* Gallery Link */}
-      {showGalleryLink && (
-        <button
-          onClick={() => navigate('/')}
-          title={collapsed ? "Enter Gallery" : undefined}
-          className={`w-full flex items-center ${collapsed ? 'justify-center px-2' : 'space-x-3 px-4'} py-2.5 rounded-xl transition-all text-text-muted hover:text-text-primary hover:bg-bg-card border border-dashed border-border-color`}
-        >
-          <GalleryHorizontalEnd className="w-5 h-5" />
-          {!collapsed && <span className="font-medium text-sm">Enter Gallery</span>}
         </button>
       )}
 

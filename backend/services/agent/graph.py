@@ -263,7 +263,6 @@ class ScoratisAgent:
             - Phase management
             """
             raw_messages = list(state.get("messages", []))
-            subject = state.get("subject", "general")
             rag_context = state.get("rag_context")
             learning = state.get("learning", {})
             current_input = state.get("current_input", "")
@@ -273,7 +272,7 @@ class ScoratisAgent:
             if query_classification is None and current_input:
                 # Classify the query to check if it's trivial
                 classifier = get_query_classifier()
-                classification = classifier.classify(current_input, subject)
+                classification = classifier.classify(current_input)
                 query_classification = {
                     "is_trivial": classification.is_trivial,
                     "query_type": classification.query_type,
@@ -349,7 +348,6 @@ class ScoratisAgent:
             # Build enhanced system prompt with scratchpad context
             scratchpad_context = scratchpad.to_context_string()
             system_prompt = build_system_prompt(
-                subject=subject,
                 include_tools=should_use_tools,
                 include_citations=True,
                 rag_context_xml=rag_context.get("context_xml", "") if rag_context else "",
@@ -593,7 +591,6 @@ class ScoratisAgent:
             draft_response = state.get("draft_response", "")
             current_input = state.get("current_input", "")
             rag_context = state.get("rag_context", {})
-            subject = state.get("subject", "general")
 
             # Get current verification state
             verification_dict = state.get("verification", {})
@@ -618,7 +615,6 @@ class ScoratisAgent:
                         user_query=current_input,
                         response=draft_response,
                         sources=rag_context.get("sources", []),
-                        context={"subject": subject}
                     )
                     verification = result
                 else:
@@ -717,7 +713,6 @@ class ScoratisAgent:
         self,
         session_id: str,
         message: str,
-        subject: str = "general",
         db_session: Optional[AsyncSession] = None,
         user_id: int = 1
     ) -> Dict[str, Any]:
@@ -727,7 +722,6 @@ class ScoratisAgent:
         Args:
             session_id: Conversation thread ID
             message: User's message
-            subject: Subject channel
             db_session: Database session for tools
             user_id: User ID
 
@@ -744,19 +738,18 @@ class ScoratisAgent:
             langgraph_service=self.langgraph_service,
             llm_service=self.llm_service,
             session_id=session_id,
-            subject=subject,
             user_id=user_id,
             orchestrator=self._orchestrator,
             verifier=self._verifier
         )
         tool_map = {t.name: t.function for t in tools}
 
-        # Get RAG context first (subject-filtered)
+        # Get RAG context first
         rag_context = None
         if db_session and self.rag_service:
             try:
                 rag_result = await self.rag_service.get_context_with_citations(
-                    db_session, message, user_id, subject=subject
+                    db_session, message, user_id
                 )
                 rag_context = {
                     "context_xml": rag_result.get("context_xml", ""),
@@ -769,7 +762,6 @@ class ScoratisAgent:
         # Build initial state with agentic features
         initial_state = create_initial_state(
             session_id=session_id,
-            subject=subject,
             user_id=user_id,
             enable_verification=self.enable_verification
         )
@@ -792,14 +784,13 @@ class ScoratisAgent:
 
         # Fallback: Simple LLM call without graph
         return await self._fallback_invoke(
-            message, subject, rag_context, tools
+            message, rag_context, tools
         )
 
     async def stream(
         self,
         session_id: str,
         message: str,
-        subject: str = "general",
         db_session: Optional[AsyncSession] = None,
         user_id: int = 1
     ) -> AsyncGenerator[Dict[str, Any], None]:
@@ -823,19 +814,18 @@ class ScoratisAgent:
             langgraph_service=self.langgraph_service,
             llm_service=self.llm_service,
             session_id=session_id,
-            subject=subject,
             user_id=user_id,
             orchestrator=self._orchestrator,
             verifier=self._verifier
         )
         tool_map = {t.name: t.function for t in tools}
 
-        # Get RAG context (subject-filtered)
+        # Get RAG context
         rag_context = None
         if db_session and self.rag_service:
             try:
                 rag_result = await self.rag_service.get_context_with_citations(
-                    db_session, message, user_id, subject=subject
+                    db_session, message, user_id
                 )
                 rag_context = {
                     "context_xml": rag_result.get("context_xml", ""),
@@ -870,7 +860,6 @@ class ScoratisAgent:
                 pass
 
         system_prompt = build_system_prompt(
-            subject=subject,
             include_tools=bool(tool_map),
             include_citations=True,
             rag_context_xml=rag_context.get("context_xml", "") if rag_context else "",
@@ -968,8 +957,7 @@ class ScoratisAgent:
             "metadata": {
                 "model": self.llm_service.get_current_config().get("model"),
                 "sources": rag_context.get("sources", []) if rag_context else [],
-                "tools_used": len(tool_results),
-                "subject": subject
+                "tools_used": len(tool_results)
             }
         }
 
@@ -1018,13 +1006,11 @@ class ScoratisAgent:
     async def _fallback_invoke(
         self,
         message: str,
-        subject: str,
         rag_context: Optional[Dict],
         tools: List[BuiltTool]
     ) -> Dict[str, Any]:
         """Fallback processing without LangGraph"""
         system_prompt = build_system_prompt(
-            subject=subject,
             include_tools=False,  # No tools in fallback
             include_citations=True,
             rag_context_xml=rag_context.get("context_xml", "") if rag_context else ""

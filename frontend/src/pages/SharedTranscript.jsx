@@ -20,7 +20,7 @@ export default function SharedTranscript() {
   }, [token]);
 
   return (
-    <div className="min-h-screen bg-bg-primary flex flex-col items-center py-16 px-6">
+    <div className="min-h-screen bg-bg-primary grid-bg flex flex-col items-center py-16 px-6">
       <div className="w-full max-w-2xl">
         <div className="flex items-center gap-3 mb-8">
           <MessageCircle className="w-6 h-6 text-accent-olive" />
@@ -39,12 +39,9 @@ export default function SharedTranscript() {
           </div>
         ) : (
           <>
-            <h1 className="text-2xl font-semibold text-text-primary mb-1" style={{ fontFamily: 'Georgia, serif' }}>
+            <h1 className="text-2xl font-semibold text-text-primary mb-8" style={{ fontFamily: 'Georgia, serif' }}>
               {data.title || 'Untitled Conversation'}
             </h1>
-            {data.subject && (
-              <p className="text-sm text-text-muted mb-8 capitalize">{data.subject.replace(/_/g, ' ')}</p>
-            )}
 
             <div className="space-y-6">
               {data.messages.map((m, i) => (

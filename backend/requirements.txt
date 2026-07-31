@@ -17,6 +17,7 @@ httpx==0.28.0
 # Google APIs (for YouTube)
 google-generativeai==0.8.0
 google-api-python-client==2.150.0
+google-auth==2.56.2  # ID token verification for Google Sign-In (api/routes/auth.py) - was previously only a transitive dep
 
 # PostgreSQL + SQLAlchemy
 sqlalchemy==2.0.36
