@@ -953,7 +953,6 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                 'formatted_response': formatted_response,  # With superscript¹ numbers
                 'footnotes': footnotes_section,  # Sources section
                 'citation_info': citation_info,  # Metadata about citations
-                'context': context,
                 'conversation_id': conversation_id,
                 'model': current_config.get('model') if current_config else None,
                 'search_used': search_used,
