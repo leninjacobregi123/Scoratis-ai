@@ -4,5 +4,16 @@
 # cert for a bare IP, so this must be a real hostname).
 
 {$DOMAIN} {
-    reverse_proxy frontend:8080
+	reverse_proxy frontend:8080
+
+	# When frontend/backend are stopped or unreachable, reverse_proxy fails
+	# with a 5xx before ever reaching the app - serve a branded maintenance
+	# page instead of Caddy's default error text. Caddy itself must stay
+	# running for this to work (docker compose stop backend frontend worker,
+	# not the whole stack) - see caddy-maintenance/maintenance.html.
+	handle_errors {
+		root * /srv/maintenance
+		rewrite * /maintenance.html
+		file_server
+	}
 }

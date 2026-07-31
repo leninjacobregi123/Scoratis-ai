@@ -1,13 +1,15 @@
 name: Ops - Stop/Start Production Stack
 
-# On-demand stack control for the production VM - stop everything (e.g.
-# while making major changes that shouldn't be live), or start it back up
-# without a full rebuild. Reuses the same deploy-key secrets as cd.yml.
-# Manual trigger only - never runs automatically.
+# On-demand stack control for the production VM - stop the app (e.g. while
+# making major changes that shouldn't be live), or start it back up without
+# a full rebuild. Reuses the same deploy-key secrets as cd.yml. Manual
+# trigger only - never runs automatically.
 #
-# "stop" preserves containers/volumes (fast, safe restart later via
-# "start" or the normal CD pipeline). It does NOT touch the database
-# volume - no data is lost either way.
+# Only targets backend/frontend/worker - postgres, redis, and caddy are
+# deliberately left running. Caddy stays up so it can serve the branded
+# maintenance page (see Caddyfile's handle_errors) instead of the app going
+# fully unreachable, and postgres/redis staying up means "start" is fast
+# and no data is ever at risk either way.
 
 on:
   workflow_dispatch:
@@ -37,7 +39,7 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
-            "cd ~/scoratis-deploy && sudo docker compose --env-file .env.production -f docker-compose.prod.yml ${{ github.event.inputs.action }}"
+            "cd ~/scoratis-deploy && sudo docker compose --env-file .env.production -f docker-compose.prod.yml ${{ github.event.inputs.action }} backend frontend worker"
 
       - name: Show container status
         if: always()
