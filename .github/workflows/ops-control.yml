@@ -1,0 +1,47 @@
+name: Ops - Stop/Start Production Stack
+
+# On-demand stack control for the production VM - stop everything (e.g.
+# while making major changes that shouldn't be live), or start it back up
+# without a full rebuild. Reuses the same deploy-key secrets as cd.yml.
+# Manual trigger only - never runs automatically.
+#
+# "stop" preserves containers/volumes (fast, safe restart later via
+# "start" or the normal CD pipeline). It does NOT touch the database
+# volume - no data is lost either way.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "stop (take the app offline) or start (bring it back up)"
+        required: true
+        type: choice
+        options:
+          - stop
+          - start
+
+jobs:
+  control:
+    name: ${{ github.event.inputs.action }} production stack
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up deploy SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VM_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run docker compose ${{ github.event.inputs.action }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
+            "cd ~/scoratis-deploy && sudo docker compose --env-file .env.production -f docker-compose.prod.yml ${{ github.event.inputs.action }}"
+
+      - name: Show container status
+        if: always()
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
+            "sudo docker compose -f ~/scoratis-deploy/docker-compose.prod.yml ps"
