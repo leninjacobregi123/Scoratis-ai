@@ -6,6 +6,10 @@ name: Ops - Sync Caddy Config Only
 # page - deliberately does not go through the full CD pipeline, which
 # rebuilds and restarts every service including backend/frontend/worker.
 # Manual trigger only.
+#
+# --no-deps is required: caddy's `depends_on: frontend` means a plain
+# `up -d caddy` also starts frontend (and whatever frontend itself depends
+# on) back up - defeated the entire point of this workflow the first time.
 
 on:
   workflow_dispatch: {}
@@ -36,7 +40,7 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
-            "cd ~/scoratis-deploy && sudo docker compose --env-file .env.production -f docker-compose.prod.yml up -d caddy"
+            "cd ~/scoratis-deploy && sudo docker compose --env-file .env.production -f docker-compose.prod.yml up -d --no-deps caddy"
 
       - name: Show container status
         if: always()
