@@ -1,0 +1,76 @@
+name: Ops - Set Google OAuth Client ID
+
+# One-off: writes GOOGLE_CLIENT_ID/VITE_GOOGLE_CLIENT_ID into .env.production
+# on the VM (idempotent - replaces the line if present, appends if not),
+# then rebuilds ONLY backend+frontend to pick it up - VITE_GOOGLE_CLIENT_ID
+# is a frontend build ARG baked into the static bundle at build time (see
+# docker-compose.prod.yml), so a plain container recreate isn't enough for
+# that half; GOOGLE_CLIENT_ID just needs the backend container recreated
+# with the new env_file. --no-deps on both so postgres/redis/caddy are left
+# alone (see ops-sync-caddy.yml's comment for why --no-deps matters here -
+# frontend/backend have their own depends_on chains).
+#
+# The Client ID itself isn't a secret - Google's ID-token flow is designed
+# to ship this value inside the public frontend bundle (this repo's backend
+# never uses a client secret, only verifies the ID token Google's SDK
+# returns) - so it's a plain workflow input, not a GitHub secret.
+
+on:
+  workflow_dispatch:
+    inputs:
+      client_id:
+        description: "Google OAuth Web Client ID (*.apps.googleusercontent.com)"
+        required: true
+        default: "767893440794-a615cv5je39f6mvo8au7fnvvvu7f82oe.apps.googleusercontent.com"
+
+jobs:
+  set-google-oauth:
+    name: Set Google Client ID on production VM
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up deploy SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VM_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Write Client ID into .env.production
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
+            "cd ~/scoratis-deploy && \
+             (grep -q '^GOOGLE_CLIENT_ID=' .env.production && \
+               sed -i 's|^GOOGLE_CLIENT_ID=.*|GOOGLE_CLIENT_ID=${{ inputs.client_id }}|' .env.production || \
+               echo 'GOOGLE_CLIENT_ID=${{ inputs.client_id }}' >> .env.production) && \
+             (grep -q '^VITE_GOOGLE_CLIENT_ID=' .env.production && \
+               sed -i 's|^VITE_GOOGLE_CLIENT_ID=.*|VITE_GOOGLE_CLIENT_ID=${{ inputs.client_id }}|' .env.production || \
+               echo 'VITE_GOOGLE_CLIENT_ID=${{ inputs.client_id }}' >> .env.production)"
+
+      - name: Rebuild backend + frontend only
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
+            "cd ~/scoratis-deploy && sudo docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build --no-deps backend frontend"
+
+      - name: Wait for backend health
+        run: |
+          for i in $(seq 1 20); do
+            status=$(curl -sk -o /dev/null -w '%{http_code}' https://${{ secrets.VM_HOST_DNS || 'scoratis-app.centralindia.cloudapp.azure.com' }}/health || echo 000)
+            if [ "$status" = "200" ]; then
+              echo "Backend healthy"
+              exit 0
+            fi
+            echo "Waiting for backend... (attempt $i, status $status)"
+            sleep 10
+          done
+          echo "Backend did not become healthy in time"
+          exit 1
+
+      - name: Show container status
+        if: always()
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
+            "sudo docker compose -f ~/scoratis-deploy/docker-compose.prod.yml ps"
