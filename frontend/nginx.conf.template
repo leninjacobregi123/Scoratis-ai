@@ -4,6 +4,12 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
+    # nginx's own default (1m) is well under backend's MAX_UPLOAD_SIZE_MB
+    # (50MB, see backend/config.py) - document/attachment uploads larger
+    # than 1MB were rejected here with a 413 before ever reaching the
+    # backend's own size check.
+    client_max_body_size 55m;
+
     # DNS_RESOLVER + variable-based proxy_pass below make nginx resolve the
     # backend hostname lazily per-request instead of once at config load -
     # a static `proxy_pass http://host:port/` fails nginx's startup entirely
@@ -45,12 +51,6 @@ server {
     }
 
     location /agent/ {
-        set $backend ${BACKEND_URL};
-        proxy_pass $backend;
-        proxy_set_header Host $host;
-    }
-
-    location /subjects {
         set $backend ${BACKEND_URL};
         proxy_pass $backend;
         proxy_set_header Host $host;

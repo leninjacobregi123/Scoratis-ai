@@ -12,8 +12,7 @@ import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import LLMSwitcher from '../components/LLMSwitcher';
-import ModeSwitcher from '../components/ModeSwitcher';
-import { THEME, TUTOR, THEME_IMAGES, getStandardizedThemeClasses } from '../config/subjectThemes';
+import { THEME, TUTOR, getStandardizedThemeClasses } from '../config/subjectThemes';
 import { parseCitations, buildSourceMap, hasCitations } from '../utils/citations';
 import { getAuthHeaders } from '../utils/auth';
 import { CitationNumber, CitationPopup, CitationList, SourcesBadge, FootnotesSection } from '../components/Citation';
@@ -795,6 +794,14 @@ export default function Chat() {
   const [chatOptions, setChatOptions] = useState(DEFAULT_CHAT_OPTIONS);
   const [showOptions, setShowOptions] = useState(false);
 
+  // Drag-and-drop file upload - dragCounterRef tracks nested enter/leave
+  // events from child elements (every element under the cursor fires its
+  // own dragenter/dragleave as the pointer crosses it), so the overlay
+  // only hides once the drag has actually left the whole drop zone rather
+  // than flickering on every child boundary crossed.
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const dragCounterRef = useRef(0);
+
   // Canvas Panel state
   const [canvasOpen, setCanvasOpen] = useState(false);
   const [canvasDocuments, setCanvasDocuments] = useState([]);
@@ -826,27 +833,19 @@ export default function Chat() {
     handleComplete: handleWorkflowComplete
   } = useAgenticWorkflow();
 
-  // LLM Model state - defaults to the cloud provider backend/config.py uses
-  // (DEFAULT_LLM_PROVIDER/DEFAULT_LLM_MODEL); switch via the model picker to
-  // use a local Ollama install instead.
-  const [currentLLMProvider, setCurrentLLMProvider] = useState('groq');
-  const [currentLLMModel, setCurrentLLMModel] = useState('llama-3.3-70b-versatile');
+  // LLM Model state - null until the user explicitly picks one via the
+  // model switcher. Leaving these null (rather than hardcoding a default
+  // provider) means the request omits provider/model entirely, and the
+  // backend resolves the user's own configured default provider instead -
+  // there's no app-wide default to fall back to.
+  const [currentLLMProvider, setCurrentLLMProvider] = useState(null);
+  const [currentLLMModel, setCurrentLLMModel] = useState(null);
 
-  // Learning mode: null until the student picks one for a new conversation
-  // (via the empty-state screen below), or it's restored from an existing
-  // conversation via loadConversation. 'exam_prep' | 'deep_learning' | null.
-  const [learningMode, setLearningMode] = useState(null);
-  const [modeContext, setModeContext] = useState('');
-  // Provisional pick before the mode question is confirmed - lets exam_prep
-  // reveal the optional context field without immediately committing
-  // learningMode (which would dismiss this whole screen, per the guard
-  // below that only shows it while learningMode is still unset).
-  const [pendingMode, setPendingMode] = useState(null);
-  // True whenever a conversation is being fetched to restore its mode -
-  // without this, the mode-choice screen guard below (!learningMode) is
+  // True whenever a conversation is being fetched to restore its messages -
+  // without this, the welcome-screen guard below (messages.length <= 1) is
   // guaranteed to be true for at least one render while loadConversation's
-  // fetch is in flight, flashing the "What are you here for today?" screen
-  // on every reopen even though the mode will be restored a moment later.
+  // fetch is in flight, flashing the welcome screen on every reopen even
+  // though the real messages will load a moment later.
   const [isRestoringConversation, setIsRestoringConversation] = useState(
     () => !!initialSessionId
   );
@@ -1075,11 +1074,6 @@ export default function Chat() {
         ...m,
         timestamp: new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       })) || []);
-      // Restore this conversation's learning mode so it never re-prompts -
-      // pre-feature conversations have no stored mode, default to the
-      // unchanged deep_learning behavior.
-      setLearningMode(data.learning_mode || 'deep_learning');
-      setModeContext(data.mode_context || '');
     } catch (error) {
       console.error('Failed to load conversation:', error);
     } finally {
@@ -1090,9 +1084,6 @@ export default function Chat() {
   const startNewConversation = () => {
     setActiveConversationId(null);
     setSessionId('session_' + Date.now());
-    setLearningMode(null);
-    setModeContext('');
-    setPendingMode(null);
     setIsRestoringConversation(false);
     setMessages([{
       id: Date.now(),
@@ -1119,20 +1110,6 @@ export default function Chat() {
       setConversations(prev => prev.map(c => c.id === conversationId ? { ...c, title: newTitle } : c));
     } catch (error) {
       console.error('Failed to rename:', error);
-    }
-  };
-
-  // Header mode-toggle: for an existing conversation, persist immediately
-  // (mirrors renameConversation); for a brand-new one not yet sent, just
-  // update local state - it goes out on the first /chat/stream call.
-  const handleModeChange = async (newMode) => {
-    setLearningMode(newMode);
-    if (activeConversationId) {
-      try {
-        await api.put(`/chat/conversation/${activeConversationId}`, { mode: newMode, mode_context: modeContext || null });
-      } catch (error) {
-        console.error('Failed to update learning mode:', error);
-      }
     }
   };
 
@@ -1371,11 +1348,8 @@ export default function Chat() {
         formData.append('file', selectedFile);
         formData.append('use_web_search', chatOptions.useWebSearch);
         formData.append('use_reasoning', chatOptions.useReasoning);
-        formData.append('use_documents', chatOptions.useDocuments);
-        formData.append('provider', currentLLMProvider);
-        formData.append('model', currentLLMModel);
-        if (learningMode) formData.append('mode', learningMode);
-        if (modeContext) formData.append('mode_context', modeContext);
+        if (currentLLMProvider) formData.append('provider', currentLLMProvider);
+        if (currentLLMModel) formData.append('model', currentLLMModel);
 
         response = await fetch(`${baseUrl}/chat/with-attachment`, {
           method: 'POST',
@@ -1400,11 +1374,8 @@ export default function Chat() {
             session_id: sessionId,
             use_web_search: chatOptions.useWebSearch,
             use_reasoning: chatOptions.useReasoning,
-            use_documents: chatOptions.useDocuments,
             provider: currentLLMProvider,
-            model: currentLLMModel,
-            mode: learningMode,
-            mode_context: modeContext || null
+            model: currentLLMModel
           })
         });
       }
@@ -1678,26 +1649,74 @@ export default function Chat() {
     }
   };
 
+  // Drag-and-drop handlers for the whole chat area - reuses the exact same
+  // selectedFile/uploadStatus state the "+" attach button sets, so a
+  // dropped file flows into the same chat_with_attachment upload+RAG
+  // pipeline with no backend changes needed.
+  const handleDragEnter = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!e.dataTransfer?.types?.includes('Files')) return;
+    dragCounterRef.current += 1;
+    setIsDraggingFile(true);
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setIsDraggingFile(false);
+    }
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDraggingFile(false);
+
+    const file = e.dataTransfer?.files?.[0];
+    if (file) {
+      setSelectedFile(file);
+      setUploadStatus('pending');
+      inputRef.current?.focus();
+    }
+  };
+
   return (
     <div className="relative h-full w-full flex flex-col">
       <div className="flex-1 flex relative overflow-hidden">
       {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col min-w-0">
-        {/* Header - Large with Clear Background Image */}
+      <div
+        className="flex-1 flex flex-col min-w-0 relative"
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        {isDraggingFile && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-[#6b7c5e]/10 backdrop-blur-sm border-4 border-dashed border-[#6b7c5e] rounded-2xl m-3 pointer-events-none">
+            <div className="flex flex-col items-center gap-3 px-8 py-6 rounded-2xl bg-white/95 shadow-xl">
+              <FileText className="w-10 h-10 text-[#6b7c5e]" />
+              <p className="text-lg font-medium text-[#4a5a40]">Drop your file to attach it</p>
+              <p className="text-sm text-gray-500">PDF, Word, text, Markdown, or images</p>
+            </div>
+          </div>
+        )}
+        {/* Header - Large with themed gradient background (no hotlinked
+            image - a third-party photo host here previously caused broken/
+            cert-blocked loads on networks that intercept or block image
+            CDNs, same reasoning as TUTOR.portrait below) */}
         <div
-          className="relative h-32 flex items-center justify-between px-6 shadow-lg"
+          className={`relative h-32 flex items-center justify-between px-6 shadow-lg ${THEME.classes.headerBg}`}
         >
-          {/* Clear background image */}
-          <div
-            className="absolute inset-0 overflow-hidden"
-            style={{
-              backgroundImage: `url(${THEME_IMAGES.header})`,
-              backgroundSize: 'cover',
-              backgroundPosition: 'center',
-            }}
-          />
-          {/* Dark overlay for text readability */}
-          <div className="absolute inset-0 overflow-hidden bg-gradient-to-r from-black/70 via-black/50 to-black/40" />
 
           {/* Header content - Left side */}
           <div className="relative z-50 flex items-center gap-4">
@@ -1734,12 +1753,6 @@ export default function Chat() {
                   />
                 </div>
 
-                {/* Learning Mode Switcher */}
-                {learningMode && (
-                  <div className="ml-2">
-                    <ModeSwitcher currentMode={learningMode} onModeChange={handleModeChange} />
-                  </div>
-                )}
           </div>
 
           {/* Right side - Loading indicator and Canvas toggle */}
@@ -1893,69 +1906,7 @@ export default function Chat() {
         </div>
 
         {/* Welcome screen - Theme-aware centered design with tutor portrait */}
-        {messages.length <= 1 && !learningMode && !isRestoringConversation && (
-          <div className="flex-1 flex items-center justify-center p-8">
-            <div className="text-center max-w-xl w-full">
-              <h1 className={`text-2xl font-light mb-2 ${isDark ? 'text-white' : 'text-text-primary'}`}
-                  style={{ fontFamily: 'Georgia, serif' }}>
-                What are you here for today?
-              </h1>
-              <p className={`text-sm mb-8 ${isDark ? 'text-gray-400' : 'text-text-muted'}`}>
-                This shapes how Scoratis teaches you - you can change it anytime from the header.
-              </p>
-              <div className="grid sm:grid-cols-2 gap-4 text-left">
-                <button
-                  onClick={() => setPendingMode('exam_prep')}
-                  className={`p-5 rounded-2xl border text-left transition-all
-                    ${pendingMode === 'exam_prep'
-                      ? (isDark ? 'border-white/60 bg-white/10' : 'border-gray-800 bg-gray-50')
-                      : (isDark ? 'border-white/20 hover:border-white/40 hover:bg-white/10' : 'border-[#D4CFB8] hover:border-gray-800 hover:bg-gray-50')}`}
-                >
-                  <div className="text-2xl mb-2">⚡</div>
-                  <div className={`font-medium mb-1 ${isDark ? 'text-white' : 'text-text-primary'}`}>Exam Prep</div>
-                  <div className={`text-sm ${isDark ? 'text-gray-400' : 'text-text-muted'}`}>
-                    Fast, direct answers with a quick recall check - built for studying under time pressure.
-                  </div>
-                </button>
-                <button
-                  onClick={() => setLearningMode('deep_learning')}
-                  className={`p-5 rounded-2xl border text-left transition-all
-                    ${isDark
-                      ? 'border-white/20 hover:border-white/40 hover:bg-white/10'
-                      : 'border-[#D4CFB8] hover:border-gray-800 hover:bg-gray-50'}`}
-                >
-                  <div className="text-2xl mb-2">🦉</div>
-                  <div className={`font-medium mb-1 ${isDark ? 'text-white' : 'text-text-primary'}`}>Deep Learning</div>
-                  <div className={`text-sm ${isDark ? 'text-gray-400' : 'text-text-muted'}`}>
-                    Full Socratic dialogue - build real understanding from first principles, at your own pace.
-                  </div>
-                </button>
-              </div>
-              {pendingMode === 'exam_prep' && (
-                <div className="mt-4 flex flex-col sm:flex-row gap-2">
-                  <input
-                    type="text"
-                    value={modeContext}
-                    onChange={(e) => setModeContext(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') setLearningMode('exam_prep'); }}
-                    placeholder="Optional: what are you preparing for? e.g. Physics midterm Friday"
-                    autoFocus
-                    className={`flex-1 px-4 py-3 rounded-xl border text-sm ${isDark ? 'bg-white/10 border-white/20 text-white placeholder-gray-500' : 'bg-white border-[#D4CFB8] text-text-primary placeholder-gray-400'}`}
-                  />
-                  <button
-                    onClick={() => setLearningMode('exam_prep')}
-                    className="px-6 py-3 rounded-xl font-medium text-sm text-white transition-colors"
-                    style={{ backgroundColor: '#6b7c5e' }}
-                  >
-                    Start
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {messages.length <= 1 && learningMode && (
+        {messages.length <= 1 && !isRestoringConversation && (
             <div className="flex-1 flex items-center justify-center p-8">
               <div className="text-center max-w-lg">
                 {/* Tutor portrait */}
@@ -1998,20 +1949,12 @@ export default function Chat() {
                 </p>
 
                 <div className="space-y-3">
-                  {(learningMode === 'exam_prep'
-                    ? [
-                        { label: 'Explain a concept fast', prompt: 'Explain recursion in programming clearly and directly - I have an exam soon.' },
-                        { label: 'Quiz me quickly', prompt: 'Quiz me on a topic of your choice to help me study.' },
-                        { label: 'Summarize key points', prompt: 'Summarize the key points I should know about quantum mechanics for an exam.' },
-                        { label: 'Practice problem', prompt: 'Give me a practice problem to work through.' }
-                      ]
-                    : [
-                        { label: 'Explore a concept', prompt: 'Help me understand the concept of recursion in programming.' },
-                        { label: 'Challenge my thinking', prompt: 'Challenge my assumptions about the nature of consciousness.' },
-                        { label: 'Guide my learning', prompt: 'Guide me through studying the basics of quantum mechanics.' },
-                        { label: 'Help me understand', prompt: 'Ask me Socratic questions about the causes of World War I.' }
-                      ]
-                  ).map((item, i) => (
+                  {[
+                    { label: 'Explore a concept', prompt: 'Help me understand the concept of recursion in programming.' },
+                    { label: 'Challenge my thinking', prompt: 'Challenge my assumptions about the nature of consciousness.' },
+                    { label: 'Guide my learning', prompt: 'Guide me through studying the basics of quantum mechanics.' },
+                    { label: 'Help me understand', prompt: 'Ask me Socratic questions about the causes of World War I.' }
+                  ].map((item, i) => (
                     <button
                       key={i}
                       onClick={() => { setInput(item.prompt); inputRef.current?.focus(); }}
@@ -2080,18 +2023,6 @@ export default function Chat() {
                 >
                   <Brain className={`w-4 h-4 ${chatOptions.useReasoning ? 'text-[#6b7c5e]' : ''}`} />
                   <span className="hidden sm:inline">Think</span>
-                </button>
-
-                <button
-                  onClick={() => setChatOptions(prev => ({ ...prev, useDocuments: !prev.useDocuments }))}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all duration-200
-                    ${chatOptions.useDocuments
-                      ? 'text-[#4a5a40] bg-[#6b7c5e]/15 border border-[#6b7c5e]/40 shadow-sm'
-                      : 'text-gray-500 hover:text-[#4a5a40] hover:bg-[#6b7c5e]/5 border border-transparent'}`}
-                  title="Use Documents"
-                >
-                  <FileText className={`w-4 h-4 ${chatOptions.useDocuments ? 'text-[#6b7c5e]' : ''}`} />
-                  <span className="hidden sm:inline">Docs</span>
                 </button>
 
                 <div className="flex-1" />

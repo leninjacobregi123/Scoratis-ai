@@ -84,12 +84,6 @@ export const TUTOR = {
   portrait: '/socrates-nobg.png',
 };
 
-export const THEME_IMAGES = {
-  header: 'https://images.unsplash.com/photo-1555993539-1732b0258235?w=1200&q=80',
-  welcome: 'https://images.unsplash.com/photo-1603565816030-6b389eeb23cb?w=800&q=80',
-  avatar: '/socrates-nobg.png',
-};
-
 /**
  * Flattened classes object some older call sites expect, with a few
  * generic overrides layered on top (kept from the original standardized

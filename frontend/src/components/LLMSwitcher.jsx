@@ -1,7 +1,7 @@
 /**
  * LLM Model Switcher Component - Athenian Theme
- * Allows switching between different LLM providers and models
- * Shows only installed Ollama models and configured cloud providers
+ * Allows switching between different cloud LLM providers and models,
+ * limited to whichever providers the user has configured API keys for.
  */
 
 import { useState, useEffect, useRef } from 'react';
@@ -21,17 +21,14 @@ api.interceptors.request.use((config) => {
 
 // Provider display names and icons
 const PROVIDER_META = {
-  ollama: { name: 'Ollama', icon: '🦙', local: true },
-  lmstudio: { name: 'LM Studio', icon: '💻', local: true },
-  localai: { name: 'LocalAI', icon: '🏠', local: true },
-  textgenwebui: { name: 'Text Gen WebUI', icon: '🌐', local: true },
-  openai: { name: 'OpenAI', icon: '🤖', local: false },
-  anthropic: { name: 'Anthropic', icon: '🧠', local: false },
-  google: { name: 'Google AI', icon: '✨', local: false },
-  groq: { name: 'Groq', icon: '⚡', local: false },
-  together: { name: 'Together AI', icon: '🤝', local: false },
-  azure: { name: 'Azure OpenAI', icon: '☁️', local: false },
-  deepseek: { name: 'DeepSeek', icon: '🔍', local: false },
+  openai: { name: 'OpenAI', icon: '🤖' },
+  anthropic: { name: 'Anthropic', icon: '🧠' },
+  google: { name: 'Google AI', icon: '✨' },
+  groq: { name: 'Groq', icon: '⚡' },
+  together: { name: 'Together AI', icon: '🤝' },
+  azure: { name: 'Azure OpenAI', icon: '☁️' },
+  deepseek: { name: 'DeepSeek', icon: '🔍' },
+  custom: { name: 'Custom', icon: '🔧' },
 };
 
 // Athenian theme colors
@@ -52,14 +49,13 @@ const THEME = {
 };
 
 export default function LLMSwitcher({
-  currentProvider = 'ollama',
-  currentModel = 'llama3.2',
+  currentProvider = null,
+  currentModel = null,
   onModelChange,
   sessionId = 'current',
   className = ''
 }) {
   const [isOpen, setIsOpen] = useState(false);
-  const [ollamaModels, setOllamaModels] = useState([]);
   const [configuredProviders, setConfiguredProviders] = useState([]);
   const [cloudModels, setCloudModels] = useState({});
   const [status, setStatus] = useState('idle');
@@ -88,15 +84,6 @@ export default function LLMSwitcher({
         api.get('/llm/providers/configured').catch(() => ({ data: { providers: [] } }))
       ])
         .then(([modelsRes, configuredRes]) => {
-          // Get installed Ollama models (filter out embedding models)
-          const embeddingPatterns = ['minilm', 'embed', 'bge', 'e5-', 'gte-'];
-          const allOllamaModels = modelsRes.data?.ollama_installed || [];
-          const chatModels = allOllamaModels.filter(model => {
-            const lowerModel = model.toLowerCase();
-            return !embeddingPatterns.some(pattern => lowerModel.includes(pattern));
-          });
-          setOllamaModels(chatModels);
-
           // Get configured cloud providers
           const configured = configuredRes.data?.providers || [];
           setConfiguredProviders(configured);
@@ -107,7 +94,15 @@ export default function LLMSwitcher({
 
           configured.forEach(config => {
             const providerId = config.provider?.toLowerCase() || config.provider;
-            if (allModels[providerId]) {
+            if (providerId === 'custom') {
+              // Custom has no fixed model list - use the model name the
+              // user typed in when they configured it (Settings.jsx's
+              // "Model Name" field, stored in extra_settings.default_model).
+              const defaultModel = config.extra_settings?.default_model;
+              if (defaultModel) {
+                filteredCloud[providerId] = [{ id: defaultModel, name: defaultModel }];
+              }
+            } else if (allModels[providerId]?.length > 0) {
               filteredCloud[providerId] = allModels[providerId];
             }
           });
@@ -133,13 +128,7 @@ export default function LLMSwitcher({
   };
 
   // Get display name for current model
-  const getDisplayName = () => {
-    if (currentProvider === 'ollama' && currentModel) {
-      // Clean up ollama model names (remove :latest, etc.)
-      return currentModel.split(':')[0];
-    }
-    return currentModel;
-  };
+  const getDisplayName = () => currentModel || 'Select a model';
 
   // Check if a model is currently selected
   const isSelected = (provider, model) => {
@@ -228,55 +217,6 @@ export default function LLMSwitcher({
 
             {status === 'done' && (
               <>
-                {/* Local Ollama Models Section */}
-                {ollamaModels.length > 0 && (
-                  <div>
-                    <div
-                      className="px-4 py-2 flex items-center gap-2"
-                      style={{
-                        backgroundColor: THEME.bgSecondary,
-                        borderBottom: `1px solid ${THEME.borderLight}`,
-                      }}
-                    >
-                      <Cpu size={12} style={{ color: THEME.primary }} />
-                      <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: THEME.textSecondary }}>
-                        Local Models
-                      </span>
-                      <span className="text-xs px-1.5 py-0.5 rounded-full" style={{
-                        backgroundColor: THEME.hover,
-                        color: THEME.textSecondary
-                      }}>
-                        {ollamaModels.length}
-                      </span>
-                    </div>
-
-                    {ollamaModels.map(model => {
-                      const selected = isSelected('ollama', model);
-                      return (
-                        <button
-                          key={`ollama-${model}`}
-                          onClick={() => selectModel('ollama', model)}
-                          className="flex items-center justify-between w-full px-4 py-2.5 text-left transition-colors"
-                          style={{
-                            backgroundColor: selected ? THEME.hover : 'transparent',
-                            borderBottom: `1px solid ${THEME.borderLight}`,
-                          }}
-                          onMouseEnter={(e) => !selected && (e.currentTarget.style.backgroundColor = THEME.hover)}
-                          onMouseLeave={(e) => !selected && (e.currentTarget.style.backgroundColor = 'transparent')}
-                        >
-                          <div className="flex items-center gap-2">
-                            <span className="text-base">🦙</span>
-                            <span className="text-sm font-medium" style={{ color: THEME.textPrimary }}>
-                              {model}
-                            </span>
-                          </div>
-                          {selected && <Check size={16} style={{ color: THEME.success }} />}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-
                 {/* Cloud Provider Models Section */}
                 {hasConfiguredCloud && (
                   <div>
@@ -342,14 +282,14 @@ export default function LLMSwitcher({
                 )}
 
                 {/* Empty State */}
-                {ollamaModels.length === 0 && !hasConfiguredCloud && (
+                {!hasConfiguredCloud && (
                   <div className="flex flex-col items-center justify-center py-10 px-4 text-center">
-                    <Cpu size={32} style={{ color: THEME.textMuted, opacity: 0.5 }} />
+                    <Cloud size={32} style={{ color: THEME.textMuted, opacity: 0.5 }} />
                     <span className="text-sm font-medium mt-3" style={{ color: THEME.textPrimary }}>
                       No models available
                     </span>
                     <span className="text-xs mt-1" style={{ color: THEME.textMuted }}>
-                      Run <code className="px-1 py-0.5 rounded" style={{ backgroundColor: THEME.bgSecondary }}>ollama serve</code> or configure cloud APIs
+                      Configure an API key in Settings to get started
                     </span>
                   </div>
                 )}

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Globe, Brain, FileSearch, ChevronDown, ChevronUp, Sparkles } from 'lucide-react';
+import { Globe, Brain, ChevronDown, ChevronUp, Sparkles } from 'lucide-react';
 
 // Athenian olive theme colors
 const THEME = {
@@ -83,13 +83,6 @@ export function ChatOptionsPanel({ options, onChange, className = '' }) {
           enabled={options.useReasoning}
           onChange={(val) => onChange({ ...options, useReasoning: val })}
         />
-        <OptionRow
-          icon={FileSearch}
-          label="Use Documents"
-          description="Search your uploaded documents"
-          enabled={options.useDocuments}
-          onChange={(val) => onChange({ ...options, useDocuments: val })}
-        />
       </div>
     </div>
   );
@@ -129,19 +122,6 @@ export function ChatOptionsBar({ options, onChange, className = '' }) {
           Think
         </button>
 
-        <button
-          onClick={() => onChange({ ...options, useDocuments: !options.useDocuments })}
-          className={`
-            flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200
-            ${options.useDocuments
-              ? 'bg-[#6b7c5e]/15 text-[#4a5a40] border border-[#6b7c5e]/40 shadow-sm'
-              : 'bg-white/80 text-gray-500 border border-gray-200 hover:border-[#6b7c5e]/30 hover:bg-[#6b7c5e]/5'}
-          `}
-        >
-          <FileSearch className={`w-3.5 h-3.5 ${options.useDocuments ? 'text-[#6b7c5e]' : ''}`} />
-          Docs
-        </button>
-
         {/* More options toggle */}
         <button
           onClick={() => setExpanded(!expanded)}
@@ -164,7 +144,7 @@ export function ChatOptionsBar({ options, onChange, className = '' }) {
 
 // Mini Options Indicator - Athenian styled
 export function ChatOptionsIndicator({ options, onClick }) {
-  const activeCount = [options.useWebSearch, options.useReasoning, options.useDocuments].filter(Boolean).length;
+  const activeCount = [options.useWebSearch, options.useReasoning].filter(Boolean).length;
 
   if (activeCount === 0) return null;
 
@@ -184,7 +164,6 @@ export function ChatOptionsIndicator({ options, onClick }) {
 export const DEFAULT_CHAT_OPTIONS = {
   useWebSearch: true,
   useReasoning: false,
-  useDocuments: true,
 };
 
 export default {
