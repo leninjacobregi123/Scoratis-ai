@@ -10,10 +10,11 @@ for structured JSON generation from an LLM.
 import json
 import logging
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from llm_service import llm_service
-from models import Quiz, QuizQuestion, QuizAttempt
+from models import LLMProviderConfig, ProviderType, Quiz, QuizQuestion, QuizAttempt
 from services.rag_service import get_rag_service
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,50 @@ def _parse_llm_json(response: str) -> dict:
     raise ValueError("No parseable JSON object with questions found in LLM response")
 
 
+async def _configure_llm_for_user(db: AsyncSession, user_id: int) -> None:
+    """Point the shared llm_service singleton at this user's own configured
+    provider/key before generating - llm_service.generate() always reads
+    from the singleton, not a per-call override, so every caller into a
+    shared process must re-resolve its own user's config first (same
+    pattern as tasks/video_tasks.py's _configure_llm_for_user). Without
+    this, quiz generation would silently reuse whichever provider/key the
+    last request into this process happened to configure - one user's key
+    leaking into another user's quiz generation.
+
+    Raises ValueError if the user has no active, usable provider configured.
+    """
+    result = await db.execute(
+        select(LLMProviderConfig)
+        .where(LLMProviderConfig.user_id == user_id, LLMProviderConfig.is_active == True)
+        .order_by(LLMProviderConfig.is_default.desc(), LLMProviderConfig.updated_at.desc())
+    )
+    provider_config = result.scalars().first()
+    if not provider_config:
+        raise ValueError("No AI provider configured - add an API key in Settings")
+
+    provider = (
+        provider_config.provider
+        if isinstance(provider_config.provider, ProviderType)
+        else ProviderType(provider_config.provider)
+    )
+    if not llm_service.litellm.has_api_key(provider, provider_config.api_key_encrypted):
+        raise ValueError("No AI provider configured - add an API key in Settings")
+
+    model = (
+        (provider_config.extra_settings or {}).get("default_model")
+        or llm_service.get_available_models().get(provider.value, [{}])[0].get("id")
+    )
+    if not model:
+        raise ValueError(f"No model available for provider {provider.value}")
+
+    llm_service.set_provider(
+        model=model,
+        provider=provider.value,
+        base_url=provider_config.base_url,
+        api_key_encrypted=provider_config.api_key_encrypted,
+    )
+
+
 async def generate_quiz(
     db: AsyncSession,
     *,
@@ -123,6 +168,8 @@ async def generate_quiz(
     no relevant chunks are found (a brand-new user with no uploads yet is a
     legitimate case, not an error)."""
     num_questions = max(1, min(num_questions, 15))
+
+    await _configure_llm_for_user(db, user_id)
 
     rag_service = get_rag_service()
     chunk_results = []
@@ -144,15 +191,10 @@ async def generate_quiz(
         num_questions=num_questions, topic=topic, context_block=context_block
     )
 
-    # Small local reasoning models can spend 2000+ tokens narrating before
-    # reaching the actual JSON (confirmed on this stack with quantized
-    # qwen3:4b) - give this call extra headroom over the app's normal
-    # 2048-token default so it has room to actually finish.
     response = await llm_service.generate(
         messages=[{"role": "user", "content": prompt}],
         system_prompt=QUIZ_SYSTEM_PROMPT,
         max_tokens=6000,
-        disable_thinking=True,
     )
 
     try:

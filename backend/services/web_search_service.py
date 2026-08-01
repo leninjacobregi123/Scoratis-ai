@@ -1,6 +1,6 @@
 """
 Web Search Service
-DuckDuckGo integration for knowledge augmentation
+Tavily integration for knowledge augmentation
 """
 
 import logging
@@ -8,7 +8,11 @@ import re
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
 
+import httpx
+
 logger = logging.getLogger(__name__)
+
+TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 
 
 @dataclass
@@ -41,7 +45,10 @@ class WebSearchService:
         from config import settings
 
         self.max_results = settings.WEB_SEARCH_MAX_RESULTS
-        self.enabled = settings.WEB_SEARCH_ENABLED
+        self.api_key = settings.TAVILY_API_KEY
+        # Disabled if there's no key, regardless of WEB_SEARCH_ENABLED -
+        # Tavily requires one, unlike the old unauthenticated DDGS scraping.
+        self.enabled = settings.WEB_SEARCH_ENABLED and bool(self.api_key)
         self._compiled_patterns = [
             re.compile(p, re.IGNORECASE) for p in self.KNOWLEDGE_GAP_PATTERNS
         ]
@@ -89,7 +96,7 @@ class WebSearchService:
 
     async def search(self, query: str) -> List[SearchResult]:
         """
-        Perform a web search using DuckDuckGo.
+        Perform a web search using the Tavily API.
 
         Args:
             query: Search query string
@@ -98,50 +105,37 @@ class WebSearchService:
             List of SearchResult objects
         """
         if not self.enabled:
-            logger.info("Web search is disabled")
+            logger.info("Web search is disabled (no TAVILY_API_KEY configured)")
             return []
 
         if not query or not query.strip():
             return []
 
         try:
-            # Use the updated ddgs package (formerly duckduckgo_search)
-            from ddgs import DDGS
-
-            results = []
-            search_results = list(DDGS().text(query, max_results=self.max_results))
-            for r in search_results:
-                results.append(
-                    SearchResult(
-                        title=r.get("title", ""),
-                        url=r.get("href", ""),
-                        snippet=r.get("body", ""),
-                    )
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    TAVILY_SEARCH_URL,
+                    json={
+                        "api_key": self.api_key,
+                        "query": query,
+                        "max_results": self.max_results,
+                        "search_depth": "basic",
+                    },
                 )
+                response.raise_for_status()
+                data = response.json()
+
+            results = [
+                SearchResult(
+                    title=r.get("title", ""),
+                    url=r.get("url", ""),
+                    snippet=r.get("content", ""),
+                )
+                for r in data.get("results", [])
+            ]
 
             logger.info(f"Web search found {len(results)} results for: {query[:50]}...")
             return results
-
-        except ImportError:
-            # Fallback to old package if ddgs not installed
-            try:
-                from duckduckgo_search import DDGS
-
-                results = []
-                with DDGS() as ddgs:
-                    for r in ddgs.text(query, max_results=self.max_results):
-                        results.append(
-                            SearchResult(
-                                title=r.get("title", ""),
-                                url=r.get("href", ""),
-                                snippet=r.get("body", ""),
-                            )
-                        )
-                logger.info(f"Web search found {len(results)} results for: {query[:50]}...")
-                return results
-            except Exception as e:
-                logger.error(f"Web search error (fallback): {e}")
-                return []
 
         except Exception as e:
             logger.error(f"Web search error: {e}")

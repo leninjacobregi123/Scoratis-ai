@@ -54,11 +54,14 @@ class Settings(BaseSettings):
     # Web Search
     WEB_SEARCH_ENABLED: bool = True
     WEB_SEARCH_MAX_RESULTS: int = 3
+    TAVILY_API_KEY: Optional[str] = None
 
     # Memory
     SHORT_TERM_MEMORY_LIMIT: int = 20
 
-    # Ollama LLM
+    # Ollama base URL - used only by video_service.py's maestro-studio
+    # integration (narration/title generation), unrelated to the chat LLM
+    # provider settings (local chat providers were removed).
     OLLAMA_BASE_URL: str = "http://localhost:11434"
 
     # API Keys (legacy - now stored encrypted in database)
@@ -72,10 +75,10 @@ class Settings(BaseSettings):
     TOGETHER_API_KEY: Optional[str] = None
     AZURE_API_KEY: Optional[str] = None
     AZURE_API_BASE: Optional[str] = None
+    DEEPSEEK_API_KEY: Optional[str] = None
 
     # Default LLM Settings - cloud by default (Groq: low latency, supports tool calling).
-    # Requires GROQ_API_KEY. Set DEFAULT_LLM_PROVIDER=ollama + OLLAMA_BASE_URL to go back
-    # to local inference for offline dev.
+    # Requires GROQ_API_KEY.
     DEFAULT_LLM_PROVIDER: str = "groq"
     DEFAULT_LLM_MODEL: str = "llama-3.3-70b-versatile"  # Supports tool/function calling
 

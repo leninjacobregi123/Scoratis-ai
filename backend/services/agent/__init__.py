@@ -25,7 +25,7 @@ Usage:
         llm_service=llm_service,
         rag_service=rag_service,
         web_search_service=web_search_service,
-        database_url=settings.DATABASE_URL_ASYNC,
+        database_url=settings.DATABASE_URL,  # psycopg-compatible, not DATABASE_URL_ASYNC
         enable_verification=True,
         enable_delegation=True
     )

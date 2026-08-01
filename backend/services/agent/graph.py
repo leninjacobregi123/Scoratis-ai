@@ -55,6 +55,8 @@ try:
     from langgraph.graph import StateGraph, END
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
     from langgraph.checkpoint.memory import MemorySaver
+    from psycopg.rows import dict_row
+    from psycopg_pool import AsyncConnectionPool
     LANGGRAPH_AVAILABLE = True
 except ImportError:
     LANGGRAPH_AVAILABLE = False
@@ -104,6 +106,7 @@ class ScoratisAgent:
 
         self.graph = None
         self.checkpointer = None
+        self._pg_pool: Optional["AsyncConnectionPool"] = None
         self._initialized = False
 
         # Agentic components (initialized lazily)
@@ -120,9 +123,35 @@ class ScoratisAgent:
                 # Try PostgreSQL checkpointing first
                 if self.database_url:
                     try:
-                        self.checkpointer = AsyncPostgresSaver.from_conn_string(
-                            self.database_url
+                        # AsyncPostgresSaver.from_conn_string() is an
+                        # @asynccontextmanager - it only yields a usable
+                        # saver inside an `async with` block and closes the
+                        # connection on exit, so calling .setup() on it
+                        # directly (the object the un-entered context
+                        # manager itself) raised
+                        # "'_AsyncGeneratorContextManager' object has no
+                        # attribute 'setup'" on every startup, silently
+                        # falling back to in-memory checkpointing (losing
+                        # Think-mode state across restarts). A long-lived
+                        # AsyncConnectionPool + the AsyncPostgresSaver(conn=)
+                        # constructor - LangGraph's documented pattern for
+                        # apps that hold the saver open across many
+                        # requests instead of one `async with` block - fixes
+                        # this. autocommit/prepare_threshold/row_factory
+                        # mirror exactly what from_conn_string sets on its
+                        # own connection internally.
+                        self._pg_pool = AsyncConnectionPool(
+                            conninfo=self.database_url,
+                            max_size=10,
+                            open=False,
+                            kwargs={
+                                "autocommit": True,
+                                "prepare_threshold": 0,
+                                "row_factory": dict_row,
+                            },
                         )
+                        await self._pg_pool.open()
+                        self.checkpointer = AsyncPostgresSaver(self._pg_pool)
                         await self.checkpointer.setup()
                         logger.info("Agent using PostgreSQL checkpointing")
                     except Exception as e:

@@ -7,13 +7,14 @@ docstring for why.
 """
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, update
 
 from api.schemas import LLMConfigUpdate, LLMProviderCreate, LLMProviderUpdate, SessionModelUpdate
+from config import settings
 from core.auth import get_current_user
 from database import get_database
-from llm_service import llm_service, RECOMMENDED_MODELS
+from llm_service import llm_service
 from models import User, ProviderType, PROVIDER_INFO, LLMProviderConfig
 from services.encryption_service import get_encryption_service
 
@@ -27,14 +28,11 @@ async def get_llm_providers():
     availability = await llm_service.check_availability()
     models = llm_service.get_available_models()
     current = llm_service.get_current_config()
-    recommended = llm_service.get_recommended_models(vram_gb=4)  # GTX 1650 = 4GB
 
     return {
         "availability": availability,
         "models": models,
         "current": current,
-        "recommended": recommended,
-        "vram_tiers": RECOMMENDED_MODELS
     }
 
 
@@ -55,7 +53,7 @@ async def configure_llm(config: LLMConfigUpdate, current_user: User = Depends(ge
     every user's requests until changed again - a known limitation to address
     when per-user LLM configuration isolation is built (not part of this pass).
     """
-    provider = config.provider or "ollama"
+    provider = config.provider or settings.DEFAULT_LLM_PROVIDER
     db = get_database()
 
     # Fetch API key from database for cloud providers FIRST (needed for validation)
@@ -170,7 +168,7 @@ async def validate_llm_model(config: LLMConfigUpdate):
     - message: Human-readable error message
     - suggestion: Actionable fix (e.g., 'ollama pull llama3.2')
     """
-    provider = config.provider or "ollama"
+    provider = config.provider or settings.DEFAULT_LLM_PROVIDER
 
     result = await llm_service.validate_model_config(
         provider=provider,
@@ -190,15 +188,6 @@ async def get_model_status():
     Useful for showing status in the UI before attempting chat.
     """
     return await llm_service.check_model_availability()
-
-
-@router.get("/recommended")
-async def get_recommended_models(vram_gb: int = Query(4, description="GPU VRAM in GB")):
-    """Get recommended models for your hardware"""
-    return {
-        "vram_gb": vram_gb,
-        "recommended": llm_service.get_recommended_models(vram_gb)
-    }
 
 
 @router.get("/providers/available")
@@ -242,6 +231,9 @@ async def create_provider_config(provider_config: LLMProviderCreate, current_use
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid provider: {provider_config.provider}")
 
+    if provider_type == ProviderType.CUSTOM and not provider_config.base_url:
+        raise HTTPException(status_code=400, detail="base_url is required for a Custom provider")
+
     encryption = get_encryption_service()
     db = get_database()
 
@@ -266,6 +258,7 @@ async def create_provider_config(provider_config: LLMProviderCreate, current_use
                 name=provider_config.name,
                 api_key_encrypted=encrypted_key,
                 base_url=provider_config.base_url or PROVIDER_INFO.get(provider_type, {}).get("default_base_url"),
+                extra_settings={"default_model": provider_config.default_model} if provider_config.default_model else None,
                 is_active=True,
                 is_default=provider_config.is_default or False,
             )
@@ -312,6 +305,8 @@ async def update_provider_config(provider_id: int, update_data: LLMProviderUpdat
             config.api_key_encrypted = encryption.encrypt(update_data.api_key)
         if update_data.base_url is not None:
             config.base_url = update_data.base_url
+        if update_data.default_model is not None:
+            config.extra_settings = {**(config.extra_settings or {}), "default_model": update_data.default_model}
         if update_data.is_active is not None:
             config.is_active = update_data.is_active
         if update_data.is_default is not None:
@@ -346,7 +341,10 @@ async def test_provider_config(provider_id: int, current_user: User = Depends(ge
             raise HTTPException(status_code=404, detail="Provider configuration not found")
 
         provider_info = PROVIDER_INFO.get(config.provider, {})
-        default_model = provider_info.get("models", [""])[0] if provider_info.get("models") else ""
+        default_model = (
+            (config.extra_settings or {}).get("default_model")
+            or (provider_info.get("models", [""])[0] if provider_info.get("models") else "")
+        )
 
         result = await llm_service.test_provider(
             provider=config.provider.value if isinstance(config.provider, ProviderType) else config.provider,
@@ -377,7 +375,7 @@ async def set_session_model(update_data: SessionModelUpdate, current_user: User 
     # If provider_id is specified, get the configuration
     api_key_encrypted = None
     base_url = None
-    provider = "ollama"
+    provider = settings.DEFAULT_LLM_PROVIDER
 
     if update_data.provider_id:
         async with db.get_session() as session:
@@ -413,13 +411,6 @@ async def set_session_model(update_data: SessionModelUpdate, current_user: User 
 @router.get("/available-models")
 async def get_all_available_models():
     """Get all available models grouped by provider"""
-    models = llm_service.get_available_models()
-
-    # Also check Ollama for installed models
-    ollama_health = await llm_service.litellm.check_ollama_health()
-
     return {
-        "models": models,
-        "ollama_installed": ollama_health.get("installed_models", []),
-        "ollama_available": ollama_health.get("available", False)
+        "models": llm_service.get_available_models(),
     }

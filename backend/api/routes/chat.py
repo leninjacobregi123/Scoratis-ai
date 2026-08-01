@@ -136,6 +136,9 @@ def generate_fallback(user_message: str, error_info: Dict[str, Any] = None) -> s
         elif error_type == "connection_error":
             return f"I'm unable to connect to the AI service. {suggestion}"
 
+        elif error_type == "no_provider_configured":
+            return "You haven't configured an AI provider yet. Add an API key for a provider (like Groq, OpenAI, or Anthropic) in Settings to start chatting."
+
     # Generic fallback responses based on user message
     msg_lower = user_message.lower().strip()
 
@@ -165,6 +168,73 @@ async def get_llm_error_info() -> Dict[str, Any]:
             "model": llm_service.current_config.model if llm_service.current_config else None,
         }
     return {}
+
+
+async def _resolve_user_llm_config(db, user_id: int, requested_provider: Optional[str], requested_model: Optional[str]):
+    """Resolve which provider/model/key this request should use, from the
+    user's OWN configured LLMProviderConfig rows only - there is no
+    deployment-wide default to fall back to (every account must configure
+    its own key). Prefers the requested provider if given and usable,
+    otherwise falls back to the user's own default/most-recent active
+    config. Returns (provider, model, api_key_encrypted) with provider=None
+    if the user has nothing usable configured.
+    """
+    async with db.get_session() as db_session:
+        stmt = select(LLMProviderConfig).where(
+            LLMProviderConfig.user_id == user_id,
+            LLMProviderConfig.is_active == True
+        )
+
+        if requested_provider:
+            try:
+                provider_filter = ProviderType(requested_provider)
+                stmt = stmt.where(LLMProviderConfig.provider == provider_filter)
+            except ValueError:
+                logger.warning(f"[MODEL SWITCH] Invalid provider: {requested_provider}")
+
+        stmt = stmt.order_by(LLMProviderConfig.is_default.desc(), LLMProviderConfig.updated_at.desc())
+
+        result = await db_session.execute(stmt)
+        # first(), not scalar_one_or_none() - a user can have more than one
+        # active config for the same provider (e.g. re-added after editing),
+        # which isn't an error case worth crashing the request on.
+        provider_config = result.scalars().first()
+
+        # Requested provider had no usable config - fall back to the user's
+        # own default/most-recent active config for ANY provider, rather
+        # than failing outright just because their last-selected provider
+        # lost its key.
+        if not provider_config and requested_provider:
+            fallback_stmt = (
+                select(LLMProviderConfig)
+                .where(LLMProviderConfig.user_id == user_id, LLMProviderConfig.is_active == True)
+                .order_by(LLMProviderConfig.is_default.desc(), LLMProviderConfig.updated_at.desc())
+            )
+            result = await db_session.execute(fallback_stmt)
+            provider_config = result.scalars().first()
+
+        if not provider_config:
+            return None, None, None
+
+        provider = (
+            provider_config.provider
+            if isinstance(provider_config.provider, ProviderType)
+            else ProviderType(provider_config.provider)
+        )
+        encrypted_key = provider_config.api_key_encrypted
+
+        if not llm_service.litellm.has_api_key(provider, encrypted_key):
+            return None, None, None
+
+        model = (
+            requested_model
+            or (provider_config.extra_settings or {}).get("default_model")
+            or next(iter(PROVIDER_INFO.get(provider, {}).get("models", [])), None)
+        )
+        if not model:
+            return None, None, None
+
+        return provider, model, encrypted_key
 
 # ==================== CHAT ENDPOINTS ====================
 
@@ -448,66 +518,30 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
     if not user_message:
         raise HTTPException(status_code=400, detail="No message provided")
 
-    # Resolve learning mode: explicit per-request value wins (frontend sends
-    # this on every call once chosen), otherwise fall back to whatever's
-    # already stored on the conversation, otherwise deep_learning - this
-    # covers every conversation that predates this feature with zero
-    # behavior change.
-    if message.mode:
-        resolved_mode = message.mode
-        resolved_mode_context = message.mode_context
-    else:
-        conv_meta = await db.get_conversation_meta(session_id, user_id=current_user.id)
-        resolved_mode = conv_meta.get("learning_mode") or "deep_learning"
-        resolved_mode_context = conv_meta.get("mode_context")
-
     # === Resolve provider/model/key for this request, shared by both the
-    # agentic and non-agentic paths below. The agent has no per-request
-    # provider param, so this also gets applied to the shared llm_service
-    # singleton via set_provider() right before invoking it. ===
-    resolved_provider = ProviderType(settings.DEFAULT_LLM_PROVIDER)
-    resolved_model = settings.DEFAULT_LLM_MODEL
-    resolved_api_key_encrypted: Optional[str] = None
+    # agentic and non-agentic paths below, from the user's OWN configured
+    # providers only - there is no deployment-wide default to fall back to
+    # (every account, new or existing, must configure its own key). The
+    # agent has no per-request provider param, so this also gets applied to
+    # the shared llm_service singleton via set_provider() right before
+    # invoking it. ===
+    resolved_provider, resolved_model, resolved_api_key_encrypted = await _resolve_user_llm_config(
+        db, current_user.id, message.provider, message.model
+    )
 
-    if message.provider:
-        try:
-            requested_provider = ProviderType(message.provider)
-            local_providers = ['ollama', 'lmstudio', 'localai', 'textgenwebui']
-
-            if message.provider in local_providers:
-                resolved_provider = requested_provider
-                resolved_model = message.model or resolved_model
-                logger.info(f"[MODEL SWITCH] Using local provider: {resolved_provider.value}/{resolved_model}")
-            else:
-                async with db.get_session() as db_session:
-                    from sqlalchemy import select
-                    result = await db_session.execute(
-                        select(LLMProviderConfig).where(
-                            LLMProviderConfig.user_id == current_user.id,
-                            LLMProviderConfig.provider == requested_provider,
-                            LLMProviderConfig.is_active == True
-                        ).order_by(LLMProviderConfig.is_default.desc(), LLMProviderConfig.updated_at.desc())
-                    )
-                    # first(), not scalar_one_or_none() - a user can have more than
-                    # one active config for the same provider (e.g. re-added after
-                    # editing), which isn't an error case worth crashing the request on.
-                    provider_config = result.scalars().first()
-                    encrypted_key = provider_config.api_key_encrypted if provider_config else None
-
-                    if llm_service.litellm.has_api_key(requested_provider, encrypted_key):
-                        resolved_provider = requested_provider
-                        resolved_api_key_encrypted = encrypted_key
-                        resolved_model = message.model or resolved_model
-                        logger.info(f"[MODEL SWITCH] Using cloud provider: {resolved_provider.value}/{resolved_model}")
-                    else:
-                        logger.warning(
-                            f"[MODEL SWITCH] No API key configured for {message.provider} - "
-                            f"using default {resolved_provider.value}/{resolved_model}"
-                        )
-        except ValueError:
-            logger.warning(f"[MODEL SWITCH] Invalid provider: {message.provider} - using default {resolved_provider.value}/{resolved_model}")
-    elif message.model:
-        resolved_model = message.model
+    if resolved_provider is None:
+        async def no_provider_stream():
+            fallback = generate_fallback(user_message, {"error_type": "no_provider_configured"})
+            yield f"data: {json.dumps({'chunk': fallback, 'done': True})}\n\n"
+        return StreamingResponse(
+            no_provider_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
 
     # Several helper calls within this request - RAG query reformulation,
     # the post-response video-worthiness check, and the agent's internal
@@ -515,8 +549,8 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
     # passing an explicit provider/model/key, so they fall back to
     # llm_service.current_config (a shared, process-wide singleton). Apply
     # the resolution above to it unconditionally so those calls use the
-    # same provider/key as the main response instead of the stale startup
-    # default.
+    # same provider/key as the main response instead of a stale prior
+    # request's config.
     llm_service.set_provider(
         model=resolved_model,
         provider=resolved_provider.value,
@@ -573,7 +607,7 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                                 final_response = event.get("response") or "I apologize, but I couldn't generate a complete response."
 
                             # Save to database
-                            await db.add_chat_message(session_id, 'ai', strip_internal_reasoning(final_response), user_id=current_user.id, mode=resolved_mode, mode_context=resolved_mode_context)
+                            await db.add_chat_message(session_id, 'ai', strip_internal_reasoning(final_response), user_id=current_user.id)
 
                             # Final event with metadata
                             final_data = {
@@ -585,7 +619,6 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                                 'sources': event.get('metadata', {}).get('sources', []),
                                 'tools_used': event.get('metadata', {}).get('tools_used', 0),
                                 'mode': 'agent',
-                                'learning_mode': resolved_mode,
                             }
                             yield f"data: {json.dumps(final_data)}\n\n"
 
@@ -608,8 +641,8 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
             }
         )
 
-    # Get the system prompt for the resolved learning mode
-    base_system_prompt = get_system_prompt(mode=resolved_mode, mode_context=resolved_mode_context)
+    # Get the system prompt
+    base_system_prompt = get_system_prompt()
 
     # Get or initialize conversation history
     if session_id not in conversation_memory:
@@ -632,36 +665,35 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
         conversation_memory[session_id] = conversation_memory[session_id][-20:]
 
     # === RAG: Get relevant context with hybrid search ===
-    # Only search documents if use_documents option is enabled
+    # Documents are always searched when the user has any - there's no
+    # manual toggle for this in the UI anymore.
     rag_context_xml = ""
     rag_sources = []
     rag_chunk_mapping = {}
-    use_documents = message.use_documents if message.use_documents is not None else True
     use_web_search = message.use_web_search if message.use_web_search is not None else True
 
     # Get conversation history for query reformulation (last 10 messages)
     conversation_history_for_rag = conversation_memory.get(session_id, [])[-10:]
 
-    if use_documents:
-        try:
-            async with db.get_session() as db_session:
-                rag_result = await rag_service.get_context_with_citations(
-                    db_session,
-                    user_message,
-                    conversation_history=conversation_history_for_rag,
-                    use_query_reformulation=True,
-                    llm_service=llm_service,
-                )
-                rag_context_xml = rag_result.get("context_xml", "")
-                rag_sources = rag_result.get("sources", [])
-                rag_chunk_mapping = rag_result.get("chunk_mapping", {})
+    try:
+        async with db.get_session() as db_session:
+            rag_result = await rag_service.get_context_with_citations(
+                db_session,
+                user_message,
+                conversation_history=conversation_history_for_rag,
+                use_query_reformulation=True,
+                llm_service=llm_service,
+            )
+            rag_context_xml = rag_result.get("context_xml", "")
+            rag_sources = rag_result.get("sources", [])
+            rag_chunk_mapping = rag_result.get("chunk_mapping", {})
 
-                # Log query reformulation if it occurred
-                reformulation_info = rag_result.get("reformulation_info")
-                if reformulation_info:
-                    logger.info(f"Query reformulated: '{reformulation_info.get('original_query')}' -> '{reformulation_info.get('reformulated_query')}'")
-        except Exception as rag_error:
-            logger.warning(f"Document RAG search error (continuing without): {rag_error}")
+            # Log query reformulation if it occurred
+            reformulation_info = rag_result.get("reformulation_info")
+            if reformulation_info:
+                logger.info(f"Query reformulated: '{reformulation_info.get('original_query')}' -> '{reformulation_info.get('reformulated_query')}'")
+    except Exception as rag_error:
+        logger.warning(f"Document RAG search error (continuing without): {rag_error}")
 
     # === Long-term memory: journal entries + past conversations ===
     # Independent of document RAG above - previously this only ran as a
@@ -779,14 +811,12 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                 yield f"data: {json.dumps(sources_event)}\n\n"
 
             # Stream search trail (shows what was searched - documents and/or web)
-            if search_trail_data["attempts"] or (use_documents and rag_sources):
-                # Add RAG search to trail if documents were searched
-                if use_documents:
-                    search_trail_data["attempts"].insert(0, {
-                        "source": "documents",
-                        "query": user_message[:100],
-                        "results_count": len(rag_sources) if rag_sources else 0,
-                    })
+            if search_trail_data["attempts"] or rag_sources:
+                search_trail_data["attempts"].insert(0, {
+                    "source": "documents",
+                    "query": user_message[:100],
+                    "results_count": len(rag_sources) if rag_sources else 0,
+                })
 
                 search_trail_event = {
                     "type": "search_trail",
@@ -813,7 +843,7 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                 yield f"data: {json.dumps({'chunk': chunk, 'done': False})}\n\n"
 
             # Save complete response to database with embedding
-            await db.add_chat_message(session_id, 'ai', strip_internal_reasoning(full_response), user_id=current_user.id, mode=resolved_mode, mode_context=resolved_mode_context)
+            await db.add_chat_message(session_id, 'ai', strip_internal_reasoning(full_response), user_id=current_user.id)
 
             # Add to memory service
             memory_service.add_message(session_id, "assistant", full_response)
@@ -965,7 +995,6 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                 'turn_count': turn_count,
                 # NEW: Automatic video generation info
                 'auto_video': auto_video_info,  # None if not auto-generating
-                'learning_mode': resolved_mode,
             }
             yield f"data: {json.dumps(final_data)}\n\n"
 
@@ -1079,11 +1108,8 @@ async def chat_with_attachment(
     file: Optional[UploadFile] = File(None),
     use_web_search: bool = Form(True),
     use_reasoning: bool = Form(False),
-    use_documents: bool = Form(True),
     provider: Optional[str] = Form(None),
     model: Optional[str] = Form(None),
-    mode: Optional[str] = Form(None),
-    mode_context: Optional[str] = Form(None),
     current_user: User = Depends(get_current_user),
 ):
     """
@@ -1178,11 +1204,8 @@ async def chat_with_attachment(
         attachment_ids=[document_id] if document_id else None,
         use_web_search=use_web_search,
         use_reasoning=use_reasoning,
-        use_documents=use_documents,
         provider=provider,
         model=model,
-        mode=mode,
-        mode_context=mode_context,
     )
 
     # Stream response using existing chat_stream logic
@@ -1459,23 +1482,18 @@ async def get_conversation_messages(conversation_id: str, current_user: User = D
     except ValueError:
         messages = await db.get_conversation_messages(conversation_id, user_id=current_user.id)
         session_id = conversation_id
-    meta = await db.get_conversation_meta(session_id, user_id=current_user.id) if session_id else {}
     return {
         "messages": messages,
         "conversation_id": conversation_id,
         "session_id": session_id,
-        "learning_mode": meta.get("learning_mode"),
-        "mode_context": meta.get("mode_context"),
     }
 
 @router.put("/chat/conversation/{conversation_id}")
 async def update_conversation(conversation_id: int, data: ConversationUpdate, current_user: User = Depends(get_current_user)):
-    """Update conversation (rename, mode switch)"""
+    """Update conversation (rename)"""
     db = get_database()
     if data.title:
         await db.update_conversation_title(conversation_id, data.title, user_id=current_user.id)
-    if data.mode:
-        await db.update_conversation_mode(conversation_id, data.mode, data.mode_context, user_id=current_user.id)
     return {"message": "Conversation updated"}
 
 @router.delete("/chat/conversation/{conversation_id}")

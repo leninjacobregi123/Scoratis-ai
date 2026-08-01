@@ -25,14 +25,14 @@ class TestLiteLLMConfig:
         from models import ProviderType
 
         config = LiteLLMConfig(
-            provider=ProviderType.OLLAMA,
-            model="llama3.2",
+            provider=ProviderType.GROQ,
+            model="llama-3.3-70b-versatile",
             max_tokens=2048,
             temperature=0.7
         )
 
-        assert config.provider == ProviderType.OLLAMA
-        assert config.model == "llama3.2"
+        assert config.provider == ProviderType.GROQ
+        assert config.model == "llama-3.3-70b-versatile"
         assert config.max_tokens == 2048
         assert config.temperature == 0.7
         assert config.stream is True  # default
@@ -47,13 +47,6 @@ class TestLiteLLMServiceModelStrings:
         with patch("services.litellm_service.get_encryption_service"):
             from services.litellm_service import LiteLLMService
             return LiteLLMService()
-
-    def test_ollama_model_string(self, litellm_service):
-        """Test Ollama model string generation."""
-        from models import ProviderType
-
-        result = litellm_service._get_model_string(ProviderType.OLLAMA, "llama3.2")
-        assert result == "ollama/llama3.2"
 
     def test_openai_model_string(self, litellm_service):
         """Test OpenAI model string (no prefix)."""
@@ -111,7 +104,7 @@ class TestLiteLLMServiceProviders:
         """Test getting models for a provider."""
         from models import ProviderType
 
-        models = litellm_service.get_provider_models(ProviderType.OLLAMA)
+        models = litellm_service.get_provider_models(ProviderType.GROQ)
 
         assert isinstance(models, list)
         assert len(models) > 0
@@ -141,15 +134,16 @@ class TestLiteLLMServiceGeneration:
         """Test that generate returns a string response."""
         from models import ProviderType
 
-        # Ollama doesn't require an API key - isolates this test to the
-        # acompletion-response-parsing logic being tested, rather than
-        # tripping the (correct, separate) "API key required" guard for
-        # cloud providers like the DEFAULT_LLM_PROVIDER=groq this would
-        # otherwise fall back to.
+        # api_key_encrypted is a dummy value decrypted by the mocked
+        # encryption service (from the litellm_service fixture's
+        # get_encryption_service patch) into a truthy MagicMock, satisfying
+        # Groq's "API key required" guard without needing a real key -
+        # isolates this test to the acompletion-response-parsing logic.
         result = await litellm_service.generate(
             messages=[{"role": "user", "content": "Hello"}],
             system_prompt="You are helpful.",
-            provider=ProviderType.OLLAMA,
+            provider=ProviderType.GROQ,
+            api_key_encrypted="fake_encrypted_key",
         )
 
         assert isinstance(result, str)
@@ -182,7 +176,8 @@ class TestLiteLLMServiceGeneration:
                 messages=[{"role": "user", "content": "Search my notes"}],
                 system_prompt="You are helpful.",
                 tools=[{"type": "function", "function": {"name": "search"}}],
-                provider=ProviderType.OLLAMA,
+                provider=ProviderType.GROQ,
+                api_key_encrypted="fake_encrypted_key",
             )
 
             assert "content" in result
@@ -201,7 +196,8 @@ class TestLiteLLMServiceGeneration:
                 await litellm_service.generate(
                     messages=[{"role": "user", "content": "Hello"}],
                     system_prompt="You are helpful.",
-                    provider=ProviderType.OLLAMA,
+                    provider=ProviderType.GROQ,
+                    api_key_encrypted="fake_encrypted_key",
                 )
 
             # _categorize_error's fallback branch for an unrecognized
@@ -227,20 +223,16 @@ class TestLiteLLMServiceTestProvider:
         """Test successful provider test."""
         from models import ProviderType
 
-        # Same bug as test_test_provider_failure below: test_provider() calls
-        # validate_config(), not generate() - mocking generate() was a no-op.
-        # Since OLLAMA doesn't require an API key, validate_config() fell
-        # through to a REAL litellm call against localhost:11434 - this only
-        # ever "passed" on machines that happen to have Ollama running
-        # locally (true here in dev, false in CI - confirmed failing there
-        # with a real ConnectionError to localhost:11434).
+        # test_provider() calls validate_config(), not generate() - mock
+        # validate_config() directly instead of mocking generate(), which
+        # would be a no-op.
         with patch.object(
             litellm_service, "validate_config",
             return_value=(True, "Successfully validated model", None)
         ):
             result = await litellm_service.test_provider(
-                provider=ProviderType.OLLAMA,
-                model="llama3.2"
+                provider=ProviderType.GROQ,
+                model="llama-3.3-70b-versatile"
             )
 
             assert result["success"] is True

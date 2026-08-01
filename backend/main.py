@@ -117,7 +117,11 @@ async def lifespan(app: FastAPI):
             rag_service=rag_service,
             web_search_service=web_search_service,
             langgraph_service=langgraph_service,
-            database_url=settings.DATABASE_URL_ASYNC
+            # Plain DATABASE_URL, not DATABASE_URL_ASYNC - the agent's
+            # checkpointer connects via psycopg (langgraph-checkpoint-
+            # postgres), which doesn't understand SQLAlchemy's
+            # "postgresql+asyncpg://" driver prefix.
+            database_url=settings.DATABASE_URL
         )
         await scoratis_agent.initialize()
         logger.info("Scoratis Agent initialized with agentic workflow")

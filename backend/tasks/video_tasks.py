@@ -70,20 +70,18 @@ def _configure_llm_for_user(db, user_id: int) -> None:
     """
     provider = ProviderType(settings.DEFAULT_LLM_PROVIDER)
     model = settings.DEFAULT_LLM_MODEL
-    encrypted_key = None
 
-    if provider not in (ProviderType.OLLAMA, ProviderType.LMSTUDIO, ProviderType.LOCALAI, ProviderType.TEXTGENWEBUI):
-        provider_config = (
-            db.query(LLMProviderConfig)
-            .filter(
-                LLMProviderConfig.user_id == user_id,
-                LLMProviderConfig.provider == provider,
-                LLMProviderConfig.is_active == True,
-            )
-            .order_by(LLMProviderConfig.is_default.desc(), LLMProviderConfig.updated_at.desc())
-            .first()
+    provider_config = (
+        db.query(LLMProviderConfig)
+        .filter(
+            LLMProviderConfig.user_id == user_id,
+            LLMProviderConfig.provider == provider,
+            LLMProviderConfig.is_active == True,
         )
-        encrypted_key = provider_config.api_key_encrypted if provider_config else None
+        .order_by(LLMProviderConfig.is_default.desc(), LLMProviderConfig.updated_at.desc())
+        .first()
+    )
+    encrypted_key = provider_config.api_key_encrypted if provider_config else None
 
     llm_service.set_provider(model=model, provider=provider.value, api_key_encrypted=encrypted_key)
     # Force EnhancedVideoGenerator/SmartVideoClient/SmartManimClient to

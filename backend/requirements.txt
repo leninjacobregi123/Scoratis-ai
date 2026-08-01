@@ -23,6 +23,7 @@ google-auth==2.56.2  # ID token verification for Google Sign-In (api/routes/auth
 sqlalchemy==2.0.36
 psycopg2-binary==2.9.10
 psycopg[binary]>=3.1.0
+psycopg-pool>=3.2.0  # AsyncConnectionPool for services/agent/graph.py's LangGraph checkpointer
 asyncpg==0.30.0
 alembic==1.14.0
 
@@ -32,8 +33,7 @@ pgvector==0.3.6
 # Embeddings
 sentence-transformers==3.3.1
 
-# Web Search
-duckduckgo-search==6.3.7
+# Web Search (Tavily - httpx-based, no dedicated SDK needed)
 
 # TTS
 # Unofficial wrapper around Microsoft Edge's internal TTS API - it embeds a

@@ -29,23 +29,18 @@ class ChatMessage(BaseModel):
     attachment_ids: Optional[List[int]] = None
     use_web_search: Optional[bool] = True
     use_reasoning: Optional[bool] = False
-    use_documents: Optional[bool] = True
     provider: Optional[str] = None
     model: Optional[str] = None
-    mode: Optional[str] = None
-    mode_context: Optional[str] = None
 
 class DeleteConversation(BaseModel):
     permanent: Optional[bool] = False
 
 class ConversationUpdate(BaseModel):
     title: Optional[str] = None
-    mode: Optional[str] = None
-    mode_context: Optional[str] = None
 
 class LLMConfigUpdate(BaseModel):
     model: str
-    provider: Optional[str] = "ollama"
+    provider: Optional[str] = None
     base_url: Optional[str] = None
     max_tokens: Optional[int] = 2048
     temperature: Optional[float] = 0.7
@@ -58,12 +53,14 @@ class LLMProviderCreate(BaseModel):
     name: str
     api_key: Optional[str] = None
     base_url: Optional[str] = None
+    default_model: Optional[str] = None
     is_default: Optional[bool] = False
 
 class LLMProviderUpdate(BaseModel):
     name: Optional[str] = None
     api_key: Optional[str] = None
     base_url: Optional[str] = None
+    default_model: Optional[str] = None
     is_active: Optional[bool] = None
     is_default: Optional[bool] = None
 

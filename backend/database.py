@@ -392,7 +392,7 @@ class DatabaseManager:
             return conv.id
 
     async def get_or_create_conversation(
-        self, session_id: str, *, user_id: int, mode: Optional[str] = None, mode_context: Optional[str] = None
+        self, session_id: str, *, user_id: int
     ) -> int:
         """Get existing conversation or create new one"""
         async with self.get_session() as session:
@@ -404,13 +404,10 @@ class DatabaseManager:
             conv = result.scalar_one_or_none()
 
             if conv:
-                if mode and not conv.learning_mode:
-                    conv.learning_mode = mode
-                    conv.mode_context = mode_context
                 return conv.id
 
             # Create new
-            conv = Conversation(session_id=session_id, user_id=user_id, learning_mode=mode, mode_context=mode_context)
+            conv = Conversation(session_id=session_id, user_id=user_id)
             session.add(conv)
             await session.flush()
             return conv.id
@@ -422,8 +419,6 @@ class DatabaseManager:
         message: str,
         *,
         user_id: int,
-        mode: Optional[str] = None,
-        mode_context: Optional[str] = None,
     ) -> int:
         """Add a message to the conversation with embedding"""
         async with self.get_session() as session:
@@ -439,17 +434,9 @@ class DatabaseManager:
                 conv = Conversation(
                     session_id=session_id,
                     user_id=user_id,
-                    learning_mode=mode,
-                    mode_context=mode_context,
                 )
                 session.add(conv)
                 await session.flush()
-            else:
-                if mode and not conv.learning_mode:
-                    # Initial mode capture only - the header toggle uses
-                    # update_conversation_mode() for unconditional changes
-                    conv.learning_mode = mode
-                    conv.mode_context = mode_context
 
             # Generate embedding (if service available)
             embedding = None
@@ -516,28 +503,6 @@ class DatabaseManager:
             result = await session.execute(stmt)
             return result.scalar_one_or_none()
 
-    async def get_conversation_meta(
-        self, session_id: str, *, user_id: int
-    ) -> Dict[str, Optional[str]]:
-        """Look up a conversation's (learning_mode, mode_context) by
-        session_id - used by chat_stream to resolve mode when the frontend
-        doesn't send one explicitly, and by GET /chat/conversation/{id} to
-        restore mode when reopening an existing conversation. Values are
-        None if no conversation exists yet or no mode has been set -
-        callers should default learning_mode to 'deep_learning'."""
-        async with self.get_session() as session:
-            stmt = select(
-                Conversation.learning_mode, Conversation.mode_context
-            ).where(
-                Conversation.session_id == session_id,
-                Conversation.user_id == user_id,
-            )
-            result = await session.execute(stmt)
-            row = result.first()
-            if not row:
-                return {"learning_mode": None, "mode_context": None}
-            return {"learning_mode": row[0], "mode_context": row[1]}
-
     async def get_conversation_messages_by_id(
         self, conversation_id: int, *, user_id: int
     ) -> List[Dict]:
@@ -591,8 +556,6 @@ class DatabaseManager:
                     "id": conv.id,
                     "session_id": conv.session_id,
                     "title": conv.title,
-                    "learning_mode": conv.learning_mode,
-                    "mode_context": conv.mode_context,
                     "message_count": row.message_count,
                     "created_at": str(conv.created_at),
                     "updated_at": str(conv.updated_at),
@@ -608,21 +571,6 @@ class DatabaseManager:
             conv = await session.get(Conversation, conversation_id)
             if conv and conv.user_id == user_id:
                 conv.title = title
-                return True
-            return False
-
-    async def update_conversation_mode(
-        self, conversation_id: int, mode: str, mode_context: Optional[str], *, user_id: int
-    ) -> bool:
-        """Unconditionally set a conversation's learning mode - used by the
-        header mode-toggle on an existing conversation, distinct from the
-        "set once" initial-capture logic in add_chat_message/
-        get_or_create_conversation."""
-        async with self.get_session() as session:
-            conv = await session.get(Conversation, conversation_id)
-            if conv and conv.user_id == user_id:
-                conv.learning_mode = mode
-                conv.mode_context = mode_context
                 return True
             return False
 

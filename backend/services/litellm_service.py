@@ -1,13 +1,13 @@
 """
 LiteLLM Universal LLM Service
-Provides a unified interface to 100+ LLM providers including:
-- Ollama (local)
+Provides a unified interface to cloud LLM providers including:
 - OpenAI (GPT-4, GPT-3.5)
 - Anthropic (Claude)
 - Google (Gemini)
 - Groq
 - Together AI
 - Azure OpenAI
+- DeepSeek
 
 This service is the SINGLE SOURCE OF TRUTH for all LLM interactions.
 All error handling, validation, and configuration is centralized here.
@@ -108,6 +108,7 @@ class LiteLLMService:
             ProviderType.GROQ: settings.GROQ_API_KEY,
             ProviderType.TOGETHER: settings.TOGETHER_API_KEY,
             ProviderType.AZURE: settings.AZURE_API_KEY,
+            ProviderType.DEEPSEEK: settings.DEEPSEEK_API_KEY,
         }
 
     def _get_model_string(self, provider: ProviderType, model: str) -> str:
@@ -116,12 +117,6 @@ class LiteLLMService:
         LiteLLM uses prefixes to identify providers.
         """
         prefix_map = {
-            # Local providers
-            ProviderType.OLLAMA: "ollama/",
-            ProviderType.LMSTUDIO: "openai/",
-            ProviderType.LOCALAI: "openai/",
-            ProviderType.TEXTGENWEBUI: "openai/",
-            # Cloud providers
             ProviderType.OPENAI: "",
             ProviderType.ANTHROPIC: "anthropic/",
             ProviderType.GOOGLE: "gemini/",
@@ -129,6 +124,10 @@ class LiteLLMService:
             ProviderType.TOGETHER: "together_ai/",
             ProviderType.AZURE: "azure/",
             ProviderType.DEEPSEEK: "deepseek/",
+            # OpenAI-compatible wire format, same as LiteLLM's "openai/"
+            # prefix - the api_base override below points it at the
+            # private/institutional endpoint instead of api.openai.com.
+            ProviderType.CUSTOM: "openai/",
         }
         prefix = prefix_map.get(provider, "")
         return f"{prefix}{model}"
@@ -152,10 +151,7 @@ class LiteLLMService:
         provider: ProviderType,
         encrypted_key: Optional[str] = None
     ) -> bool:
-        """Whether a usable key exists for this provider, from DB or env - local
-        providers (Ollama etc.) don't need one and always return True."""
-        if provider in (ProviderType.OLLAMA, ProviderType.LMSTUDIO, ProviderType.LOCALAI, ProviderType.TEXTGENWEBUI):
-            return True
+        """Whether a usable key exists for this provider, from DB or env."""
         return bool(self._get_api_key(provider, encrypted_key))
 
     def _categorize_error(
@@ -183,14 +179,6 @@ class LiteLLMService:
 
         # Connection errors - server not running or network issues
         if isinstance(error, APIConnectionError) or "connection" in error_str or "refused" in error_str:
-            if provider == ProviderType.OLLAMA:
-                return LLMError(
-                    error_type="server_unavailable",
-                    message="Cannot connect to Ollama server",
-                    suggestion="Start Ollama with: ollama serve",
-                    provider=provider_name,
-                    model=model,
-                )
             return LLMError(
                 error_type="connection_error",
                 message=f"Cannot connect to {provider_name} server",
@@ -221,28 +209,10 @@ class LiteLLMService:
 
         # Model not found errors
         if "not found" in error_str or "does not exist" in error_str:
-            if provider == ProviderType.OLLAMA:
-                return LLMError(
-                    error_type="model_not_installed",
-                    message=f"Model '{model}' is not installed locally",
-                    suggestion=f"Download with: ollama pull {model}",
-                    provider=provider_name,
-                    model=model,
-                )
             return LLMError(
                 error_type="model_not_found",
                 message=f"Model '{model}' not found",
                 suggestion="Check the model name and try again",
-                provider=provider_name,
-                model=model,
-            )
-
-        # Out of memory errors
-        if "out of memory" in error_str or "oom" in error_str or "cuda" in error_str or "memory" in error_str:
-            return LLMError(
-                error_type="insufficient_memory",
-                message=f"Model '{model}' requires more memory than available",
-                suggestion="Try a smaller model: llama3.2:1b for 4GB, llama3.2 for 8GB",
                 provider=provider_name,
                 model=model,
             )
@@ -281,7 +251,6 @@ class LiteLLMService:
         config: LiteLLMConfig,
         messages: List[Dict[str, Any]],
         system_prompt: Optional[str] = None,
-        disable_thinking: bool = False,
     ) -> Dict[str, Any]:
         """Prepare kwargs for LiteLLM completion call.
 
@@ -315,16 +284,7 @@ class LiteLLMService:
 
             api_messages.append(processed_msg)
 
-        # ollama_chat/ + think=False only for callers that opt in
-        # (disable_thinking=True, e.g. structured-JSON prompts like quiz
-        # generation). Left off by default so this doesn't change behavior
-        # for the main chat/tutoring path, which routes through "ollama/"
-        # (legacy /api/generate) and is unaffected by this flag.
-        use_ollama_chat = disable_thinking and config.provider == ProviderType.OLLAMA
-        if use_ollama_chat:
-            model_string = f"ollama_chat/{config.model}"
-        else:
-            model_string = self._get_model_string(config.provider, config.model)
+        model_string = self._get_model_string(config.provider, config.model)
 
         kwargs = {
             "model": model_string,
@@ -339,30 +299,8 @@ class LiteLLMService:
         if config.api_key:
             kwargs["api_key"] = config.api_key
 
-        if config.base_url:
-            if config.provider == ProviderType.OLLAMA:
-                kwargs["api_base"] = config.base_url
-            elif config.provider == ProviderType.AZURE:
-                kwargs["api_base"] = config.base_url
-
-        local_providers_with_openai_api = [
-            ProviderType.LMSTUDIO,
-            ProviderType.LOCALAI,
-            ProviderType.TEXTGENWEBUI,
-        ]
-
-        if config.provider == ProviderType.OLLAMA:
-            kwargs["api_base"] = config.base_url or settings.OLLAMA_BASE_URL
-            if use_ollama_chat:
-                kwargs["think"] = False
-        elif config.provider in local_providers_with_openai_api:
-            default_urls = {
-                ProviderType.LMSTUDIO: "http://localhost:1234/v1",
-                ProviderType.LOCALAI: "http://localhost:8080/v1",
-                ProviderType.TEXTGENWEBUI: "http://localhost:5000/v1",
-            }
-            kwargs["api_base"] = config.base_url or default_urls.get(config.provider)
-            kwargs["api_key"] = "not-needed"
+        if config.base_url and config.provider in (ProviderType.AZURE, ProviderType.CUSTOM):
+            kwargs["api_base"] = config.base_url
 
         return kwargs
 
@@ -416,10 +354,7 @@ class LiteLLMService:
                 )
 
             # Determine base URL
-            if provider == ProviderType.OLLAMA:
-                effective_base_url = base_url or settings.OLLAMA_BASE_URL
-            else:
-                effective_base_url = base_url or provider_info.get("default_base_url")
+            effective_base_url = base_url or provider_info.get("default_base_url")
 
             # Build config with validation timeout
             config = LiteLLMConfig(
@@ -459,12 +394,12 @@ class LiteLLMService:
                 )
 
         except LiteLLMTimeout as e:
-            # Specific timeout handling - model may be downloading
+            # Specific timeout handling
             logger.error(f"Validation timeout for {provider.value}/{model}: {e}")
             error = LLMError(
                 error_type="timeout",
                 message=f"Connection to model '{model}' timed out after {timeout} seconds",
-                suggestion="The model may be downloading. Wait a few minutes and try again, or check 'ollama ps'.",
+                suggestion="Try again in a moment.",
                 provider=provider.value,
                 model=model,
             )
@@ -475,34 +410,6 @@ class LiteLLMService:
             logger.error(f"Validation error for {provider.value}/{model}: {e}")
             error = self._categorize_error(e, provider, model)
             return (False, error.message, error)
-
-    async def check_model_installed(self, model: str) -> Tuple[bool, List[str]]:
-        """
-        Check if an Ollama model is installed locally.
-
-        Returns:
-            Tuple of (is_installed: bool, installed_models: List[str])
-        """
-        import httpx
-
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(f"{settings.OLLAMA_BASE_URL}/api/tags")
-                if response.status_code == 200:
-                    data = response.json()
-                    installed_models = [m["name"] for m in data.get("models", [])]
-
-                    # Check if model is installed (handle tags like llama3.2:latest)
-                    model_base = model.split(":")[0]
-                    is_installed = any(
-                        m.split(":")[0] == model_base or m.startswith(model_base)
-                        for m in installed_models
-                    )
-                    return (is_installed, installed_models)
-        except Exception as e:
-            logger.warning(f"Failed to check installed models: {e}")
-
-        return (False, [])
 
     # ==================== GENERATION METHODS ====================
 
@@ -517,20 +424,12 @@ class LiteLLMService:
         max_tokens: int = 2048,
         temperature: float = 0.7,
         timeout: int = DEFAULT_TIMEOUT,
-        disable_thinking: bool = False,
     ) -> str:
         """
         Generate a non-streaming response from any supported provider.
 
         This method includes centralized error handling. All errors are
         categorized and re-raised with structured information.
-
-        Args:
-            disable_thinking: For Ollama, route through ollama_chat/ with
-                think=False instead of the default ollama/ provider. Only
-                opt in for prompts that need clean structured output (e.g.
-                JSON) - see _prepare_litellm_kwargs for why this isn't the
-                default for every caller.
 
         Raises:
             LLMGenerationError: On any LLM failure with structured error info
@@ -543,10 +442,7 @@ class LiteLLMService:
         if provider_info.get("requires_api_key") and not api_key:
             raise ValueError(f"API key required for {provider.value} but not configured")
 
-        if provider == ProviderType.OLLAMA:
-            effective_base_url = base_url or settings.OLLAMA_BASE_URL
-        else:
-            effective_base_url = base_url or provider_info.get("default_base_url")
+        effective_base_url = base_url or provider_info.get("default_base_url")
 
         config = LiteLLMConfig(
             provider=provider,
@@ -559,7 +455,7 @@ class LiteLLMService:
             timeout=timeout,
         )
 
-        kwargs = self._prepare_litellm_kwargs(config, messages, system_prompt, disable_thinking=disable_thinking)
+        kwargs = self._prepare_litellm_kwargs(config, messages, system_prompt)
 
         try:
             logger.info(f"LiteLLM generating with {provider.value}/{model}")
@@ -596,10 +492,7 @@ class LiteLLMService:
         if provider_info.get("requires_api_key") and not api_key:
             raise ValueError(f"API key required for {provider.value} but not configured")
 
-        if provider == ProviderType.OLLAMA:
-            effective_base_url = base_url or settings.OLLAMA_BASE_URL
-        else:
-            effective_base_url = base_url or provider_info.get("default_base_url")
+        effective_base_url = base_url or provider_info.get("default_base_url")
 
         config = LiteLLMConfig(
             provider=provider,
@@ -651,10 +544,7 @@ class LiteLLMService:
         if provider_info.get("requires_api_key") and not api_key:
             raise ValueError(f"API key required for {provider.value} but not configured")
 
-        if provider == ProviderType.OLLAMA:
-            effective_base_url = base_url or settings.OLLAMA_BASE_URL
-        else:
-            effective_base_url = base_url or provider_info.get("default_base_url")
+        effective_base_url = base_url or provider_info.get("default_base_url")
 
         config = LiteLLMConfig(
             provider=provider,
@@ -740,32 +630,6 @@ class LiteLLMService:
                 "message": message,
                 "error": error.to_dict() if error else None,
             }
-
-    async def check_ollama_health(self) -> Dict[str, Any]:
-        """Check if Ollama is running and list installed models"""
-        import httpx
-
-        base_url = settings.OLLAMA_BASE_URL
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(f"{base_url}/api/tags")
-                if response.status_code == 200:
-                    data = response.json()
-                    models = [m["name"] for m in data.get("models", [])]
-                    return {
-                        "available": True,
-                        "base_url": base_url,
-                        "installed_models": models,
-                    }
-        except Exception as e:
-            logger.warning(f"Ollama health check failed: {e}")
-
-        return {
-            "available": False,
-            "base_url": base_url,
-            "installed_models": [],
-            "error": "Ollama not running. Start with: ollama serve",
-        }
 
     def get_available_providers(self) -> List[Dict[str, Any]]:
         """Get list of all supported providers with their info"""

@@ -18,12 +18,6 @@ if TYPE_CHECKING:
 
 class ProviderType(str, enum.Enum):
     """Supported LLM providers"""
-    # Local providers (no API key required)
-    OLLAMA = "ollama"
-    LMSTUDIO = "lmstudio"
-    LOCALAI = "localai"
-    TEXTGENWEBUI = "textgenwebui"
-    # Cloud providers (API key required)
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     GOOGLE = "google"
@@ -31,6 +25,11 @@ class ProviderType(str, enum.Enum):
     TOGETHER = "together"
     AZURE = "azure"
     DEEPSEEK = "deepseek"
+    # A private/institutional OpenAI-compatible endpoint (e.g. a
+    # university's own LLM gateway) - base_url + api_key + a user-supplied
+    # model name (stored in extra_settings.default_model, since there's no
+    # fixed model list to offer).
+    CUSTOM = "custom"
 
 
 class LLMProviderConfig(Base):
@@ -105,40 +104,6 @@ class LLMProviderConfig(Base):
 
 # Provider metadata for frontend display
 PROVIDER_INFO = {
-    # Local providers (no API key required)
-    ProviderType.OLLAMA: {
-        "display_name": "Ollama",
-        "icon": "🦙",
-        "requires_api_key": False,
-        "is_local": True,
-        "default_base_url": "http://localhost:11434",
-        "models": ["llama3.2", "llama3.1", "mistral", "qwen2.5", "codellama", "phi3", "gemma2"],
-    },
-    ProviderType.LMSTUDIO: {
-        "display_name": "LM Studio",
-        "icon": "💻",
-        "requires_api_key": False,
-        "is_local": True,
-        "default_base_url": "http://localhost:1234/v1",
-        "models": ["local-model"],
-    },
-    ProviderType.LOCALAI: {
-        "display_name": "LocalAI",
-        "icon": "🏠",
-        "requires_api_key": False,
-        "is_local": True,
-        "default_base_url": "http://localhost:8080/v1",
-        "models": ["gpt4all-j", "wizardlm", "orca-mini"],
-    },
-    ProviderType.TEXTGENWEBUI: {
-        "display_name": "Text Gen WebUI",
-        "icon": "🌐",
-        "requires_api_key": False,
-        "is_local": True,
-        "default_base_url": "http://localhost:5000/v1",
-        "models": ["loaded-model"],
-    },
-    # Cloud providers (API key required)
     ProviderType.OPENAI: {
         "display_name": "OpenAI",
         "icon": "🤖",
@@ -194,5 +159,15 @@ PROVIDER_INFO = {
         "is_local": False,
         "default_base_url": None,
         "models": ["deepseek-chat", "deepseek-coder", "deepseek-reasoner"],
+    },
+    ProviderType.CUSTOM: {
+        "display_name": "Custom Provider",
+        "icon": "🔧",
+        "requires_api_key": True,
+        "is_local": False,
+        "default_base_url": None,
+        # No fixed model list - the model name is user-supplied and stored
+        # in the LLMProviderConfig row's extra_settings.default_model.
+        "models": [],
     },
 }
