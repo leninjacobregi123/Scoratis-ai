@@ -1,0 +1,67 @@
+name: Ops - Set Tavily API Key
+
+# One-off: writes TAVILY_API_KEY into .env.production on the VM (idempotent
+# - replaces the line if present, appends if not), then rebuilds ONLY the
+# backend to pick it up - it's read server-side only (web_search_service.py),
+# never baked into the frontend bundle, so no frontend rebuild is needed.
+# --no-deps so postgres/redis/frontend/caddy/worker are left alone (see
+# ops-sync-caddy.yml's comment for why --no-deps matters here).
+#
+# Unlike the Google OAuth Client ID (a plain workflow input - see
+# ops-set-google-oauth.yml's comment on why that one's safe to expose), the
+# Tavily key is a genuine bearer secret for a metered API, so it's read from
+# a GitHub Actions repository secret instead of a workflow_dispatch input -
+# a plain input would sit in cleartext in this workflow's run history,
+# visible to anyone with read access to the repo.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  set-tavily-key:
+    name: Set Tavily API key on production VM
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up deploy SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VM_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Write Tavily API key into .env.production
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
+            "cd ~/scoratis-deploy && \
+             (grep -q '^TAVILY_API_KEY=' .env.production && \
+               sed -i 's|^TAVILY_API_KEY=.*|TAVILY_API_KEY=${{ secrets.TAVILY_API_KEY }}|' .env.production || \
+               echo 'TAVILY_API_KEY=${{ secrets.TAVILY_API_KEY }}' >> .env.production)"
+
+      - name: Rebuild backend only
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
+            "cd ~/scoratis-deploy && sudo docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build --no-deps backend"
+
+      - name: Wait for backend health
+        run: |
+          for i in $(seq 1 20); do
+            status=$(curl -sk -o /dev/null -w '%{http_code}' https://${{ secrets.VM_HOST_DNS || 'scoratis-app.centralindia.cloudapp.azure.com' }}/health || echo 000)
+            if [ "$status" = "200" ]; then
+              echo "Backend healthy"
+              exit 0
+            fi
+            echo "Waiting for backend... (attempt $i, status $status)"
+            sleep 10
+          done
+          echo "Backend did not become healthy in time"
+          exit 1
+
+      - name: Show container status
+        if: always()
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
+            "sudo docker compose -f ~/scoratis-deploy/docker-compose.prod.yml ps"
