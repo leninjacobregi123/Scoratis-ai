@@ -737,6 +737,22 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
     if use_reasoning and scoratis_agent:
         logger.info(f"Using agentic mode for session {session_id}")
 
+        # Persist + snapshot history BEFORE the current turn - graph.py's
+        # stream() builds its own fresh message array per call (it doesn't
+        # use the LangGraph checkpointer the way invoke() does), so without
+        # this the agent has no memory of anything said earlier in the
+        # session and, e.g., can't tell a real prior visual from a
+        # hallucinated one it's being asked about again.
+        if session_id not in conversation_memory:
+            conversation_memory[session_id] = []
+        history_before = list(conversation_memory[session_id])
+
+        await db.add_chat_message(session_id, 'user', user_message, user_id=current_user.id)
+        memory_service.add_message(session_id, "user", user_message)
+        conversation_memory[session_id].append({"role": "user", "content": user_message})
+        if len(conversation_memory[session_id]) > 20:
+            conversation_memory[session_id] = conversation_memory[session_id][-20:]
+
         async def generate_agent_stream_internal():
             full_response = ""
             try:
@@ -745,7 +761,8 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                         session_id=session_id,
                         message=user_message,
                         db_session=db_session,
-                        user_id=current_user.id
+                        user_id=current_user.id,
+                        history=history_before
                     ):
                         event_type = event.get("type")
 
@@ -781,7 +798,12 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                                 final_response = event.get("response") or "I apologize, but I couldn't generate a complete response."
 
                             # Save to database
-                            await db.add_chat_message(session_id, 'ai', strip_internal_reasoning(final_response), user_id=current_user.id)
+                            clean_response = strip_internal_reasoning(final_response)
+                            await db.add_chat_message(session_id, 'ai', clean_response, user_id=current_user.id)
+                            memory_service.add_message(session_id, "assistant", clean_response)
+                            conversation_memory[session_id].append({"role": "assistant", "content": clean_response})
+                            if len(conversation_memory[session_id]) > 20:
+                                conversation_memory[session_id] = conversation_memory[session_id][-20:]
 
                             # Video-generation decisions for this path come
                             # from the agent's OWN generate_video tool call

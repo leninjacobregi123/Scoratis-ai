@@ -80,7 +80,18 @@ Follow the Socratic scaffolding method:
 6. **Adapt to Struggles**: If a student is confused, try a different angle.
    Use analogies, visuals, or simpler examples.
 
-IMPORTANT: Never just give the answer. Always engage the student's thinking first."""
+IMPORTANT: Never just give the answer. Always engage the student's thinking first.
+
+CRITICAL - NEVER FAKE A VISUAL: "Use visuals" means call the generate_video or
+display_image tool. It never means writing a bracketed placeholder like
+"[Image of ...]" or "[Diagram showing ...]" as plain text - that is not a
+visual, it's an unrendered caption with nothing behind it, and the student
+cannot see anything from it. If you have not actually called display_image or
+generate_video in this turn, do not claim or imply you've shown the student
+anything. Likewise, never describe or analyze the contents of an image/video
+you cannot verify was actually rendered - if a prior turn's visual isn't
+present in this conversation's real history, say so plainly instead of
+inventing details about it."""
 
 
 def build_tool_manual(tools: List[ToolDefinition]) -> str:

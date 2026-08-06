@@ -14,7 +14,7 @@ import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import LLMSwitcher from '../components/LLMSwitcher';
 import { THEME, TUTOR, getStandardizedThemeClasses } from '../config/subjectThemes';
 import { parseCitations, buildSourceMap, hasCitations } from '../utils/citations';
-import { getAuthHeaders } from '../utils/auth';
+import { getAuthHeaders, refreshAccessToken, clearTokens } from '../utils/auth';
 import { CitationNumber, CitationPopup, CitationList, SourcesBadge, FootnotesSection } from '../components/Citation';
 import AgenticWorkflow, { useAgenticWorkflow } from '../components/AgenticWorkflow';
 import { AttachmentButton, AttachmentPreview, UploadProgressOverlay } from '../components/ChatAttachments';
@@ -26,6 +26,32 @@ import ClarificationRequest from '../components/ClarificationRequest';
 import ManimAnimationCard from '../components/ManimAnimationCard';
 import { LinkPreviewCard, LinkPreviewGrid } from '../components/LinkPreviewCard';
 import { InlineImage, ImageGallery } from '../components/InlineImage';
+
+// Streaming chat endpoints use raw fetch() (SSE needs a readable stream,
+// which axios doesn't expose the same way), so they don't get the silent
+// 401-refresh-and-retry that useApi.js's axios interceptor gives every other
+// request in the app. Without this, an expired access token (30min default)
+// mid-conversation surfaced as an opaque "I apologize, but I encountered an
+// error" - indistinguishable from a real AI/backend failure - instead of
+// transparently refreshing or sending the user to log back in.
+async function fetchWithAuthRetry(url, options) {
+  const response = await fetch(url, options);
+  if (response.status !== 401) return response;
+
+  const newToken = await refreshAccessToken();
+  if (!newToken) {
+    clearTokens();
+    if (window.location.pathname !== '/login') {
+      window.location.href = '/login';
+    }
+    return response;
+  }
+
+  return fetch(url, {
+    ...options,
+    headers: { ...options.headers, Authorization: `Bearer ${newToken}` },
+  });
+}
 
 // ============== UI COMPONENTS ==============
 
@@ -1399,7 +1425,7 @@ export default function Chat() {
         if (currentLLMProvider) formData.append('provider', currentLLMProvider);
         if (currentLLMModel) formData.append('model', currentLLMModel);
 
-        response = await fetch(`${baseUrl}/chat/with-attachment`, {
+        response = await fetchWithAuthRetry(`${baseUrl}/chat/with-attachment`, {
           method: 'POST',
           headers: { ...getAuthHeaders() },
           body: formData
@@ -1411,7 +1437,7 @@ export default function Chat() {
         setUploadProgress(0);
       } else {
         // Regular JSON request with chat options and selected LLM
-        response = await fetch(`${baseUrl}/chat/stream`, {
+        response = await fetchWithAuthRetry(`${baseUrl}/chat/stream`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -1429,6 +1455,9 @@ export default function Chat() {
       }
 
       if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error('Your session expired and could not be renewed - please log in again.');
+        }
         throw new Error('Stream request failed');
       }
 
@@ -1697,10 +1726,15 @@ export default function Chat() {
       }
     } catch (error) {
       console.error('Streaming error:', error);
-      // Update message with error
+      // Update message with error - surface a real session-expiry message
+      // when that's actually what happened, instead of always blaming "the
+      // AI" for what's really an auth problem (see fetchWithAuthRetry above).
+      const errorText = error?.message?.includes('session expired')
+        ? error.message
+        : "I apologize, but I encountered an error. Please try again.";
       setMessages(prev => prev.map(msg =>
         msg.id === newMessageId
-          ? { ...msg, content: "I apologize, but I encountered an error. Please try again." }
+          ? { ...msg, content: errorText }
           : msg
       ));
     } finally {

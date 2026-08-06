@@ -820,7 +820,8 @@ class ScoratisAgent:
         session_id: str,
         message: str,
         db_session: Optional[AsyncSession] = None,
-        user_id: int = 1
+        user_id: int = 1,
+        history: Optional[List[Dict[str, str]]] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Stream a response from the agent.
@@ -831,6 +832,12 @@ class ScoratisAgent:
         - {"type": "tool_end", "tool": "name", "result": {...}}
         - {"type": "token", "content": "..."}
         - {"type": "done", "response": "...", "metadata": {...}}
+
+        `history` is the conversation's prior turns (role/content dicts, oldest
+        first, NOT including the current `message`) - this method builds its
+        own message array from scratch each call rather than using the
+        LangGraph checkpointer (see invoke() for that), so without this the
+        agent has no memory of anything said earlier in the same session.
         """
         await self.initialize()
 
@@ -894,7 +901,7 @@ class ScoratisAgent:
             learning_state=learning_state
         )
 
-        messages = [{"role": "user", "content": message}]
+        messages = [*(history or []), {"role": "user", "content": message}]
         full_response = ""
         tool_results = []
         # Populated if the agent itself calls generate_video during its own
