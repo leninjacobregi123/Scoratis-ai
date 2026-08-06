@@ -32,7 +32,7 @@ from .tools import (
     create_finalize_response_tool,
     create_request_clarification_tool,
     # Multimedia tools
-    create_manim_animation_tool,
+    create_generate_video_tool,
     create_link_preview_tool,
     create_display_image_tool,
 )
@@ -57,7 +57,6 @@ class ToolDependencies:
     orchestrator: Any = None
     verifier: Any = None
     # Multimedia services (optional - tools work without them)
-    animation_service: Any = None  # For Manim animations
     preview_service: Any = None    # For link previews
     image_service: Any = None      # For image display
 
@@ -205,9 +204,8 @@ class ToolBuilder:
             return create_request_clarification_tool()
 
         # === Multimedia Tools ===
-        elif name == "create_manim_animation":
-            # Animation service is optional - tool works without it (returns queued status)
-            return create_manim_animation_tool(self.deps.animation_service)
+        elif name == "generate_video":
+            return create_generate_video_tool(self.deps.user_id, self.deps.session_id)
 
         elif name == "link_preview":
             # Preview service is optional - tool has built-in fallback
@@ -278,7 +276,6 @@ def build_tools(
     orchestrator: Any = None,
     verifier: Any = None,
     # Multimedia services
-    animation_service: Any = None,
     preview_service: Any = None,
     image_service: Any = None
 ) -> List[BuiltTool]:
@@ -296,7 +293,6 @@ def build_tools(
         tool_names: Optional list of specific tools to build (builds all if None)
         orchestrator: Sub-agent orchestrator for delegation
         verifier: Response verifier for quality checking
-        animation_service: Manim animation rendering service
         preview_service: Link preview generation service
         image_service: Image handling service
 
@@ -313,7 +309,6 @@ def build_tools(
         user_id=user_id,
         orchestrator=orchestrator,
         verifier=verifier,
-        animation_service=animation_service,
         preview_service=preview_service,
         image_service=image_service
     )

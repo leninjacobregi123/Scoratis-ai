@@ -4,7 +4,7 @@ import {
   ArrowUp, MessageSquare, Plus,
   MoreVertical, Trash2, Edit2, Check, X,
   Play, Loader2, Download, Film, Pause, Volume2, VolumeX, Mic, MicOff, FileText,
-  Globe, Brain, Share2, Link2, Copy
+  Globe, Brain, Share2, Link2, Copy, AlertTriangle
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import SocratesLogo from '../3d/SocratesLogo';
@@ -57,7 +57,7 @@ function SoundWaveAnimation({ isPlaying }) {
 }
 
 // Inline Video Card - Shows video progress or player directly in message flow
-function InlineVideoCard({ video, isGenerating, progress, stage, topic, onRemove }) {
+function InlineVideoCard({ video, isGenerating, progress, stage, topic, error, onRemove }) {
   const videoRef = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
@@ -73,14 +73,24 @@ function InlineVideoCard({ video, isGenerating, progress, stage, topic, onRemove
   const currentIndex = stages.findIndex(s => stage?.includes(s.id));
 
   const togglePlay = () => {
-    if (videoRef.current) {
-      if (isPlaying) {
-        videoRef.current.pause();
-      } else {
-        videoRef.current.play();
-      }
-      setIsPlaying(!isPlaying);
+    if (!videoRef.current) return;
+    if (isPlaying) {
+      videoRef.current.pause();
+      setIsPlaying(false);
+      return;
     }
+    // play() returns a promise that can reject (autoplay policy, decode
+    // failure, etc.) - previously isPlaying was set to true unconditionally
+    // right after calling play(), regardless of whether it actually
+    // succeeded. That hid the overlay (shown only when !isPlaying) even
+    // when playback silently failed, so clicking play looked like it did
+    // something but no video ever appeared, with no way to click play again.
+    videoRef.current.play()
+      .then(() => setIsPlaying(true))
+      .catch((err) => {
+        console.error('Video playback failed:', err);
+        setIsPlaying(false);
+      });
   };
 
   const handleTimeUpdate = () => {
@@ -90,6 +100,33 @@ function InlineVideoCard({ video, isGenerating, progress, stage, topic, onRemove
       setVideoProgress((current / duration) * 100);
     }
   };
+
+  // Failed / timed-out generation - the only branch that previously didn't
+  // exist, so a failed job just silently vanished with no explanation.
+  if (error) {
+    return (
+      <div className="bg-red-500/5 border border-red-300/50 rounded-xl p-4 mt-4 animate-fade-in">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-xl bg-red-100 flex items-center justify-center flex-shrink-0">
+            <AlertTriangle className="w-5 h-5 text-red-500" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h4 className="text-sm font-medium text-text-primary">Video generation failed</h4>
+            <p className="text-xs text-text-muted mt-0.5 truncate" title={topic}>{topic}</p>
+            <p className="text-xs text-red-500/80 mt-1 line-clamp-2">{error}</p>
+          </div>
+          {onRemove && (
+            <button
+              onClick={onRemove}
+              className="p-1.5 text-text-muted rounded-lg hover:text-red-400 hover:bg-red-500/10 transition-all flex-shrink-0"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   // Generation progress state
   if (isGenerating) {
@@ -441,26 +478,6 @@ function MessageCard({
           </div>
         ) : (
           <div>
-            {/* Agentic Workflow Display - shows tool usage, thinking, etc. */}
-            {workflow && workflow.hasTools && (
-              <AgenticWorkflow
-                steps={workflow.steps || []}
-                activeStep={workflow.activeStep}
-                thinking={workflow.thinking}
-                plan={workflow.plan}
-                verification={workflow.verification}
-                searchTrail={searchTrail}
-                isComplete={workflow.isComplete}
-                showDetails={false}
-                theme={theme}
-              />
-            )}
-
-            {/* Search Trail Indicator - shows which sources were searched */}
-            {searchTrail && !workflow?.hasTools && (
-              <SearchTrailIndicator searchTrail={searchTrail} theme={theme} />
-            )}
-
             {/* Clarification Request - when agent needs user help */}
             {clarification && (
               <ClarificationRequest
@@ -598,10 +615,11 @@ function MessageCard({
             {(video || generatingVideo) && (
               <InlineVideoCard
                 video={video}
-                isGenerating={!!generatingVideo}
+                isGenerating={!!generatingVideo && !generatingVideo.error}
                 progress={generatingVideo?.progress}
                 stage={generatingVideo?.stage}
                 topic={generatingVideo?.topic || video?.topic}
+                error={generatingVideo?.error}
                 onRemove={onRemoveVideo}
               />
             )}
@@ -840,9 +858,12 @@ export default function Chat() {
   // there's no app-wide default to fall back to.
   const [currentLLMProvider, setCurrentLLMProvider] = useState(null);
   const [currentLLMModel, setCurrentLLMModel] = useState(null);
+  // Shown when the user tries to send without having explicitly picked a
+  // model from the switcher - sendMessage() blocks until one is chosen.
+  const [showModelRequiredNotice, setShowModelRequiredNotice] = useState(false);
 
   // True whenever a conversation is being fetched to restore its messages -
-  // without this, the welcome-screen guard below (messages.length <= 1) is
+  // without this, the welcome-screen guard below (messages.length === 0) is
   // guaranteed to be true for at least one render while loadConversation's
   // fetch is in flight, flashing the welcome screen on every reopen even
   // though the real messages will load a moment later.
@@ -1043,21 +1064,14 @@ export default function Chat() {
       if (onConversationCreated) {
         onConversationCreated();
       }
-      if (!activeConversationId && !data.conversations?.length) {
-        setMessages([{
-          id: 1,
-          role: 'ai',
-          content: "# Welcome, Seeker of Wisdom\n\n> \"The only true wisdom is in knowing you know nothing.\" — Socrates\n\nI am **Scoratis**, your guide in the art of inquiry. I don't give answers—I help you **discover** them through questions.\n\n**How shall we begin?**\n\nTell me what you wish to understand, and let us explore together through dialogue.",
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        }]);
-      }
+      // No synthetic "ai" greeting message here - the templated Welcome
+      // Screen below (portrait/quote/suggestion buttons) already covers
+      // this landing state. Injecting a single-message placeholder into
+      // `messages` used to make both render at once, each fighting the
+      // other for the same flex-1 space (see the messages.length === 0
+      // check below).
     } catch (error) {
-      setMessages([{
-        id: 1,
-        role: 'ai',
-        content: "# Welcome to Scoratis\n\nI'm ready to guide your learning through questions. What shall we explore?",
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      }]);
+      console.error('Failed to load conversations:', error);
     }
   };
 
@@ -1085,12 +1099,9 @@ export default function Chat() {
     setActiveConversationId(null);
     setSessionId('session_' + Date.now());
     setIsRestoringConversation(false);
-    setMessages([{
-      id: Date.now(),
-      role: 'ai',
-      content: "**A fresh dialogue begins.**\n\nWhat question burns in your mind? What do you wish to understand more deeply?",
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    }]);
+    // Empty, not a synthetic greeting message - see the comment in
+    // loadConversations() above for why.
+    setMessages([]);
     inputRef.current?.focus();
   };
 
@@ -1142,8 +1153,33 @@ export default function Chat() {
   };
 
   // Poll video status and update per-message state
+  // manim renders can legitimately take up to 25 minutes (see the backend's
+  // own subprocess timeout in tasks/video_tasks.py) - this poll timeout must
+  // stay comfortably above that so a slow-but-healthy render never gets
+  // mislabeled as stuck. 900 polls @ 2s = 30 minutes.
+  const MAX_VIDEO_POLLS = 900;
+
+  const stopVideoPolling = (taskId, messageId, errorMessage) => {
+    clearInterval(videoPollingRefs.current[taskId]);
+    delete videoPollingRefs.current[taskId];
+    setGeneratingVideos(prev => {
+      if (!prev[messageId]) return prev;
+      return {
+        ...prev,
+        [messageId]: { ...prev[messageId], error: errorMessage }
+      };
+    });
+  };
+
   const pollVideoStatus = (taskId, messageId, topic) => {
+    let pollCount = 0;
     videoPollingRefs.current[taskId] = setInterval(async () => {
+      pollCount += 1;
+      if (pollCount > MAX_VIDEO_POLLS) {
+        stopVideoPolling(taskId, messageId, 'This is taking longer than expected. Check back later - the video may still finish in the background.');
+        return;
+      }
+
       try {
         const status = await api.get(`/videos/status/${taskId}`);
 
@@ -1179,28 +1215,13 @@ export default function Chat() {
             }
           }));
         } else if (status.status === 'error') {
-          clearInterval(videoPollingRefs.current[taskId]);
-          delete videoPollingRefs.current[taskId];
-
-          // Remove from generating
-          setGeneratingVideos(prev => {
-            const updated = { ...prev };
-            delete updated[messageId];
-            return updated;
-          });
+          stopVideoPolling(taskId, messageId, status.error || 'Video generation failed for an unknown reason.');
         }
       } catch (error) {
         console.error('Failed to poll video status:', error);
         // Stop polling on error (e.g., 404 Not Found means task doesn't exist)
         if (error.response?.status === 404 || error.message?.includes('404')) {
-          clearInterval(videoPollingRefs.current[taskId]);
-          delete videoPollingRefs.current[taskId];
-          // Remove from generating state
-          setGeneratingVideos(prev => {
-            const updated = { ...prev };
-            delete updated[messageId];
-            return updated;
-          });
+          stopVideoPolling(taskId, messageId, 'Lost track of this video job.');
         }
       }
     }, 2000);
@@ -1209,6 +1230,15 @@ export default function Chat() {
   // Remove video from a specific message
   const removeMessageVideo = (messageId) => {
     setMessageVideos(prev => {
+      const updated = { ...prev };
+      delete updated[messageId];
+      return updated;
+    });
+    // Also clears a failed/timed-out generation card, which lives in
+    // generatingVideos rather than messageVideos (a completed video never
+    // has an entry here, so this is a no-op in that case).
+    setGeneratingVideos(prev => {
+      if (!prev[messageId]) return prev;
       const updated = { ...prev };
       delete updated[messageId];
       return updated;
@@ -1302,8 +1332,18 @@ export default function Chat() {
   }, []);
 
   const sendMessage = async (customMessage = null) => {
-    const content = customMessage || input.trim();
+    // A file attached with no typed text used to silently do nothing here -
+    // content was '', so this returned before the request ever fired, with
+    // no error or feedback. The backend's /chat/with-attachment also
+    // requires a non-empty message, so substitute a sensible default rather
+    // than just bypassing this check.
+    const content = customMessage || input.trim() || (selectedFile ? `Please analyze this document: ${selectedFile.name}` : '');
     if (!content || loading) return;
+
+    if (!currentLLMModel) {
+      setShowModelRequiredNotice(true);
+      return;
+    }
 
     const userMsg = {
       id: Date.now(),
@@ -1314,6 +1354,14 @@ export default function Chat() {
 
     setMessages(prev => [...prev, userMsg]);
     setInput('');
+    // The textarea auto-grows via an inline style set imperatively in its
+    // onInput handler below (not through React), so clearing the `input`
+    // state alone doesn't shrink it back down - once you've typed a longer
+    // message, the box stays visually oversized on every message after,
+    // even though it's empty. Reset the DOM node's own height directly.
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto';
+    }
     setLoading(true);
 
     const newMessageId = Date.now() + 1;
@@ -1565,6 +1613,22 @@ export default function Chat() {
               }
 
               if (data.done) {
+                // The agentic path can reach "done" having never streamed a
+                // single token event (e.g. every iteration used a tool, or
+                // the model call failed and fell back to a canned apology
+                // sent only in this final payload) - data.chunk is always ''
+                // on this event, so fullContent above would otherwise stay
+                // empty forever and the message renders as literally
+                // nothing, even though the backend sent real text.
+                if (!fullContent && (data.formatted_response || data.full_response)) {
+                  fullContent = data.formatted_response || data.full_response;
+                  setMessages(prev => prev.map(msg =>
+                    msg.id === newMessageId
+                      ? { ...msg, content: fullContent }
+                      : msg
+                  ));
+                }
+
                 // Mark agentic workflow complete
                 handleWorkflowComplete();
                 setMessageWorkflows(prev => ({
@@ -1695,7 +1759,7 @@ export default function Chat() {
       <div className="flex-1 flex relative overflow-hidden">
       {/* Main Chat Area */}
       <div
-        className="flex-1 flex flex-col min-w-0 relative"
+        className="flex-1 flex flex-col min-w-0 min-h-0 relative"
         onDragEnter={handleDragEnter}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -1749,6 +1813,7 @@ export default function Chat() {
                     onModelChange={(provider, model) => {
                       setCurrentLLMProvider(provider);
                       setCurrentLLMModel(model);
+                      setShowModelRequiredNotice(false);
                     }}
                   />
                 </div>
@@ -1823,8 +1888,18 @@ export default function Chat() {
           </div>
         </div>
 
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto">
+        {/* Messages - only rendered when there's something to show. Previously
+            this always rendered alongside the welcome screen below (both
+            flex-1 siblings whenever messages.length === 0), splitting the
+            available height 50/50 with an empty div. That squeezed the
+            welcome screen into half the space it needed, and its
+            overflow-y-auto + items-center combination clipped the portrait
+            (the first, topmost element in the centered stack) into
+            unreachable negative-scroll space - a well-known CSS interaction,
+            not a broken image. Making these two blocks mutually exclusive
+            gives the welcome screen its full space back. */}
+        {(messages.length > 0 || isRestoringConversation) && (
+        <div className="flex-1 min-h-0 overflow-y-auto">
           <div className="space-y-0">
             {messages.map((msg, i) => (
               <MessageCard
@@ -1904,10 +1979,11 @@ export default function Chat() {
             <div ref={messagesEndRef} />
           </div>
         </div>
+        )}
 
         {/* Welcome screen - Theme-aware centered design with tutor portrait */}
-        {messages.length <= 1 && !isRestoringConversation && (
-            <div className="flex-1 flex items-center justify-center p-8">
+        {messages.length === 0 && !isRestoringConversation && (
+            <div className="flex-1 min-h-0 overflow-y-auto flex items-center justify-center p-8">
               <div className="text-center max-w-lg">
                 {/* Tutor portrait */}
                 <div className="flex justify-center mb-6">
@@ -1973,7 +2049,7 @@ export default function Chat() {
         )}
 
         {/* Input area - Theme-aware floating bar */}
-        <div className={`pt-4 pb-6 ${isDark ? 'bg-gradient-to-t from-black/60 via-black/30 to-transparent' : 'bg-gradient-to-t from-white/80 via-white/60 to-transparent'}`}>
+        <div className={`flex-shrink-0 pt-4 pb-6 ${isDark ? 'bg-gradient-to-t from-black/60 via-black/30 to-transparent' : 'bg-gradient-to-t from-white/80 via-white/60 to-transparent'}`}>
           <div className="max-w-3xl mx-auto px-4">
             {/* File Preview (when file selected) */}
             {selectedFile && (
@@ -1988,6 +2064,15 @@ export default function Chat() {
                     setUploadProgress(0);
                   }}
                 />
+              </div>
+            )}
+
+            {/* Model-required notice - shown when the user tries to send
+                without having explicitly picked a model from the switcher */}
+            {showModelRequiredNotice && (
+              <div className="mb-3 flex items-center gap-2 px-4 py-3 rounded-2xl bg-amber-50 border border-amber-200 text-amber-800 text-sm">
+                <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                <span>Please select a model above before starting a chat.</span>
               </div>
             )}
 

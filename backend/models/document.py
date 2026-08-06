@@ -69,7 +69,14 @@ class Document(Base):
 
     # Source tracking
     source_type = Column(
-        SQLEnum(SourceType),
+        # values_callable: without it, SQLAlchemy's Enum type stores the
+        # Python enum MEMBER NAME (e.g. "UPLOAD"), not its .value - the real
+        # migration-created `sourcetype` Postgres type only has the lowercase
+        # .value labels ('journal', 'chat', 'upload'), so every insert would
+        # fail with InvalidTextRepresentationError without this. Same
+        # pattern as ProviderType/VideoJobStatus/ReviewSourceType - see
+        # their comments in llm_provider.py/video_job.py/review_item.py.
+        SQLEnum(SourceType, values_callable=lambda enum_cls: [e.value for e in enum_cls]),
         nullable=False,
         default=SourceType.UPLOAD
     )

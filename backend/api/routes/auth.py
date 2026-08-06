@@ -115,8 +115,15 @@ async def google_signin(payload: GoogleAuthRequest, session: AsyncSession = Depe
         raise HTTPException(status_code=503, detail="Google sign-in is not configured on this server")
 
     try:
+        # clock_skew_in_seconds defaults to 0 in this library - meaning even
+        # a 1-second difference between this machine's clock and Google's
+        # token timestamp hard-fails sign-in with "Token used too early".
+        # 10s matches common practice (e.g. Google's own JWT libraries
+        # elsewhere) and absorbs normal NTP drift without weakening the
+        # token's actual freshness guarantee in any meaningful way.
         idinfo = google_id_token.verify_oauth2_token(
-            payload.credential, google_requests.Request(), settings.GOOGLE_CLIENT_ID
+            payload.credential, google_requests.Request(), settings.GOOGLE_CLIENT_ID,
+            clock_skew_in_seconds=10,
         )
     except ValueError as e:
         logger.warning(f"Google ID token verification failed: {e}")

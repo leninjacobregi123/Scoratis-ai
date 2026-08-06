@@ -12,6 +12,7 @@ import os
 import sys
 import asyncio
 from typing import AsyncGenerator, Generator
+from urllib.parse import urlsplit, urlunsplit
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -30,14 +31,82 @@ from models.base import Base
 # Database Fixtures
 # =============================================================================
 
+def _derive_test_database_url(url: str) -> str:
+    """Point at a dedicated <name>_test database instead of DATABASE_URL's
+    database directly, no matter what DATABASE_URL happens to be set to.
+
+    The sync_engine fixture below runs Base.metadata.create_all()/drop_all()
+    around every single test function - previously this ran directly against
+    whatever DATABASE_URL pointed at. In CI that's a disposable service
+    container, but a developer running `DATABASE_URL=<real local dev db>
+    pytest` (the natural thing to do to get Postgres-backed integration
+    tests locally, and exactly what happened once this session) had their
+    real local database's tables silently dropped at the end of the run.
+    Isolating onto a same-server sibling database closes that off entirely,
+    independent of developer discipline.
+    """
+    if url.startswith("sqlite"):
+        return url
+    parsed = urlsplit(url)
+    if parsed.path.endswith("_test"):
+        return url  # Already isolated (e.g. CI's own dedicated database).
+    return urlunsplit(parsed._replace(path=parsed.path + "_test"))
+
+
+def _ensure_test_database_exists(url: str) -> None:
+    """Create the <name>_test database (see above) if it doesn't exist yet.
+    Connects to Postgres's own `postgres` maintenance database to issue
+    CREATE DATABASE, since you can't run that statement while connected to
+    the database being created and Postgres has no CREATE DATABASE IF NOT
+    EXISTS."""
+    parsed = urlsplit(url)
+    test_db_name = parsed.path.lstrip("/")
+    maintenance_url = urlunsplit(parsed._replace(path="/postgres"))
+    engine = create_engine(maintenance_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            exists = conn.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                {"name": test_db_name},
+            ).scalar()
+            if not exists:
+                conn.execute(text(f'CREATE DATABASE "{test_db_name}"'))
+    finally:
+        engine.dispose()
+
+
 # Test database URL - honors DATABASE_URL from the environment (ci.yml points
 # this at a real Postgres service container for integration tests) and only
 # falls back to SQLite when nothing is set. Several models use Postgres-only
 # JSONB columns, which SQLite's compiler cannot render at all - hardcoding
 # sqlite here unconditionally made any test touching table creation fail
 # with a CompileError, regardless of what DATABASE_URL the environment
-# actually provided.
-TEST_DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./test.db")
+# actually provided. Always isolated onto a dedicated _test database (see
+# _derive_test_database_url) rather than used directly.
+TEST_DATABASE_URL = _derive_test_database_url(os.environ.get("DATABASE_URL", "sqlite:///./test.db"))
+if not TEST_DATABASE_URL.startswith("sqlite"):
+    _ensure_test_database_exists(TEST_DATABASE_URL)
+
+# Overwrite the environment itself, at import time, before any test module or
+# fixture runs - not just for TEST_DATABASE_URL's own consumers (sync_engine
+# below). backend/config.py's `settings` is an lru_cache()'d singleton built
+# from os.environ the *first* time anything imports config.py - which happens
+# during pytest's collection phase (test modules importing main.py/database.py
+# at module level), well before any fixture (including an autouse one) ever
+# gets to run. A fixture-level `os.environ["DATABASE_URL"] = ...` is too late
+# to affect that already-cached singleton. This is why the test_client fixture
+# below (TestClient wrapping the real FastAPI app) was hitting the real
+# database all session despite TEST_DATABASE_URL existing - it drives the
+# app's own database.py connection, which reads settings.DATABASE_URL/
+# DATABASE_URL_ASYNC, not TEST_DATABASE_URL directly. Setting both here, at
+# module level, before models.base (already imported above) triggers any
+# further app imports, guarantees config.py's singleton is built from the
+# test-isolated URLs from the very first read.
+os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+if not TEST_DATABASE_URL.startswith("sqlite"):
+    os.environ["DATABASE_URL_ASYNC"] = _derive_test_database_url(
+        os.environ.get("DATABASE_URL_ASYNC", "postgresql+asyncpg://scoratis:scoratis_password@localhost:5433/scoratis")
+    )
 
 
 @pytest.fixture(scope="session")
@@ -221,13 +290,15 @@ def mock_embedding_service():
 @pytest.fixture
 def mock_web_search_service():
     """Mock web search service for tests."""
+    from services.web_search_service import SearchResult
+
     service = MagicMock()
     service.search = AsyncMock(return_value=[
-        {
-            "title": "Test Search Result",
-            "url": "https://example.com",
-            "snippet": "This is a test search result."
-        }
+        SearchResult(
+            title="Test Search Result",
+            url="https://example.com",
+            snippet="This is a test search result."
+        )
     ])
     return service
 
@@ -334,9 +405,13 @@ def golden_dataset():
 
 @pytest.fixture(autouse=True)
 def setup_test_environment():
-    """Set up test environment variables."""
+    """Set up test environment variables.
+
+    DATABASE_URL/DATABASE_URL_ASYNC are already pinned to the isolated test
+    database at module level above (see the comment there for why a
+    fixture - even an autouse one - runs too late to matter for those two).
+    """
     os.environ["TESTING"] = "true"
-    os.environ["DATABASE_URL"] = TEST_DATABASE_URL
     os.environ["LANGCHAIN_TRACING_V2"] = "false"
     yield
     # Cleanup if needed

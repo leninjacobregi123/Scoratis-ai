@@ -72,6 +72,179 @@ async def _seed_review_items(session_id: str, user_id: int) -> None:
         logger.warning(f"Review-item seeding failed (continuing): {e}")
 
 
+async def _analyze_and_maybe_generate_video(
+    langgraph_service,
+    video_analyzer_service,
+    session_id: str,
+    user_message: str,
+    ai_response: str,
+    user_id: int,
+) -> Dict[str, Any]:
+    """Decide whether this turn deserves a video, and kick off generation if so.
+
+    Shared by every response-generation path (streaming agentic, streaming
+    non-agentic, and the legacy non-streaming /chat endpoint) so a turn gets
+    the same video treatment no matter which one produced the response -
+    previously this logic only lived inline in the non-agentic streaming
+    path, so turning on "Think" (which routes through the agentic path)
+    silently disabled video generation entirely with no error or fallback.
+
+    Also updates ConversationAnalyzer's per-session state for this turn
+    (either via LangGraph's analysis or, if LangGraph is unavailable, a
+    direct analyze_message() call) - callers should call _seed_review_items()
+    right after this returns, since review-item seeding reads that state.
+
+    Returns a dict safe to merge directly into an SSE final payload or a
+    non-streaming JSON response: video_available, video_topic,
+    video_concepts, video_type, learning_state, turn_count, auto_video
+    (None if not auto-generating). Never raises - a failure here must never
+    break the chat response the user is waiting on.
+    """
+    result = {
+        "video_available": False,
+        "video_topic": None,
+        "video_concepts": [],
+        "video_type": None,
+        "learning_state": "initial",
+        "turn_count": 0,
+        "auto_video": None,
+    }
+
+    analyzer_ran_this_turn = False
+    try:
+        lg_result = None
+        if langgraph_service:
+            lg_result = await langgraph_service.analyze_for_video(
+                session_id=session_id,
+                user_message=user_message,
+                ai_response=ai_response,
+            )
+            result["learning_state"] = lg_result.get("learning_state", "initial")
+            result["turn_count"] = lg_result.get("turn_count", 0)
+        else:
+            video_analysis = conversation_analyzer.analyze_message(
+                session_id=session_id,
+                user_message=user_message,
+                ai_response=ai_response,
+            )
+            analyzer_ran_this_turn = True
+            result["learning_state"] = video_analysis.get("learning_state", "initial")
+            result["turn_count"] = video_analysis.get("turn_count", 0)
+
+        if video_analyzer_service:
+            decision = await video_analyzer_service.should_auto_generate(
+                session_id=session_id,
+                user_message=user_message,
+                ai_response=ai_response,
+                turn_count=result["turn_count"],
+            )
+
+            if decision.should_generate:
+                video_context = {
+                    "topic_title": decision.topic,
+                    "key_concepts": decision.key_concepts,
+                    "visualization_type": decision.visualization_type,
+                    "duration_suggestion": decision.duration_seconds,
+                    "learning_state": result["learning_state"],
+                    "conversation_summary": user_message[:200] + "..." if len(user_message) > 200 else user_message,
+                }
+
+                task_id = await start_video_job(
+                    user_id=user_id,
+                    topic=decision.topic,
+                    # medium (720p30), not high (1080p60) - these are short
+                    # clips embedded inline in the chat UI, not full-screen
+                    # viewing, and manim render time scales heavily with
+                    # both resolution and framerate.
+                    quality="medium",
+                    duration=decision.duration_seconds,
+                    context=video_context,
+                    session_id=session_id,
+                    auto_generated=True,
+                )
+
+                video_analyzer_service.record_video_generation(session_id, result["turn_count"])
+
+                result["auto_video"] = {
+                    "task_id": task_id,
+                    "topic": decision.topic,
+                    "concepts": decision.key_concepts,
+                    "visualization_type": decision.visualization_type,
+                    "estimated_duration": decision.duration_seconds,
+                    "confidence": decision.confidence,
+                }
+
+                logger.info(f"Auto-generating video: {decision.topic} (confidence: {decision.confidence:.2f})")
+
+                result["video_available"] = True
+                result["video_topic"] = decision.topic
+                result["video_concepts"] = decision.key_concepts
+                result["video_type"] = decision.visualization_type
+            elif langgraph_service and lg_result:
+                # No auto-generation, but still offer the manual fallback UI
+                # if LangGraph's own signals flagged this turn as video-worthy.
+                result["video_available"] = lg_result.get("video_available", False)
+                result["video_topic"] = lg_result.get("video_topic")
+                result["video_concepts"] = lg_result.get("video_concepts", [])
+                result["video_type"] = lg_result.get("video_type")
+
+    except Exception as video_err:
+        logger.warning(f"Video analysis/generation error: {video_err}")
+
+    if not analyzer_ran_this_turn:
+        # LangGraph handled video-trigger analysis above (or the try block
+        # raised before reaching it) - ConversationAnalyzer's own state still
+        # needs updating so review-item seeding has fresh data.
+        try:
+            conversation_analyzer.analyze_message(
+                session_id=session_id, user_message=user_message, ai_response=ai_response
+            )
+        except Exception as analyzer_err:
+            logger.warning(f"ConversationAnalyzer update failed (continuing): {analyzer_err}")
+
+    return result
+
+
+async def _update_learning_state_for_review(
+    langgraph_service,
+    session_id: str,
+    user_message: str,
+    ai_response: str,
+) -> Dict[str, Any]:
+    """Update per-session learning-state tracking (topics discussed, turn
+    count, key discoveries) for this turn - used by the agentic path, which
+    no longer runs the full _analyze_and_maybe_generate_video() pipeline
+    above (its own generate_video tool call handles video decisions now,
+    see services/agent/tools.py). _seed_review_items() still needs fresh
+    ConversationAnalyzer state regardless of who decided about video, so
+    this keeps just that part running. Never raises.
+    """
+    result = {"learning_state": "initial", "turn_count": 0}
+    try:
+        if langgraph_service:
+            lg_result = await langgraph_service.analyze_for_video(
+                session_id=session_id,
+                user_message=user_message,
+                ai_response=ai_response,
+            )
+            result["learning_state"] = lg_result.get("learning_state", "initial")
+            result["turn_count"] = lg_result.get("turn_count", 0)
+            # LangGraph handled its own state - ConversationAnalyzer's
+            # separate state still needs updating for review-item seeding.
+            conversation_analyzer.analyze_message(
+                session_id=session_id, user_message=user_message, ai_response=ai_response,
+            )
+        else:
+            video_analysis = conversation_analyzer.analyze_message(
+                session_id=session_id, user_message=user_message, ai_response=ai_response,
+            )
+            result["learning_state"] = video_analysis.get("learning_state", "initial")
+            result["turn_count"] = video_analysis.get("turn_count", 0)
+    except Exception as e:
+        logger.warning(f"Learning-state update failed (continuing): {e}")
+    return result
+
+
 import re
 
 _INTERNAL_REASONING_TAG_RE = re.compile(
@@ -176,8 +349,8 @@ async def _resolve_user_llm_config(db, user_id: int, requested_provider: Optiona
     deployment-wide default to fall back to (every account must configure
     its own key). Prefers the requested provider if given and usable,
     otherwise falls back to the user's own default/most-recent active
-    config. Returns (provider, model, api_key_encrypted) with provider=None
-    if the user has nothing usable configured.
+    config. Returns (provider, model, api_key_encrypted, base_url) with
+    provider=None if the user has nothing usable configured.
     """
     async with db.get_session() as db_session:
         stmt = select(LLMProviderConfig).where(
@@ -214,7 +387,7 @@ async def _resolve_user_llm_config(db, user_id: int, requested_provider: Optiona
             provider_config = result.scalars().first()
 
         if not provider_config:
-            return None, None, None
+            return None, None, None, None
 
         provider = (
             provider_config.provider
@@ -224,7 +397,7 @@ async def _resolve_user_llm_config(db, user_id: int, requested_provider: Optiona
         encrypted_key = provider_config.api_key_encrypted
 
         if not llm_service.litellm.has_api_key(provider, encrypted_key):
-            return None, None, None
+            return None, None, None, None
 
         model = (
             requested_model
@@ -232,9 +405,9 @@ async def _resolve_user_llm_config(db, user_id: int, requested_provider: Optiona
             or next(iter(PROVIDER_INFO.get(provider, {}).get("models", [])), None)
         )
         if not model:
-            return None, None, None
+            return None, None, None, None
 
-        return provider, model, encrypted_key
+        return provider, model, encrypted_key, provider_config.base_url
 
 # ==================== CHAT ENDPOINTS ====================
 
@@ -525,7 +698,7 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
     # agent has no per-request provider param, so this also gets applied to
     # the shared llm_service singleton via set_provider() right before
     # invoking it. ===
-    resolved_provider, resolved_model, resolved_api_key_encrypted = await _resolve_user_llm_config(
+    resolved_provider, resolved_model, resolved_api_key_encrypted, resolved_base_url = await _resolve_user_llm_config(
         db, current_user.id, message.provider, message.model
     )
 
@@ -554,6 +727,7 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
     llm_service.set_provider(
         model=resolved_model,
         provider=resolved_provider.value,
+        base_url=resolved_base_url,
         api_key_encrypted=resolved_api_key_encrypted
     )
 
@@ -609,6 +783,28 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                             # Save to database
                             await db.add_chat_message(session_id, 'ai', strip_internal_reasoning(final_response), user_id=current_user.id)
 
+                            # Video-generation decisions for this path come
+                            # from the agent's OWN generate_video tool call
+                            # (services/agent/tools.py), made as part of its
+                            # normal reasoning - not a separate post-hoc AI
+                            # call like the non-agentic path below still uses
+                            # (which has no tool-calling loop to attach a
+                            # native decision to). See graph.py's stream()
+                            # "done" event for where auto_video is set.
+                            auto_video = event.get('metadata', {}).get('auto_video')
+                            video_result = {
+                                'video_available': bool(auto_video),
+                                'video_topic': auto_video.get('topic') if auto_video else None,
+                                'video_concepts': auto_video.get('concepts', []) if auto_video else [],
+                                'video_type': auto_video.get('visualization_type') if auto_video else None,
+                                'auto_video': auto_video,
+                            }
+
+                            learning_state_result = await _update_learning_state_for_review(
+                                langgraph_service, session_id, user_message, final_response,
+                            )
+                            await _seed_review_items(session_id, current_user.id)
+
                             # Final event with metadata
                             final_data = {
                                 'chunk': '',
@@ -619,6 +815,9 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                                 'sources': event.get('metadata', {}).get('sources', []),
                                 'tools_used': event.get('metadata', {}).get('tools_used', 0),
                                 'mode': 'agent',
+                                'learning_state': learning_state_result['learning_state'],
+                                'turn_count': learning_state_result['turn_count'],
+                                **video_result,
                             }
                             yield f"data: {json.dumps(final_data)}\n\n"
 
@@ -627,7 +826,9 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                 error_data = {
                     'chunk': f"I apologize, but I encountered an error while reasoning: {str(e)}",
                     'done': True,
-                    'error': str(e)
+                    'error': str(e),
+                    'video_available': False,
+                    'auto_video': None,
                 }
                 yield f"data: {json.dumps(error_data)}\n\n"
 
@@ -858,104 +1059,10 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
             current_config = llm_service.get_current_config()
 
             # === Automatic Video Generation Analysis ===
-            video_available = False
-            video_topic = None
-            video_concepts = []
-            video_type = None
-            learning_state_str = "initial"
-            turn_count = 0
-            auto_video_info = None  # NEW: For automatic video generation
-
-            analyzer_ran_this_turn = False
-            try:
-                # First, get turn count from LangGraph or conversation analyzer
-                lg_result = None  # Initialize for later use
-                if langgraph_service:
-                    lg_result = await langgraph_service.analyze_for_video(
-                        session_id=session_id,
-                        user_message=user_message,
-                        ai_response=full_response,
-                    )
-                    learning_state_str = lg_result.get("learning_state", "initial")
-                    turn_count = lg_result.get("turn_count", 0)
-                else:
-                    video_analysis = conversation_analyzer.analyze_message(
-                        session_id=session_id,
-                        user_message=user_message,
-                        ai_response=full_response
-                    )
-                    analyzer_ran_this_turn = True
-                    learning_state_str = video_analysis.get('learning_state', 'initial')
-                    turn_count = video_analysis.get('turn_count', 0)
-
-                # === NEW: Automatic Video Generation Decision ===
-                video_analyzer = get_video_analyzer_service()
-                if video_analyzer:
-                    decision = await video_analyzer.should_auto_generate(
-                        session_id=session_id,
-                        user_message=user_message,
-                        ai_response=full_response,
-                        turn_count=turn_count
-                    )
-
-                    if decision.should_generate:
-                        # Build context for video generation
-                        video_context = {
-                            "topic_title": decision.topic,
-                            "key_concepts": decision.key_concepts,
-                            "visualization_type": decision.visualization_type,
-                            "duration_suggestion": decision.duration_seconds,
-                            "learning_state": learning_state_str,
-                            "conversation_summary": user_message[:200] + "..." if len(user_message) > 200 else user_message
-                        }
-
-                        # Start video generation in background
-                        task_id = await start_video_job(
-                            user_id=current_user.id,
-                            topic=decision.topic,
-                            quality="high",
-                            duration=decision.duration_seconds,
-                            context=video_context,
-                            session_id=session_id,
-                            auto_generated=True,
-                        )
-
-                        # Record this generation for cooldown tracking
-                        video_analyzer.record_video_generation(session_id, turn_count)
-
-                        # Build auto_video info for frontend
-                        auto_video_info = {
-                            "task_id": task_id,
-                            "topic": decision.topic,
-                            "concepts": decision.key_concepts,
-                            "visualization_type": decision.visualization_type,
-                            "estimated_duration": decision.duration_seconds,
-                            "confidence": decision.confidence
-                        }
-
-                        logger.info(f"Auto-generating video: {decision.topic} (confidence: {decision.confidence:.2f})")
-
-                        # Also set video_available for fallback UI
-                        video_available = True
-                        video_topic = decision.topic
-                        video_concepts = decision.key_concepts
-                        video_type = decision.visualization_type
-                    else:
-                        # No auto-generation, but still check if we should offer manual option
-                        # Use the existing LangGraph/conversation analyzer results
-                        if langgraph_service and lg_result:
-                            video_available = lg_result.get("video_available", False)
-                            video_topic = lg_result.get("video_topic")
-                            video_concepts = lg_result.get("video_concepts", [])
-                            video_type = lg_result.get("video_type")
-
-            except Exception as video_err:
-                logger.warning(f"Video analysis/generation error: {video_err}")
-
-            if not analyzer_ran_this_turn:
-                conversation_analyzer.analyze_message(
-                    session_id=session_id, user_message=user_message, ai_response=full_response
-                )
+            video_result = await _analyze_and_maybe_generate_video(
+                langgraph_service, video_analyzer_service,
+                session_id, user_message, full_response, current_user.id,
+            )
             await _seed_review_items(session_id, current_user.id)
 
             # === Citation Processing: Convert [citation:chunk_id] to footnotes ===
@@ -986,15 +1093,7 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                 'conversation_id': conversation_id,
                 'model': current_config.get('model') if current_config else None,
                 'search_used': search_used,
-                # Existing video offer fields (for fallback/manual UI)
-                'video_available': video_available,
-                'video_topic': video_topic,
-                'video_concepts': video_concepts,
-                'video_type': video_type,
-                'learning_state': learning_state_str,
-                'turn_count': turn_count,
-                # NEW: Automatic video generation info
-                'auto_video': auto_video_info,  # None if not auto-generating
+                **video_result,
             }
             yield f"data: {json.dumps(final_data)}\n\n"
 
@@ -1309,7 +1408,7 @@ async def generate_video_from_chat(request: GenerateVideoFromChatRequest, curren
         task_id = await start_video_job(
             user_id=current_user.id,
             topic=topic,
-            quality="high",
+            quality="medium",  # 720p30 - short inline clip, not full-screen
             duration=20,  # Short focused video
             context=generation_context,
             session_id=session_id,

@@ -5,9 +5,11 @@ Multi-LLM support with adaptive learning prompts
 RAG + Web Search augmentation for enhanced responses
 """
 
-from fastapi import FastAPI
+import re
+
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse
 from pathlib import Path
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
@@ -152,7 +154,83 @@ app.add_middleware(
 # Static file serving for generated videos
 GENERATED_VIDEOS_DIR = Path(__file__).parent / "generated_videos"
 GENERATED_VIDEOS_DIR.mkdir(exist_ok=True)
-app.mount("/generated_videos", StaticFiles(directory=str(GENERATED_VIDEOS_DIR)), name="generated_videos")
+
+_RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
+_CHUNK_SIZE = 64 * 1024
+
+
+@app.get("/generated_videos/{filename}")
+async def serve_generated_video(filename: str, request: Request):
+    """Serve rendered videos with HTTP Range support.
+
+    This replaces a plain StaticFiles mount because the installed Starlette
+    version (0.38.6) has NO Range-request handling anywhere - confirmed by
+    grepping both staticfiles.py and responses.py for any mention of "range".
+    Without it, every request returns the full file with a 200, and an
+    HTML5 <video> element's play() can fail (or silently never actually
+    start) for exactly the class of bug reported: the play button appears to
+    do something but no video ever displays, since the browser can't do the
+    partial/seek-ahead fetch it expects to be able to make.
+    """
+    # Bare filename only - this replaces StaticFiles' own built-in path-
+    # traversal protection, so it needs to be re-enforced here.
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    file_path = GENERATED_VIDEOS_DIR / filename
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+
+    file_size = file_path.stat().st_size
+    range_header = request.headers.get("range")
+
+    if range_header:
+        match = _RANGE_RE.match(range_header)
+        if not match:
+            raise HTTPException(status_code=416, detail="Invalid range")
+
+        start = int(match.group(1)) if match.group(1) else 0
+        end = int(match.group(2)) if match.group(2) else file_size - 1
+        end = min(end, file_size - 1)
+        if start > end or start >= file_size:
+            raise HTTPException(status_code=416, detail="Range not satisfiable")
+        chunk_size = end - start + 1
+
+        def iter_range():
+            with open(file_path, "rb") as f:
+                f.seek(start)
+                remaining = chunk_size
+                while remaining > 0:
+                    data = f.read(min(_CHUNK_SIZE, remaining))
+                    if not data:
+                        break
+                    remaining -= len(data)
+                    yield data
+
+        return StreamingResponse(
+            iter_range(),
+            status_code=206,
+            media_type="video/mp4",
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(chunk_size),
+            },
+        )
+
+    def iter_full():
+        with open(file_path, "rb") as f:
+            while True:
+                data = f.read(_CHUNK_SIZE)
+                if not data:
+                    break
+                yield data
+
+    return StreamingResponse(
+        iter_full(),
+        media_type="video/mp4",
+        headers={"Accept-Ranges": "bytes", "Content-Length": str(file_size)},
+    )
 
 app.include_router(auth_router)
 app.include_router(videos_router)

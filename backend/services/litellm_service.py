@@ -14,6 +14,7 @@ All error handling, validation, and configuration is centralized here.
 """
 
 import os
+import re
 import logging
 from typing import Optional, List, Dict, Any, AsyncGenerator, Tuple
 from dataclasses import dataclass
@@ -286,15 +287,30 @@ class LiteLLMService:
 
         model_string = self._get_model_string(config.provider, config.model)
 
+        # Gemini 3+ models: Google's own docs warn that temperature/top_p
+        # below the 1.0 default "can cause infinite loops, degraded
+        # reasoning performance, and failure on complex tasks" (LiteLLM
+        # surfaces this as a warning log on every call) - every other call
+        # site in this file hardcodes 0.5/0.7, which is exactly the
+        # "complex task" (long system prompt + tool calling) failure mode
+        # this triggers. Omitting both lets the provider use its own
+        # recommended default instead of forcing a value known to degrade
+        # this specific model family.
+        is_gemini_3_plus = False
+        if config.provider == ProviderType.GOOGLE:
+            gemini_version_match = re.match(r"gemini-(\d+)", config.model)
+            is_gemini_3_plus = bool(gemini_version_match) and int(gemini_version_match.group(1)) >= 3
+
         kwargs = {
             "model": model_string,
             "messages": api_messages,
             "max_tokens": config.max_tokens,
-            "temperature": config.temperature,
-            "top_p": config.top_p,
             "stream": config.stream,
             "timeout": config.timeout,  # Add timeout to all calls
         }
+        if not is_gemini_3_plus:
+            kwargs["temperature"] = config.temperature
+            kwargs["top_p"] = config.top_p
 
         if config.api_key:
             kwargs["api_key"] = config.api_key

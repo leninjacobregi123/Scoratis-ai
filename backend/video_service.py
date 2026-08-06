@@ -651,14 +651,47 @@ class ManimScene(Scene):
 # ENHANCED VIDEO GENERATION PROMPTS
 # =============================================================================
 
-SCRIPT_PLANNING_PROMPT = """You are an expert educational video scriptwriter creating content for visual learners.
-Create a detailed scene-by-scene breakdown for: {topic}
+def _script_scene_structure(duration: int) -> str:
+    """Scene-structure section of SCRIPT_PLANNING_PROMPT, sized to the
+    target duration instead of a fixed 5-scene structure.
 
-TARGET DURATION: {duration} seconds
-AUDIENCE: High school to undergraduate level
-VISUAL DENSITY: 8-10 visual elements per concept
+    The original 5-scene breakdown's own per-scene minimums summed to
+    71-99 seconds regardless of what TARGET DURATION said above it - a
+    direct, silent self-contradiction for every short auto-generated clip
+    (10-30s, which is every video the agent's generate_video tool and the
+    video_analyzer_service auto-generation path produce). The model was
+    being told both "keep this to 20 seconds" and "these 5 scenes need
+    71+ seconds minimum" in the same prompt, and likely resolved that by
+    writing a full-length script anyway - directly contributing to the
+    token-truncation failures the max_tokens fix above addresses, and
+    almost certainly still producing badly rushed 5-scene pacing even
+    when it happened to fit.
+    """
+    if duration <= 30:
+        half = max(5, duration // 2)
+        return f"""## SCENE STRUCTURE (2 scenes required, sized for a {duration}-second clip):
 
-## SCENE STRUCTURE (5 scenes required):
+### Scene 1: HOOK + CONCEPT (roughly {half} seconds)
+- Open with the core question or why this matters, then introduce the concept directly
+- 2-3 visual elements - keep it focused, not exhaustive
+
+### Scene 2: EXPLANATION + TAKEAWAY (roughly {duration - half} seconds)
+- Show the key mechanism or process with 2-3 visual elements
+- One concrete example, then a single memorable closing line"""
+    elif duration <= 60:
+        edge = max(5, duration // 6)
+        return f"""## SCENE STRUCTURE (3 scenes required, sized for a {duration}-second clip):
+
+### Scene 1: HOOK (roughly {edge} seconds)
+- Attention-grabbing question or surprising fact
+
+### Scene 2: EXPLANATION (roughly {duration - 2 * edge} seconds)
+- Step-by-step breakdown with visuals, 1-2 concrete examples
+
+### Scene 3: SUMMARY (roughly {edge} seconds)
+- Key takeaway, memorable closing statement"""
+    else:
+        return """## SCENE STRUCTURE (5 scenes required):
 
 ### Scene 1: HOOK (8-12 seconds)
 - Attention-grabbing question or surprising fact
@@ -684,7 +717,17 @@ VISUAL DENSITY: 8-10 visual elements per concept
 ### Scene 5: SUMMARY (8-12 seconds)
 - 3 key takeaways displayed as bullet points
 - Visual recap of main diagram/concept
-- Memorable closing statement
+- Memorable closing statement"""
+
+
+SCRIPT_PLANNING_PROMPT = """You are an expert educational video scriptwriter creating content for visual learners.
+Create a detailed scene-by-scene breakdown for: {topic}
+
+TARGET DURATION: {duration} seconds
+AUDIENCE: High school to undergraduate level
+VISUAL DENSITY: 8-10 visual elements per concept
+
+{scene_structure}
 
 ## VISUAL TYPES
 Every visual's "type" field must be one of: text, diagram, equation, numbered_list, shape.
@@ -726,31 +769,65 @@ DrawBorderThenFill.
 
 IMPORTANT: Output ONLY valid JSON. No explanations, no markdown code blocks."""
 
-ENHANCED_MANIM_PROMPT = """You are an expert Manim animator creating professional educational videos.
-Generate a complete, production-quality Manim animation based on this script:
+RETRY_FEEDBACK_TEMPLATE = """
+## YOUR PREVIOUS ATTEMPT FAILED - FIX THIS SPECIFIC ISSUE
 
-{script_json}
+Your last attempt at this exact video produced code that crashed during rendering.
+Do not repeat this mistake. Read the error carefully and fix the root cause.
 
-## CRITICAL REQUIREMENTS:
-
-### 1. CODE STRUCTURE
+Previous code:
 ```python
+{previous_code}
+```
+
+Error it raised:
+```
+{error}
+```
+"""
+
+def _manim_code_structure(script: dict) -> str:
+    """CODE STRUCTURE section of ENHANCED_MANIM_PROMPT, sized to however
+    many scenes the script actually has - previously hardcoded exactly 5
+    scene methods regardless of the script passed in, so a short auto-
+    generated script (now 2-3 scenes via _script_scene_structure above)
+    was still being told to implement a 5-method construct(), silently
+    reintroducing the same duration/content mismatch the script-side fix
+    just removed.
+    """
+    scenes = script.get("scenes") or []
+    if not scenes:
+        scenes = [{"scene_number": i, "name": f"Scene {i}"} for i in range(1, 6)]
+
+    method_names = [f"scene_{s.get('scene_number', i + 1)}" for i, s in enumerate(scenes)]
+    calls = "\n".join(f"        self.{name}()" for name in method_names)
+    first_def = f"""    def {method_names[0]}(self):
+        # {scenes[0].get('name', 'Scene 1')}: {scenes[0].get('key_point', '')}
+        pass"""
+
+    return f"""```python
 from manim import *
 
 class ManimScene(Scene):
     def construct(self):
-        self.scene_1_hook()
-        self.scene_2_foundation()
-        self.scene_3_explanation()
-        self.scene_4_application()
-        self.scene_5_summary()
+{calls}
 
-    def scene_1_hook(self):
-        # Scene 1 implementation
-        pass
+{first_def}
 
-    # ... other scene methods
-```
+    # ... one method per scene above, same pattern
+```"""
+
+
+ENHANCED_MANIM_PROMPT = """You are an expert Manim animator creating professional educational videos.
+Generate a complete, production-quality Manim animation based on this script:
+
+{script_json}
+{retry_feedback_section}
+
+## CRITICAL REQUIREMENTS:
+
+### 1. CODE STRUCTURE
+{code_structure}
 
 ### 2. VISUAL DENSITY (8-10 elements per major concept)
 - Use VGroup for organizing related elements
@@ -962,13 +1039,20 @@ class EnhancedVideoGenerator:
         try:
             prompt = SCRIPT_PLANNING_PROMPT.format(
                 topic=topic,
-                duration=duration
+                duration=duration,
+                scene_structure=_script_scene_structure(duration),
             )
 
             messages = [{"role": "user", "content": prompt}]
+            # Default max_tokens (2048) routinely truncates a full 5-scene
+            # script mid-JSON-string - confirmed via "Unterminated string"
+            # JSON-parse failures in production. A structured multi-scene
+            # script with visuals/narration per scene genuinely needs more
+            # headroom than a typical chat turn.
             response = await self._llm_service.generate(
                 messages=messages,
-                system_prompt="You are an expert educational video scriptwriter. Output only valid JSON."
+                system_prompt="You are an expert educational video scriptwriter. Output only valid JSON.",
+                max_tokens=4096,
             )
 
             # Clean and parse JSON
@@ -991,9 +1075,20 @@ class EnhancedVideoGenerator:
                 "visual_style": "diagram"
             }
 
-    async def generate_manim_code(self, script: dict, topic: str) -> str:
+    async def generate_manim_code(
+        self,
+        script: dict,
+        topic: str,
+        retry_feedback: Optional[dict] = None,
+    ) -> str:
         """
         Phase 2: Generate Manim animation code from script.
+
+        retry_feedback: {"error": str, "previous_code": str} from a prior
+        failed render attempt on this same job (see tasks/video_tasks.py) -
+        when present, the regeneration prompt includes the exact previous
+        mistake so the model can fix that specific issue instead of a blind
+        reroll that's just as likely to hit a different bug.
         """
         if not self._use_api or not script.get("scenes"):
             # Use SmartManimClient for local mode
@@ -1004,14 +1099,31 @@ class EnhancedVideoGenerator:
             )
 
         try:
+            retry_section = ""
+            if retry_feedback and retry_feedback.get("error"):
+                retry_section = RETRY_FEEDBACK_TEMPLATE.format(
+                    previous_code=retry_feedback.get("previous_code", "")[:3000],
+                    error=retry_feedback["error"][:1500],
+                )
+
             prompt = ENHANCED_MANIM_PROMPT.format(
-                script_json=json.dumps(script, indent=2)
+                script_json=json.dumps(script, indent=2),
+                retry_feedback_section=retry_section,
+                code_structure=_manim_code_structure(script),
             )
 
             messages = [{"role": "user", "content": prompt}]
+            # Default max_tokens (2048) was nowhere near enough for a full
+            # 5-scene Manim implementation (8-10 visual elements/scene,
+            # per ENHANCED_MANIM_PROMPT) - confirmed via repeated
+            # "SyntaxError: '(' was never closed" failures where the
+            # generated code cuts off mid-expression near the end of the
+            # captured text, the classic signature of hitting an output
+            # token limit rather than the model making a logic mistake.
             response = await self._llm_service.generate(
                 messages=messages,
-                system_prompt="You are an expert Manim animator. Generate only valid Python code."
+                system_prompt="You are an expert Manim animator. Generate only valid Python code.",
+                max_tokens=8192,
             )
 
             # Clean code
@@ -1025,15 +1137,35 @@ class EnhancedVideoGenerator:
             logger.error(f"Manim code generation failed: {e}")
             return self._generate_fallback_code(topic, script.get("total_duration", 60))
 
-    async def generate_enhanced_video(self, topic: str, context: dict = None) -> dict:
+    async def generate_enhanced_video(
+        self,
+        topic: str,
+        context: dict = None,
+        retry_feedback: Optional[dict] = None,
+    ) -> dict:
         """
         Full enhanced video generation pipeline.
         Returns script, manim code, and metadata.
         """
-        # Phase 0: Analyze complexity
-        complexity_info = await self.analyze_complexity(topic, context)
-        complexity = complexity_info.get("complexity", "moderate")
-        duration = self.get_optimal_duration(complexity)
+        # Phase 0: Duration
+        # If the caller already knows how long this should be - the agent's
+        # own generate_video tool call and the (older) video_analyzer_service
+        # auto-generation path both set context["duration_suggestion"] - use
+        # that directly and skip analyze_complexity()'s LLM round trip
+        # entirely. Previously this was ALWAYS overridden by
+        # get_optimal_duration()'s 60/90/120s tiers regardless of what was
+        # actually requested, silently turning every "20 second" auto-video
+        # into a 60-120s one: the single biggest driver of both slow renders
+        # and LLM code-gen mistakes (more requested duration -> more scenes
+        # -> more surface area for the model to get wrong).
+        requested_duration = (context or {}).get("duration_suggestion")
+        if requested_duration:
+            duration = max(10, min(30, int(requested_duration)))
+            complexity = "simple"
+        else:
+            complexity_info = await self.analyze_complexity(topic, context)
+            complexity = complexity_info.get("complexity", "moderate")
+            duration = self.get_optimal_duration(complexity)
 
         logger.info(f"EnhancedVideoGenerator: {topic} -> {complexity} complexity, {duration}s duration")
 
@@ -1041,7 +1173,7 @@ class EnhancedVideoGenerator:
         script = await self.generate_script(topic, duration, context)
 
         # Phase 2: Generate Manim code
-        manim_code = await self.generate_manim_code(script, topic)
+        manim_code = await self.generate_manim_code(script, topic, retry_feedback=retry_feedback)
 
         return {
             "topic": topic,
@@ -1076,6 +1208,21 @@ class EnhancedVideoGenerator:
 
         return code.strip()
 
+    # Class names from the original (non-Community) Manim that the LLM
+    # occasionally reaches for out of training-data habit - real Manim
+    # classes, just not in the Manim Community fork this app actually runs,
+    # so they crash with NameError instead of getting caught by any prompt
+    # instruction telling it not to "invent" names (these aren't invented,
+    # they're just from the wrong Manim variant). ENHANCED_MANIM_PROMPT
+    # already tells the model to only use the modern names - this is a
+    # mechanical backstop for when that instruction isn't followed, since
+    # prompt compliance alone isn't 100% reliable.
+    _DEPRECATED_MANIM_ALIASES = {
+        "ShowCreation": "Create",
+        "TextMobject": "Text",
+        "TexMobject": "MathTex",
+    }
+
     def _validate_and_fix_code(self, code: str, topic: str) -> str:
         """Validate and fix common issues in generated code"""
         import re
@@ -1093,6 +1240,12 @@ class EnhancedVideoGenerator:
                 "class ManimScene(Scene):",
                 "class ManimScene(Scene):\n    def construct(self):\n        pass"
             )
+
+        # Swap known deprecated/renamed class names for their modern
+        # Manim Community equivalents - word-boundary match so this can't
+        # clobber a substring inside an unrelated identifier.
+        for old_name, new_name in self._DEPRECATED_MANIM_ALIASES.items():
+            code = re.sub(rf'\b{old_name}\b', new_name, code)
 
         return code
 

@@ -77,10 +77,13 @@ class Settings(BaseSettings):
     AZURE_API_BASE: Optional[str] = None
     DEEPSEEK_API_KEY: Optional[str] = None
 
-    # Default LLM Settings - cloud by default (Groq: low latency, supports tool calling).
-    # Requires GROQ_API_KEY.
-    DEFAULT_LLM_PROVIDER: str = "groq"
-    DEFAULT_LLM_MODEL: str = "llama-3.3-70b-versatile"  # Supports tool/function calling
+    # Default LLM Settings - these are only ever consulted as a last-resort
+    # fallback when a request doesn't specify a provider/model at all; every
+    # real request resolves the user's own configured LLMProviderConfig
+    # instead (see chat.py/video_tasks.py). Points at Karunya's institutional
+    # Sofie Code gateway, the app's primary/recommended provider.
+    DEFAULT_LLM_PROVIDER: str = "custom"
+    DEFAULT_LLM_MODEL: str = "sofie-code"
 
     # Encryption (REQUIRED for production - generate secure values!)
     SCORATIS_ENCRYPTION_KEY: str = "scoratis-default-dev-key-change-in-production-32chars"

@@ -11,10 +11,12 @@ Architecture:
 import json
 import logging
 from typing import Optional, List, Dict, Any, Callable, Awaitable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from enum import Enum
 
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from services.video_job_service import start_video_job
 
 logger = logging.getLogger(__name__)
 
@@ -324,14 +326,23 @@ def create_web_search_tool(
         or when you need up-to-date information.
         """
         try:
-            results = await web_search_service.search(query, max_results=max_results)
-            results_count = len(results) if results else 0
+            # WebSearchService.search() has no per-call max_results param -
+            # it uses the service-wide WEB_SEARCH_MAX_RESULTS setting
+            # internally - so slice here to honor what the model asked for.
+            # Results are SearchResult dataclasses; convert to plain dicts
+            # since this return value gets json.dumps()'d as the tool
+            # response (graph.py's tool-execution loop), which fails on
+            # dataclass instances.
+            raw_results = await web_search_service.search(query)
+            trimmed = (raw_results or [])[:max_results]
+            results = [asdict(r) for r in trimmed]
+            results_count = len(results)
 
             result = {
                 "success": True,
                 "query": query,
                 "results_count": results_count,
-                "results": results or []
+                "results": results
             }
 
             # Add explicit NO_RESULTS message if empty
@@ -721,80 +732,115 @@ def create_finalize_response_tool() -> Callable[..., Awaitable[Dict[str, Any]]]:
 
 
 # =============================================================================
-# Multimedia Tools (Manim, Links, Images)
+# Multimedia Tools (Video Generation, Links, Images)
 # =============================================================================
 
-def create_manim_animation_tool(
-    animation_service: Any = None
+def create_generate_video_tool(
+    user_id: int,
+    session_id: str,
 ) -> Callable[..., Awaitable[Dict[str, Any]]]:
-    """Factory for the Manim animation creation tool."""
-    async def create_manim_animation(
-        manim_code: str,
-        title: str,
-        description: str = "",
-        quality: str = "medium"
+    """Factory for the video-generation tool.
+
+    This is the agent's OWN decision mechanism for video generation - it
+    decides whether a topic deserves a video as part of its normal reasoning
+    (same as deciding whether to call web_search), then calls this tool to
+    actually kick off the real render pipeline (start_video_job -> Celery ->
+    LLM script + Manim code generation -> render). Replaces the old design
+    where a completely separate LLM call (video_analyzer_service, post-hoc,
+    after the main response was already finished) made this decision with no
+    visibility into the agent's own reasoning.
+
+    A fresh closure is built per request (see builder.py), so the call count
+    below only guards against the model calling this more than once within
+    the SAME turn - not a cross-session cooldown, which isn't meaningful
+    here since the agent has no notion of a running turn counter.
+    """
+    call_count = {"n": 0}
+
+    async def generate_video(
+        topic: str,
+        key_concepts: List[str],
+        visualization_type: str = "concept",
+        reason: str = "",
+        duration_seconds: int = 20,
     ) -> Dict[str, Any]:
         """
-        Generate a mathematical animation using Manim library.
+        Trigger a short educational video for a concept covered in your
+        response. Call this AS PART OF your own reasoning - right after
+        deciding a visual would genuinely help - not for every response.
 
-        Use this to create explanatory visualizations for:
-        - Mathematical concepts (graphs, functions, transformations)
-        - Physics simulations (motion, waves, fields)
-        - Geometric proofs and constructions
-        - Algorithm visualizations
+        Call this when the content involves:
+        - A physical/mechanical/scientific process that unfolds over time
+        - Spatial or 3D structures (molecules, anatomy, architecture, geometry)
+        - A mathematical concept with a visual representation (graphs, transforms)
+        - A cause-and-effect chain or transformation that benefits from animation
+        - A comparison where side-by-side visuals would help
+        - Any topic where "showing" would teach better than "telling"
+
+        Do NOT call this for: greetings/casual chat, an explanation that's
+        already fully clear in text, pure opinion/philosophy with nothing
+        concrete to show, homework-answer lookups, or simple factual
+        one-liners.
 
         Args:
-            manim_code: Python code using Manim library (must define a Scene class)
-            title: Title for the animation
-            description: Brief description of what the animation shows
-            quality: Video quality - "low", "medium", "high" (default: medium)
-
-        Returns:
-            Dict with animation URL or generation status
+            topic: Clear, descriptive video title
+            key_concepts: 2-5 specific concepts the video should cover
+            visualization_type: one of process|structure|concept|comparison|
+                transformation|diagram|simulation
+            reason: One sentence on why this topic benefits from visualization
+            duration_seconds: Target length, 10-30 seconds
         """
+        if call_count["n"] > 0:
+            return {
+                "success": False,
+                "error": "A video was already requested for this response - only one per turn.",
+                "topic": topic,
+            }
+
         try:
-            if animation_service:
-                # Use the actual animation service if available
-                result = await animation_service.create_animation(
-                    code=manim_code,
-                    title=title,
-                    description=description,
-                    quality=quality
-                )
-                return {
-                    "success": True,
-                    "animation_id": result.get("id"),
-                    "video_url": result.get("video_url"),
-                    "thumbnail_url": result.get("thumbnail_url"),
-                    "title": title,
-                    "description": description,
-                    "status": "completed"
-                }
-            else:
-                # Return pending status for async processing
-                import hashlib
-                animation_id = hashlib.md5(manim_code.encode()).hexdigest()[:12]
-                return {
-                    "success": True,
-                    "animation_id": animation_id,
-                    "manim_code": manim_code,
-                    "title": title,
-                    "description": description,
-                    "quality": quality,
-                    "status": "queued",
-                    "message": "Animation queued for rendering. Will be available shortly."
-                }
+            video_context = {
+                "topic_title": topic,
+                "key_concepts": key_concepts[:5],
+                "visualization_type": visualization_type,
+                "duration_suggestion": max(10, min(30, duration_seconds)),
+                "conversation_summary": reason[:200] if reason else "",
+            }
+
+            task_id = await start_video_job(
+                user_id=user_id,
+                topic=topic,
+                # medium (720p30), not high (1080p60) - short inline clip,
+                # not full-screen viewing; render time scales heavily with
+                # both resolution and framerate.
+                quality="medium",
+                duration=max(10, min(30, duration_seconds)),
+                context=video_context,
+                session_id=session_id,
+                auto_generated=True,
+            )
+
+            call_count["n"] += 1
+            logger.info(f"Agent triggered video generation: {topic} ({reason})")
+
+            return {
+                "success": True,
+                "task_id": task_id,
+                "topic": topic,
+                "concepts": key_concepts[:5],
+                "visualization_type": visualization_type,
+                "estimated_duration": duration_seconds,
+                "message": "Video generation started. It will render in the background.",
+            }
 
         except Exception as e:
-            logger.error(f"Manim animation error: {e}")
+            logger.error(f"Video generation trigger error: {e}")
             return {
                 "success": False,
                 "error": str(e),
-                "title": title,
-                "status": "failed"
+                "topic": topic,
             }
 
-    return create_manim_animation
+    return generate_video
 
 
 def create_link_preview_tool(
@@ -1448,63 +1494,70 @@ This helps track learning progress and can be referenced later.""",
 
     # === Multimedia Tools ===
     ToolDefinition(
-        name="create_manim_animation",
-        description="""Generate a mathematical animation using Manim library to visualize concepts.
+        name="generate_video",
+        description="""Trigger a short educational video (rendered via Manim + narration) for a concept from your response.
 
-**PROACTIVE USE**: Create animations when explaining complex visual concepts!
+**YOUR OWN DECISION**: You decide if and when this is worth it, as part of your normal reasoning - not a separate system.
 
-Use this tool when:
-- Explaining mathematical transformations or functions
-- Visualizing physics concepts (motion, waves, fields)
-- Demonstrating geometric proofs or constructions
-- Showing algorithm step-by-step execution
-- The student would benefit from seeing a concept in motion
+Call this when the content involves:
+- A physical/mechanical/scientific process that unfolds over time
+- Spatial or 3D structures (molecules, anatomy, architecture, geometry)
+- A mathematical concept with a visual representation (graphs, transformations)
+- A cause-and-effect chain or transformation that benefits from animation
+- A comparison where side-by-side visuals would help
+- Any topic where "showing" would teach better than "telling"
 
-The Manim code must define a Scene class with a construct() method.
-The animation will be rendered and displayed to the student.""",
+Do NOT call this for: greetings/casual chat, an explanation that's already
+fully clear in text, pure opinion/philosophy with nothing concrete to show,
+homework-answer lookups, or simple factual one-liners. Call at most once per
+response - this actually starts a real render job, not a preview.
+
+You do NOT write any Manim code yourself - just describe the topic and
+concepts; the render pipeline generates the actual script and scene code.""",
         category=ToolCategory.UTILITY,
         parameters=[
             ToolParameter(
-                name="manim_code",
+                name="topic",
                 type="string",
-                description="Python code using Manim library (must define a Scene class with construct method)",
+                description="Clear, descriptive video title",
                 required=True
             ),
             ToolParameter(
-                name="title",
-                type="string",
-                description="Title for the animation",
+                name="key_concepts",
+                type="array",
+                description="2-5 specific concepts the video should cover",
                 required=True
             ),
             ToolParameter(
-                name="description",
+                name="visualization_type",
                 type="string",
-                description="Brief description of what the animation demonstrates",
+                description="The kind of visualization this topic calls for",
+                required=False,
+                default="concept",
+                enum=["process", "structure", "concept", "comparison", "transformation", "diagram", "simulation"]
+            ),
+            ToolParameter(
+                name="reason",
+                type="string",
+                description="One sentence on why this topic benefits from visualization",
                 required=False,
                 default=""
             ),
             ToolParameter(
-                name="quality",
-                type="string",
-                description="Video quality: 'low', 'medium', 'high'",
+                name="duration_seconds",
+                type="integer",
+                description="Target video length in seconds",
                 required=False,
-                default="medium",
-                enum=["low", "medium", "high"]
+                default=20
             )
         ],
-        factory=create_manim_animation_tool,
+        factory=create_generate_video_tool,
         examples=[
-            """create_manim_animation(
-    manim_code='''
-from manim import *
-class SineWave(Scene):
-    def construct(self):
-        axes = Axes(x_range=[-3, 3], y_range=[-2, 2])
-        sine_curve = axes.plot(lambda x: np.sin(x), color=BLUE)
-        self.play(Create(axes), Create(sine_curve))
-''',
-    title='Sine Wave Visualization',
-    description='Shows the sine function graphed on coordinate axes'
+            """generate_video(
+    topic='How the Water Cycle Moves Energy Through Earth\\'s Systems',
+    key_concepts=['evaporation', 'condensation', 'precipitation'],
+    visualization_type='process',
+    reason='The cyclical, time-based nature of this process is hard to grasp from text alone'
 )"""
         ]
     ),

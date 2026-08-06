@@ -114,13 +114,19 @@ export const CLOUD_PROVIDERS = {
   custom: {
     id: 'custom',
     name: 'Custom',
-    displayName: 'Custom Provider',
+    displayName: 'Institutional (Sofie Code)',
     requiresApiKey: true,
     isLocal: false,
     requiresBaseUrl: true,
     requiresModelName: true,
-    description: 'Your own OpenAI-compatible endpoint (e.g. a private or institutional LLM gateway)',
+    recommended: true,
+    description: "Karunya University's Sofie Code LLM gateway - just paste your personal key",
     color: '#6b7c5e',
+    // Pre-filled so the user only has to paste their personal sk- key -
+    // campus network/VPN only, see llm.karunya.edu docs.
+    defaultBaseUrl: 'https://llm.karunya.edu/v1',
+    defaultModelName: 'sofie-code',
+    networkNote: 'Campus network or VPN only - "connection refused/timed out" almost always means you\'re off-campus.',
     models: [],
   },
 };
@@ -130,8 +136,9 @@ export const PROVIDERS = {
   ...CLOUD_PROVIDERS,
 };
 
-// Order for display
-export const CLOUD_PROVIDER_ORDER = ['openai', 'anthropic', 'google', 'groq', 'together', 'deepseek', 'azure', 'custom'];
+// Order for display - institutional endpoint first since it's the primary/
+// recommended provider; the others remain available as fallback options.
+export const CLOUD_PROVIDER_ORDER = ['custom', 'openai', 'anthropic', 'google', 'groq', 'together', 'deepseek', 'azure'];
 export const PROVIDER_ORDER = [...CLOUD_PROVIDER_ORDER];
 
 // Helper functions

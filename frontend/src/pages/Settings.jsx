@@ -9,8 +9,8 @@ import { CLOUD_PROVIDERS, CLOUD_PROVIDER_ORDER } from '../config/providers'
 // ============== CLOUD PROVIDER CARD ==============
 function CloudProviderCard({ provider, config, onSave, onTest, onDelete, isLoading }) {
   const [apiKey, setApiKey] = useState('')
-  const [baseUrl, setBaseUrl] = useState(config?.base_url || '')
-  const [defaultModel, setDefaultModel] = useState(config?.extra_settings?.default_model || '')
+  const [baseUrl, setBaseUrl] = useState(config?.base_url || provider.defaultBaseUrl || '')
+  const [defaultModel, setDefaultModel] = useState(config?.extra_settings?.default_model || provider.defaultModelName || '')
   const [showKey, setShowKey] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState(null)
@@ -26,7 +26,10 @@ function CloudProviderCard({ provider, config, onSave, onTest, onDelete, isLoadi
         api_key: apiKey || undefined,
         base_url: baseUrl || undefined,
         default_model: provider.requiresModelName ? (defaultModel || undefined) : undefined,
-        is_default: false,
+        // The institutional endpoint is the recommended primary provider -
+        // saving/updating it always (re)claims the default slot so chat and
+        // video generation prefer it over any previously-configured key.
+        is_default: provider.id === 'custom',
       })
       setApiKey('')
       setTestResult({ success: true, message: 'API key saved' })
@@ -65,12 +68,19 @@ function CloudProviderCard({ provider, config, onSave, onTest, onDelete, isLoadi
             <p className="text-xs text-text-muted">{provider.description}</p>
           </div>
         </div>
-        {isConfigured && (
-          <div className="flex items-center gap-1 text-xs text-accent-olive">
-            <Check className="w-4 h-4" />
-            <span>Configured</span>
-          </div>
-        )}
+        <div className="flex items-center gap-3">
+          {provider.recommended && (
+            <span className="text-xs px-2 py-1 rounded-full bg-accent-olive/15 text-accent-olive font-medium">
+              Recommended
+            </span>
+          )}
+          {isConfigured && (
+            <div className="flex items-center gap-1 text-xs text-accent-olive">
+              <Check className="w-4 h-4" />
+              <span>Configured</span>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="space-y-3">
@@ -130,6 +140,13 @@ function CloudProviderCard({ provider, config, onSave, onTest, onDelete, isLoadi
               placeholder="e.g. llama-3.3-70b"
               className="w-full px-3 py-2 bg-bg-card border border-border-color rounded-lg text-sm text-text-primary placeholder-text-muted focus:outline-none focus:border-accent-olive"
             />
+          </div>
+        )}
+
+        {provider.networkNote && (
+          <div className="flex items-start gap-2 text-xs text-text-muted bg-bg-tertiary px-3 py-2 rounded-lg border border-border-color">
+            <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+            <span>{provider.networkNote}</span>
           </div>
         )}
 

@@ -79,8 +79,6 @@ async def agentic_chat(message: AgenticChatMessage, current_user: User = Depends
                 "tools_used": result.get("tools_used", []),
                 "model": result.get("model"),
                 "mode": result.get("mode", "agent"),
-                "video_analysis": result.get("video_analysis"),
-                "video_eligible": result.get("video_eligible", False),
             }
 
     except Exception as e:

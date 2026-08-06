@@ -32,7 +32,6 @@ from .state import (
     MessageRole,
     LearningContext,
     RAGContext,
-    VideoAnalysis,
     Scratchpad,
     StopCondition,
     VerificationState,
@@ -898,6 +897,11 @@ class ScoratisAgent:
         messages = [{"role": "user", "content": message}]
         full_response = ""
         tool_results = []
+        # Populated if the agent itself calls generate_video during its own
+        # reasoning (see tools.py's create_generate_video_tool) - this is
+        # now the sole source of auto-video-generation for the agentic path,
+        # replacing the old separate post-hoc video_analyzer_service call.
+        auto_video = None
 
         # Agentic loop with streaming
         max_iterations = 5
@@ -939,6 +943,15 @@ class ScoratisAgent:
 
                         tool_results.append(result)
 
+                        if tool_name == "generate_video" and isinstance(result, dict) and result.get("success"):
+                            auto_video = {
+                                "task_id": result.get("task_id"),
+                                "topic": result.get("topic"),
+                                "concepts": result.get("concepts", []),
+                                "visualization_type": result.get("visualization_type"),
+                                "estimated_duration": result.get("estimated_duration"),
+                            }
+
                         # Yield tool end
                         yield {
                             "type": "tool_end",
@@ -979,6 +992,45 @@ class ScoratisAgent:
                 full_response = error_msg
                 break
 
+        # The loop can be exhausted by max_iterations while the model was
+        # still requesting tools every round (never reaching the no-more-
+        # tool-calls branch above that actually streams an answer) - a
+        # multi-step query can easily use up all 5 rounds on tool calls
+        # alone. Previously this fell straight through to the "done" event
+        # with full_response still "", which the caller (chat.py) shows as
+        # a generic "couldn't generate a complete response" with no logged
+        # error at all. Force one final no-tools answer from everything
+        # gathered so far instead of silently returning nothing.
+        if not full_response.strip():
+            try:
+                # The system prompt still describes tools in detail (it's
+                # unchanged from the tool-calling rounds above), but this
+                # specific call has no tools parameter at all - without an
+                # explicit steer, the model keeps narrating tool-seeking
+                # intent ("Let me search for...") it now has no way to act
+                # on, and trails off instead of answering. The forced
+                # message overrides that as the most recent instruction.
+                forced_messages = messages + [{
+                    "role": "user",
+                    "content": (
+                        "No more tool calls are available for this turn. "
+                        "Give your complete, direct final answer now using "
+                        "everything gathered so far - do not say you will "
+                        "search, check, or look anything up; just answer."
+                    ),
+                }]
+                async for chunk in self.llm_service.generate_stream(
+                    messages=forced_messages,
+                    system_prompt=system_prompt
+                ):
+                    full_response += chunk
+                    yield {"type": "token", "content": chunk}
+            except Exception as e:
+                logger.error(f"Forced final-answer generation failed: {e}")
+                error_msg = "I apologize, but I encountered an error. Please try again."
+                yield {"type": "token", "content": error_msg}
+                full_response = error_msg
+
         # Final event
         yield {
             "type": "done",
@@ -986,7 +1038,8 @@ class ScoratisAgent:
             "metadata": {
                 "model": self.llm_service.get_current_config().get("model"),
                 "sources": rag_context.get("sources", []) if rag_context else [],
-                "tools_used": len(tool_results)
+                "tools_used": len(tool_results),
+                "auto_video": auto_video,
             }
         }
 
@@ -1002,10 +1055,28 @@ class ScoratisAgent:
             clean_messages = []
             for msg in messages:
                 if isinstance(msg, dict):
-                    clean_messages.append({
+                    cleaned = {
                         "role": msg.get("role", "user"),
                         "content": msg.get("content", "")
-                    })
+                    }
+                    # Preserve tool_calls/tool_call_id/name - dropping these
+                    # (as this loop previously did) corrupts the tool-call
+                    # round-trip the moment a second tool gets used: LiteLLM
+                    # rejects a "tool" role message that isn't immediately
+                    # preceded by an "assistant" message with matching
+                    # tool_calls, which is exactly what stripping them here
+                    # produces. Same fields litellm_service.py's
+                    # _prepare_litellm_kwargs already preserves correctly.
+                    if msg.get("role") == "assistant" and "tool_calls" in msg:
+                        cleaned["tool_calls"] = msg["tool_calls"]
+                        if not msg.get("content"):
+                            cleaned["content"] = None
+                    if msg.get("role") == "tool":
+                        if "tool_call_id" in msg:
+                            cleaned["tool_call_id"] = msg["tool_call_id"]
+                        if "name" in msg:
+                            cleaned["name"] = msg["name"]
+                    clean_messages.append(cleaned)
                 elif hasattr(msg, "content") and hasattr(msg, "type"):
                     # LangChain message object
                     role = "user" if msg.type == "human" else "assistant" if msg.type == "ai" else msg.type
@@ -1083,8 +1154,6 @@ class ScoratisAgent:
             "model": state.get("model_used"),
             "tools_used": state.get("tool_results", []),
             "learning_state": state.get("learning", {}),
-            "video_analysis": state.get("video_analysis"),
-            "video_eligible": state.get("video_eligible", False),
             "search_trail": search_trail,
             "search_summary": search_summary,
             "query_classification": state.get("query_classification"),

@@ -126,7 +126,13 @@ PROVIDER_INFO = {
         "requires_api_key": True,
         "is_local": False,
         "default_base_url": None,
-        "models": ["gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"],
+        # The 1.5/2.0 lines this previously listed are all retired (Google
+        # shut down 2.0 Flash/Flash-Lite on 2026-03-31; 1.5 was long gone
+        # before that) - every one of them now fails with LiteLLM's "Model
+        # not found" rather than anything more informative. gemini-2.5-flash
+        # is kept as a bridge option since it's still live (shuts down
+        # 2026-10-16) but should be dropped once that date passes.
+        "models": ["gemini-3.5-flash", "gemini-3.1-pro", "gemini-3.5-flash-lite", "gemini-2.5-flash"],
     },
     ProviderType.GROQ: {
         "display_name": "Groq",

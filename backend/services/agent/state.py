@@ -188,29 +188,6 @@ class RAGContext(BaseModel):
         }
 
 
-class VideoAnalysis(BaseModel):
-    """Result of video generation analysis"""
-    is_visualizable: bool = False
-    topic: Optional[str] = None
-    visualization_type: Optional[str] = None
-    key_concepts: List[str] = Field(default_factory=list)
-    confidence: float = 0.0
-    reason: str = ""
-
-    def should_generate(self) -> bool:
-        return self.is_visualizable and self.confidence >= 0.6
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "is_visualizable": self.is_visualizable,
-            "topic": self.topic,
-            "visualization_type": self.visualization_type,
-            "key_concepts": self.key_concepts,
-            "confidence": self.confidence,
-            "reason": self.reason
-        }
-
-
 # =============================================================================
 # Agentic Loop Components
 # =============================================================================
@@ -513,7 +490,6 @@ class AgentState(TypedDict):
     - pending_tool_calls: Tools the agent wants to execute
     - tool_results: Results from executed tools
     - final_response: The agent's final response (after reasoning)
-    - video_analysis: Analysis for potential video generation
 
     Agentic Loop Fields:
     - scratchpad: Reasoning persistence across iterations
@@ -547,10 +523,6 @@ class AgentState(TypedDict):
     # === Tool Execution ===
     pending_tool_calls: List[Dict[str, Any]]  # Tools to execute
     tool_results: List[Dict[str, Any]]  # Results from tools
-
-    # === Video Analysis ===
-    video_analysis: Optional[Dict[str, Any]]  # VideoAnalysis serialized
-    video_eligible: bool
 
     # === Agentic Loop Components ===
     scratchpad: Optional[Dict[str, Any]]  # Scratchpad serialized
@@ -591,8 +563,6 @@ def create_initial_state(
         web_search_used=False,
         pending_tool_calls=[],
         tool_results=[],
-        video_analysis=None,
-        video_eligible=False,
         # Agentic loop components
         scratchpad=Scratchpad().to_dict(),
         phase=AgentPhase.THINKING.value,

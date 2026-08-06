@@ -34,13 +34,13 @@ from sqlalchemy.orm import sessionmaker
 
 from celery_app import celery_app
 from config import settings
-from models import VideoJob, VideoJobStatus, ProviderType, LLMProviderConfig
+from models import VideoJob, VideoJobStatus, ProviderType, PROVIDER_INFO, LLMProviderConfig
 from video_service import get_enhanced_generator, reset_video_clients
 from llm_service import llm_service
 
 logger = logging.getLogger(__name__)
 
-engine = create_engine(settings.DATABASE_URL)
+engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True, pool_recycle=1800)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 OUTPUT_DIR = Path(__file__).parent.parent / "generated_videos"
@@ -61,29 +61,56 @@ def _configure_llm_for_user(db, user_id: int) -> None:
     user's configured provider/key before generating the script.
 
     Celery runs each task in its own process (prefork pool), and that
-    process's llm_service starts out on the bare DEFAULT_LLM_PROVIDER/MODEL
-    with no key attached (api_key_encrypted is only ever resolved per-request
-    in the API process - it never reaches the worker). Without this,
-    EnhancedVideoGenerator._initialize() always sees "no key" and silently
-    downgrades to its one-scene, no-narration local-mode placeholder script -
-    which is exactly the "video content isn't proper" symptom this fixes.
-    """
-    provider = ProviderType(settings.DEFAULT_LLM_PROVIDER)
-    model = settings.DEFAULT_LLM_MODEL
+    process's llm_service starts out unconfigured with no key attached
+    (api_key_encrypted is only ever resolved per-request in the API process -
+    it never reaches the worker). Without this, EnhancedVideoGenerator.
+    _initialize() always sees "no key" and silently downgrades to its
+    one-scene, no-narration local-mode placeholder script - which is exactly
+    the "video content isn't proper" symptom this fixes.
 
+    Mirrors chat.py's _resolve_llm_config: use the user's own default/most-
+    recent active provider config, for WHICHEVER provider they actually
+    configured - not a single hardcoded provider. The previous version only
+    ever looked for settings.DEFAULT_LLM_PROVIDER (formerly a hardcoded
+    "groq"), so any user on a different provider - e.g. the institutional
+    Custom endpoint - silently fell through to no key at all. It also never
+    passed base_url, which the Custom provider requires to work at all.
+    """
     provider_config = (
         db.query(LLMProviderConfig)
         .filter(
             LLMProviderConfig.user_id == user_id,
-            LLMProviderConfig.provider == provider,
             LLMProviderConfig.is_active == True,
         )
         .order_by(LLMProviderConfig.is_default.desc(), LLMProviderConfig.updated_at.desc())
         .first()
     )
-    encrypted_key = provider_config.api_key_encrypted if provider_config else None
 
-    llm_service.set_provider(model=model, provider=provider.value, api_key_encrypted=encrypted_key)
+    if provider_config:
+        provider = (
+            provider_config.provider
+            if isinstance(provider_config.provider, ProviderType)
+            else ProviderType(provider_config.provider)
+        )
+        model = (
+            (provider_config.extra_settings or {}).get("default_model")
+            or next(iter(PROVIDER_INFO.get(provider, {}).get("models", [])), None)
+            or settings.DEFAULT_LLM_MODEL
+        )
+        encrypted_key = provider_config.api_key_encrypted
+        base_url = provider_config.base_url
+    else:
+        provider = ProviderType(settings.DEFAULT_LLM_PROVIDER)
+        model = settings.DEFAULT_LLM_MODEL
+        encrypted_key = None
+        base_url = None
+
+    llm_service.set_provider(
+        model=model,
+        provider=provider.value,
+        base_url=base_url,
+        api_key_encrypted=encrypted_key,
+    )
     # Force EnhancedVideoGenerator/SmartVideoClient/SmartManimClient to
     # re-read llm_service.current_config instead of reusing whatever
     # _use_api they cached the first time this worker process ran a job.
@@ -183,8 +210,15 @@ def render_video_task(self, video_job_id: int) -> dict:
                     progress_percent=5, message="Generating script...")
 
         # Phase 1: script + Manim scene code (LLM-prompt generation, reused as-is)
+        # _retry_feedback is stashed into job.context below on a failed
+        # render, before self.retry() re-invokes this same task fresh - lets
+        # the regeneration prompt see exactly what broke last time instead
+        # of blindly rerolling with no memory of the previous mistake.
+        retry_feedback = (job.context or {}).get("_retry_feedback")
         generator = get_enhanced_generator()
-        result = asyncio.run(generator.generate_enhanced_video(job.topic, job.context))
+        result = asyncio.run(generator.generate_enhanced_video(
+            job.topic, job.context, retry_feedback=retry_feedback
+        ))
         script = result["script"]
         manim_code = result["manim_code"]
 
@@ -215,6 +249,10 @@ def render_video_task(self, video_job_id: int) -> dict:
             # the LLM's first mistake.
             error_detail = proc.stderr[-2000:]
             logger.warning(f"Manim render failed for job {video_job_id}, will retry: {error_detail[-500:]}")
+            _update_job(db, job, context={
+                **(job.context or {}),
+                "_retry_feedback": {"error": error_detail, "previous_code": manim_code},
+            })
             raise self.retry(exc=RuntimeError(f"Manim render failed:\n{error_detail}"), countdown=5)
 
         rendered_video = _find_rendered_video(media_dir, output_name)
@@ -255,8 +293,8 @@ def render_video_task(self, video_job_id: int) -> dict:
 
     except Exception as e:
         logger.error(f"Video generation failed for job {video_job_id}: {e}")
-        db.rollback()
         try:
+            db.rollback()
             if job is None:
                 job = db.query(VideoJob).filter(VideoJob.id == video_job_id).first()
             if job:
@@ -268,7 +306,26 @@ def render_video_task(self, video_job_id: int) -> dict:
                     message="Video generation failed",
                 )
         except Exception:
-            pass
+            # The session/connection itself may be the thing that died (e.g.
+            # the OperationalError we're handling *was* the DB connection
+            # dropping) - a fresh session is the only way to still persist
+            # the FAILED status instead of silently losing it.
+            db.close()
+            fresh_db = SessionLocal()
+            try:
+                fresh_job = fresh_db.query(VideoJob).filter(VideoJob.id == video_job_id).first()
+                if fresh_job:
+                    _update_job(
+                        fresh_db, fresh_job,
+                        status=VideoJobStatus.FAILED,
+                        stage="error",
+                        error_message=str(e)[:2000],
+                        message="Video generation failed",
+                    )
+            except Exception:
+                logger.error(f"Could not persist FAILED status for job {video_job_id} even with a fresh session")
+            finally:
+                fresh_db.close()
         return {"status": "error", "message": str(e)}
 
     finally:
