@@ -17,8 +17,13 @@ from .golden_dataset import (
 )
 from .evaluator import AgentEvaluator, EvaluationResult, generate_report
 
-# Mark all tests as evaluation tests (require LLM)
-pytestmark = [pytest.mark.evaluation, pytest.mark.slow]
+# Every test in this file - including TestLiveAgentEvaluation below, despite
+# its name and docstring - runs against mock_llm_service/mock_rag_service,
+# never a real LLM. There's nothing here that's actually slow; the blanket
+# `slow` marker was stale and made the weekly CI evaluation job (which runs
+# `-m "not slow"`) deselect all 13 tests, fail with pytest's "no tests
+# collected" exit code 5, every single run.
+pytestmark = [pytest.mark.evaluation]
 
 
 class TestEvaluatorLogic:
