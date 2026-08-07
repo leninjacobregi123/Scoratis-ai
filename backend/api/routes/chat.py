@@ -1625,26 +1625,4 @@ async def delete_conversation(conversation_id: int, data: DeleteConversation = N
     await db.delete_conversation(conversation_id, user_id=current_user.id, permanent=permanent)
     return {"message": "Conversation deleted" if permanent else "Moved to trash"}
 
-# RAG Search endpoint for debugging/testing
-@router.get("/rag/search")
-async def rag_search(q: str = Query(..., min_length=1)):
-    """Test RAG semantic search"""
-    db = get_database()
-    rag_service = get_rag_service()
-    async with db.get_session() as session:
-        journals = await rag_service.search_journals(session, q)
-        conversations = await rag_service.search_conversations(session, q)
-
-    return {
-        "query": q,
-        "journals": [
-            {"title": r.title, "similarity": r.similarity, "content": r.content[:200]}
-            for r in journals
-        ],
-        "conversations": [
-            {"similarity": r.similarity, "content": r.content[:200]}
-            for r in conversations
-        ]
-    }
-
 
