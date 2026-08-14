@@ -41,7 +41,7 @@ celery_app = Celery(
     "scoratis",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
-    include=["tasks.ingestion_tasks", "tasks.video_tasks"],
+    include=["tasks.ingestion_tasks", "tasks.video_tasks", "tasks.lesson_tasks"],
 )
 
 # Celery configuration
@@ -57,6 +57,9 @@ celery_app.conf.update(
     task_routes={
         "tasks.ingestion_tasks.*": {"queue": "ingestion"},
         "tasks.video_tasks.*": {"queue": "video"},
+        # Lessons render videos inline, so they share the video queue's
+        # concurrency budget rather than competing with it on another.
+        "tasks.lesson_tasks.*": {"queue": "video"},
     },
 
     # Task defaults
@@ -103,6 +106,18 @@ celery_app.conf.task_annotations = {
         "default_retry_delay": 30,
         "soft_time_limit": 1800,
         "time_limit": 2100,
+    },
+    # A lesson is the sum of its parts: ~15 LLM calls plus up to two full
+    # Manim renders, which it invokes IN-PROCESS (see lesson_tasks.
+    # _render_video_scene - dispatching a sub-task would deadlock a
+    # single-slot pool). So its budget has to cover every render it triggers,
+    # not just its own orchestration. On the global 300s soft limit the
+    # second animation was being killed mid-render and silently degraded to
+    # a slide.
+    "tasks.lesson_tasks.generate_lesson_task": {
+        "max_retries": 0,
+        "soft_time_limit": 3600,
+        "time_limit": 3900,
     },
 }
 

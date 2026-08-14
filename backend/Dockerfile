@@ -4,10 +4,10 @@
 # An earlier version of this Dockerfile (removed) based itself on a
 # CUDA/pytorch image. That GPU base is unnecessary here: Manim rendering,
 # ffmpeg muxing, and edge-tts narration are all CPU-only in this codebase -
-# GPU is only used for local Ollama/embeddings, which production doesn't use
-# (see config.py's DEFAULT_LLM_PROVIDER, meant to point at a cloud provider
-# in production). A slim base keeps the image smaller and avoids paying for
-# GPU-instance pricing with no GPU workload to justify it.
+# GPU would only matter for local embedding models; production does not use them -
+# every account configures its own cloud provider from Settings instead. A
+# slim base keeps the image smaller and avoids paying for GPU-instance
+# pricing with no GPU workload to justify it.
 
 FROM python:3.11-slim
 
@@ -47,7 +47,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 # sentence-transformers pulls in torch transitively; PyPI's default Linux wheel
 # bundles the full CUDA toolkit (cudnn/cublas/nccl/etc, several GB) even though
-# this container is CPU-only (GPU is local-Ollama-only, see comment above).
+# this container is CPU-only (see comment at the top of this file).
 # Installing the CPU-only build first satisfies that dependency without pulling
 # any of it.
 RUN pip install --no-cache-dir --timeout 120 --retries 10 torch --index-url https://download.pytorch.org/whl/cpu

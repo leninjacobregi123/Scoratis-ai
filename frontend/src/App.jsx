@@ -3,11 +3,11 @@ import Dashboard from './pages/Dashboard';
 import Home from './pages/Home';
 import Chat from './pages/Chat';
 import VideoVault from './pages/VideoVault';
+import Lessons from './pages/Lessons';
+import Lesson from './pages/Lesson';
 import Settings from './pages/Settings';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
-import Review from './pages/Review';
-import Quizzes from './pages/Quizzes';
 import SharedTranscript from './pages/SharedTranscript';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -65,8 +65,8 @@ function App() {
             <Route path="home" element={<Home />} />
             <Route path="scoratis" element={<Chat />} />
             <Route path="videos" element={<VideoVault />} />
-            <Route path="review" element={<Review />} />
-            <Route path="quizzes" element={<Quizzes />} />
+            <Route path="lessons" element={<Lessons />} />
+            <Route path="lessons/:lessonId" element={<Lesson />} />
             <Route path="settings" element={<Settings />} />
           </Route>
         </Routes>

@@ -10,12 +10,12 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 import json
 
-from sqlalchemy import create_engine, select, func, and_, or_, text
+from sqlalchemy import create_engine, select, func, text
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 from config import settings
-from models import Base, User, Folder, Journal, Conversation, ChatMessage, LearningState
+from models import Base, User, Conversation, ChatMessage, LearningState
 from services.embedding_service import get_embedding_service
 
 logger = logging.getLogger(__name__)
@@ -163,213 +163,6 @@ class DatabaseManager:
             except Exception:
                 await session.rollback()
                 raise
-
-    # ==================== Journal Operations ====================
-
-    async def create_journal(
-        self,
-        title: str,
-        content: str,
-        *,
-        user_id: int,
-        tags: Optional[List[str]] = None,
-        folder_id: Optional[int] = None,
-    ) -> int:
-        """Create a new journal entry with embedding"""
-        async with self.get_session() as session:
-            # Generate embedding (if service available)
-            embedding = None
-            emb_service = self._get_embedding_service()
-            if emb_service:
-                embedding = emb_service.embed_text(f"{title} {content}")
-
-            journal = Journal(
-                title=title,
-                content=content,
-                tags={"tags": tags} if tags else None,
-                folder_id=folder_id,
-                user_id=user_id,
-                embedding=embedding,
-            )
-            session.add(journal)
-            await session.flush()
-            return journal.id
-
-    async def get_journals(
-        self,
-        *,
-        user_id: int,
-        folder_id: Optional[int] = None,
-        search_query: Optional[str] = None,
-    ) -> List[Dict]:
-        """Get all journals for a user with optional filtering"""
-        async with self.get_session() as session:
-            stmt = (
-                select(Journal, Folder.name.label("folder_name"))
-                .outerjoin(Folder, Journal.folder_id == Folder.id)
-                .where(Journal.user_id == user_id)
-                .where(Journal.is_deleted == False)
-            )
-
-            if folder_id:
-                stmt = stmt.where(Journal.folder_id == folder_id)
-
-            if search_query:
-                search_pattern = f"%{search_query}%"
-                stmt = stmt.where(
-                    or_(
-                        Journal.title.ilike(search_pattern),
-                        Journal.content.ilike(search_pattern),
-                    )
-                )
-
-            stmt = stmt.order_by(Journal.updated_at.desc())
-            result = await session.execute(stmt)
-
-            journals = []
-            for row in result:
-                journal = row[0]
-                journals.append({
-                    "id": journal.id,
-                    "title": journal.title,
-                    "content": journal.content,
-                    "tags": journal.tags.get("tags", []) if journal.tags else [],
-                    "folder_id": journal.folder_id,
-                    "folder_name": row.folder_name,
-                    "user_id": journal.user_id,
-                    "created_at": str(journal.created_at),
-                    "updated_at": str(journal.updated_at),
-                })
-
-            return journals
-
-    async def update_journal(
-        self,
-        journal_id: int,
-        *,
-        user_id: int,
-        title: Optional[str] = None,
-        content: Optional[str] = None,
-        tags: Optional[List[str]] = None,
-        folder_id: Optional[int] = None,
-    ) -> bool:
-        """Update an existing journal"""
-        async with self.get_session() as session:
-            journal = await session.get(Journal, journal_id)
-            if not journal or journal.user_id != user_id:
-                return False
-
-            if title is not None:
-                journal.title = title
-            if content is not None:
-                journal.content = content
-            if tags is not None:
-                journal.tags = {"tags": tags}
-            if folder_id is not None:
-                journal.folder_id = folder_id
-
-            # Update embedding if content changed (if service available)
-            if title is not None or content is not None:
-                emb_service = self._get_embedding_service()
-                if emb_service:
-                    journal.embedding = emb_service.embed_text(
-                        f"{journal.title} {journal.content}"
-                    )
-
-            return True
-
-    async def delete_journal(self, journal_id: int, *, user_id: int) -> bool:
-        """Soft delete a journal entry"""
-        async with self.get_session() as session:
-            journal = await session.get(Journal, journal_id)
-            if journal and journal.user_id == user_id:
-                journal.is_deleted = True
-                return True
-            return False
-
-    # ==================== Folder Operations ====================
-
-    async def create_folder(
-        self,
-        name: str,
-        *,
-        user_id: int,
-        description: Optional[str] = None,
-        color: str = "#8A2BE2",
-    ) -> int:
-        """Create a new folder"""
-        async with self.get_session() as session:
-            folder = Folder(name=name, user_id=user_id)
-            session.add(folder)
-            await session.flush()
-            return folder.id
-
-    async def get_folders(self, *, user_id: int) -> List[Dict]:
-        """Get all folders for a user with journal counts"""
-        async with self.get_session() as session:
-            stmt = (
-                select(
-                    Folder,
-                    func.count(Journal.id).label("journal_count"),
-                )
-                .outerjoin(Journal, and_(
-                    Folder.id == Journal.folder_id,
-                    Journal.is_deleted == False
-                ))
-                .where(Folder.user_id == user_id)
-                .group_by(Folder.id)
-                .order_by(Folder.created_at.desc())
-            )
-
-            result = await session.execute(stmt)
-
-            folders = []
-            for row in result:
-                folder = row[0]
-                folders.append({
-                    "id": folder.id,
-                    "name": folder.name,
-                    "user_id": folder.user_id,
-                    "journal_count": row.journal_count,
-                    "created_at": str(folder.created_at),
-                })
-
-            return folders
-
-    async def update_folder(
-        self,
-        folder_id: int,
-        *,
-        user_id: int,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-        color: Optional[str] = None,
-    ) -> bool:
-        """Update an existing folder"""
-        async with self.get_session() as session:
-            folder = await session.get(Folder, folder_id)
-            if not folder or folder.user_id != user_id:
-                return False
-
-            if name is not None:
-                folder.name = name
-
-            return True
-
-    async def delete_folder(self, folder_id: int, *, user_id: int) -> bool:
-        """Delete a folder and unlink its journals"""
-        async with self.get_session() as session:
-            # Unlink journals
-            await session.execute(
-                text("UPDATE journals SET folder_id = NULL WHERE folder_id = :fid"),
-                {"fid": folder_id},
-            )
-
-            folder = await session.get(Folder, folder_id)
-            if folder and folder.user_id == user_id:
-                await session.delete(folder)
-                return True
-            return False
 
     # ==================== Conversation Operations ====================
 
@@ -662,17 +455,11 @@ class DatabaseManager:
         async with self.get_session() as session:
             stats = {}
 
-            journal_stmt = select(func.count(Journal.id)).where(Journal.is_deleted == False)
-            folder_stmt = select(func.count(Folder.id))
             conversation_stmt = select(func.count(Conversation.id))
 
             if user_id is not None:
-                journal_stmt = journal_stmt.where(Journal.user_id == user_id)
-                folder_stmt = folder_stmt.where(Folder.user_id == user_id)
                 conversation_stmt = conversation_stmt.where(Conversation.user_id == user_id)
 
-            stats["total_journals"] = (await session.execute(journal_stmt)).scalar() or 0
-            stats["total_folders"] = (await session.execute(folder_stmt)).scalar() or 0
             stats["total_conversations"] = (await session.execute(conversation_stmt)).scalar() or 0
 
             return stats

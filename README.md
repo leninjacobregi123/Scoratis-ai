@@ -22,7 +22,7 @@ Scoratis is a next-generation educational platform that transforms learning thro
 - **Immersive 3D Gallery** - Navigate a virtual museum to explore subjects
 - **Socratic AI Tutoring** - Learn through guided questioning, not direct answers
 - **Agentic RAG System** - Intelligent retrieval from your personal knowledge base
-- **Multi-LLM Support** - Use local (Ollama) or cloud providers (OpenAI, Anthropic, Google, etc.)
+- **Multi-LLM Support** - Bring your own key for OpenAI, Anthropic, Google, Groq, and more
 - **Automatic Video Generation** - AI-generated educational animations with Manim
 
 ---
@@ -70,7 +70,6 @@ Scoratis is a next-generation educational platform that transforms learning thro
 
 | Provider | Type | Models |
 |----------|------|--------|
-| **Ollama** | Local | llama3.2, mistral, qwen2.5, codellama |
 | **OpenAI** | Cloud | gpt-4o, gpt-4-turbo, gpt-3.5-turbo |
 | **Anthropic** | Cloud | claude-3-5-sonnet, claude-3-opus |
 | **Google** | Cloud | gemini-2.0-flash, gemini-1.5-pro |
@@ -98,7 +97,7 @@ Physics, Chemistry, Biology, Mathematics, Computer Science, English, History, Ph
 | **Backend** | FastAPI (async), Python 3.11 |
 | **Database** | PostgreSQL 16 + pgvector |
 | **AI/ML** | LangGraph, LangChain, Sentence-Transformers |
-| **LLM** | LiteLLM (100+ providers), Ollama |
+| **LLM** | LiteLLM (100+ providers) |
 | **Task Queue** | Celery + Redis |
 | **Infrastructure** | Docker Compose, Nginx, NVIDIA GPU |
 
@@ -108,8 +107,7 @@ Physics, Chemistry, Biology, Mathematics, Computer Science, English, History, Ph
 
 ### Prerequisites
 - Docker & Docker Compose v2+
-- NVIDIA GPU + Drivers (optional, for GPU acceleration)
-- Ollama installed and running
+- An API key for at least one supported LLM provider
 - 8GB+ RAM recommended
 
 ### 1. Clone Repository
@@ -126,18 +124,19 @@ cp .env.example .env
 # Edit .env with your settings (optional)
 ```
 
-### 3. Start Ollama
-
-```bash
-ollama serve
-ollama pull llama3.2  # or your preferred model
-```
-
-### 4. Launch Application
+### 3. Launch Application
 
 ```bash
 docker compose up -d
 ```
+
+### 4. Configure an LLM Provider
+
+Sign up, then open **AI Settings** and add an API key for the provider you
+want to use (OpenAI, Anthropic, Google, Groq, Together, DeepSeek, Azure, or
+a private OpenAI-compatible endpoint). There is no app-wide default
+provider - chat and video generation stay disabled until an account
+configures one.
 
 ### 5. Access Services
 
@@ -181,8 +180,8 @@ docker compose up -d
               ┌───────────────┼───────────────┐
               ▼               ▼               ▼
 ┌──────────────────┐ ┌──────────────┐ ┌──────────────┐
-│   PostgreSQL     │ │    Redis     │ │    Ollama    │
-│   + pgvector     │ │   (Cache)    │ │    (LLM)     │
+│   PostgreSQL     │ │    Redis     │ │  LLM Provider│
+│   + pgvector     │ │   (Cache)    │ │  (per-user)  │
 └──────────────────┘ └──────────────┘ └──────────────┘
 ```
 
@@ -330,9 +329,8 @@ DATABASE_URL_ASYNC=postgresql+asyncpg://scoratis:scoratis_password@postgres:5432
 REDIS_URL=redis://redis:6379/0
 
 # LLM
-OLLAMA_BASE_URL=http://host.docker.internal:11434
-DEFAULT_LLM_PROVIDER=ollama
-DEFAULT_LLM_MODEL=llama3.2
+# Every account configures its own provider/model/key from the Settings
+# page - there is no app-wide default provider.
 
 # RAG Settings
 EMBEDDING_MODEL=all-MiniLM-L6-v2
@@ -415,13 +413,10 @@ npm run dev
 
 ### Local Development (without Docker)
 ```bash
-# Terminal 1: Start Ollama
-ollama serve
-
-# Terminal 2: Start PostgreSQL & Redis
+# Terminal 1: Start PostgreSQL & Redis
 docker compose up postgres redis -d
 
-# Terminal 3: Start Backend
+# Terminal 2: Start Backend
 cd backend && uvicorn main:app --reload --port 8000
 
 # Terminal 4: Start Frontend
@@ -454,13 +449,12 @@ deploy:
 
 ### Common Issues
 
-**Ollama Connection Failed**
-```bash
-# Ensure Ollama is running
-ollama serve
-# Check if model is available
-ollama list
-```
+**LLM Requests Failing**
+
+Open **AI Settings** and confirm the provider has a valid API key saved.
+For a private/institutional endpoint, also confirm the Base URL is
+reachable from where the backend runs. Chat and video generation raise a
+clear "no provider configured" error rather than silently falling back.
 
 **Database Connection Error**
 ```bash

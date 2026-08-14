@@ -8,14 +8,13 @@
  * - Clear indication of results found
  */
 
-import { Database, Globe, FileText, MessageSquare, CheckCircle, XCircle, Search } from 'lucide-react';
+import { Database, Globe, MessageSquare, CheckCircle, XCircle, Search } from 'lucide-react';
 
 // Map tool names to icons
 const SOURCE_ICONS = {
   search_knowledge_base: Database,
   knowledge_base: Database,
   web_search: Globe,
-  search_journals: FileText,
   search_past_conversations: MessageSquare,
 };
 
@@ -24,7 +23,6 @@ const SOURCE_LABELS = {
   search_knowledge_base: 'Your Notes',
   knowledge_base: 'Your Notes',
   web_search: 'Web Search',
-  search_journals: 'Journals',
   search_past_conversations: 'Past Chats',
 };
 

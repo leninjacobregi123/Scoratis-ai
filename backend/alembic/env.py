@@ -22,8 +22,6 @@ from models.base import Base
 # Import all models to ensure they're registered with Base.metadata
 from models import (
     User,
-    Folder,
-    Journal,
     Conversation,
     ChatMessage,
     LearningState,

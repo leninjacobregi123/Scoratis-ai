@@ -24,15 +24,13 @@ from services.agent import create_agent, ScoratisAgent
 from config import settings
 from api.routes.auth import router as auth_router
 from api.routes.videos import router as videos_router
-from api.routes.quizzes import router as quizzes_router
-from api.routes.review import router as review_router
 from api.routes.transcripts import router as transcripts_router
 from api.routes.health import router as health_router
-from api.routes.journals import router as journals_router
 from api.routes.llm import router as llm_router
 from api.routes.chat import router as chat_router
 from api.routes.documents import router as documents_router
 from api.routes.agent import router as agent_router
+from api.routes.lessons import router as lessons_router
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -137,7 +135,7 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app
 app = FastAPI(
     title="Scoratis API",
-    description="AI-Powered Learning & Journaling Platform",
+    description="AI-Powered Learning Platform",
     version="3.0",
     lifespan=lifespan
 )
@@ -157,6 +155,20 @@ GENERATED_VIDEOS_DIR.mkdir(exist_ok=True)
 
 _RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 _CHUNK_SIZE = 64 * 1024
+
+# This directory holds the rendered .mp4 plus the .jpg poster frame extracted
+# alongside it (see tasks/video_tasks.py::_extract_thumbnail). Serving a
+# thumbnail as video/mp4 would be wrong, so pick the type off the extension.
+_MEDIA_TYPES = {
+    ".mp4": "video/mp4",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+}
+
+
+def _media_type_for(path: Path) -> str:
+    return _MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
 
 
 @app.get("/generated_videos/{filename}")
@@ -182,6 +194,7 @@ async def serve_generated_video(filename: str, request: Request):
         raise HTTPException(status_code=404, detail="Not found")
 
     file_size = file_path.stat().st_size
+    media_type = _media_type_for(file_path)
     range_header = request.headers.get("range")
 
     if range_header:
@@ -210,7 +223,7 @@ async def serve_generated_video(filename: str, request: Request):
         return StreamingResponse(
             iter_range(),
             status_code=206,
-            media_type="video/mp4",
+            media_type=media_type,
             headers={
                 "Content-Range": f"bytes {start}-{end}/{file_size}",
                 "Accept-Ranges": "bytes",
@@ -228,21 +241,19 @@ async def serve_generated_video(filename: str, request: Request):
 
     return StreamingResponse(
         iter_full(),
-        media_type="video/mp4",
+        media_type=media_type,
         headers={"Accept-Ranges": "bytes", "Content-Length": str(file_size)},
     )
 
 app.include_router(auth_router)
 app.include_router(videos_router)
-app.include_router(quizzes_router)
-app.include_router(review_router)
 app.include_router(transcripts_router)
 app.include_router(health_router)
-app.include_router(journals_router)
 app.include_router(llm_router)
 app.include_router(chat_router)
 app.include_router(documents_router)
 app.include_router(agent_router)
+app.include_router(lessons_router)
 
 # Run with: uvicorn main:app --reload --port 8000
 if __name__ == "__main__":

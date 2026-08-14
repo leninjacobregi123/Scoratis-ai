@@ -3,7 +3,7 @@
 One-time helper to set/reset a user's password directly in the database.
 
 Needed because the pre-auth "Lenin" account (id=1) was seeded with a
-placeholder password hash by migration 002 - it owns whatever journals/
+placeholder password hash by migration 002 - it owns whatever
 conversations/documents already existed before multi-user auth, but has no
 usable login credential yet. Run this once to claim it, or to reset any
 other account's password without going through email-based reset (which

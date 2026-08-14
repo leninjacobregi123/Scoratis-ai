@@ -248,7 +248,6 @@ def mock_rag_service():
         "chunk_mapping": {"1": 1}
     })
     service.hybrid_chunk_search = AsyncMock(return_value=[])
-    service.search_journals = AsyncMock(return_value=[])
     service.search_conversations = AsyncMock(return_value=[])
     # create_search_knowledge_base_tool() prefers enhanced_search() over
     # get_context_with_citations() whenever hasattr(rag_service,
@@ -339,17 +338,6 @@ def sample_chunk_data():
         "start_char": 0,
         "end_char": 50,
         "metadata": {"page": 1}
-    }
-
-
-@pytest.fixture
-def sample_journal_data():
-    """Sample journal entry for tests."""
-    return {
-        "title": "My Learning Notes",
-        "content": "Today I learned about neural networks and how they work.",
-        "folder_id": None,
-        "metadata": {"tags": ["ai", "learning"]}
     }
 
 

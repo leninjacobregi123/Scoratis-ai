@@ -1,4 +1,4 @@
-import { Home, MessageCircle, Search, Settings, ChevronLeft, ChevronRight, Clock, Plus, LogOut, Brain, GraduationCap } from 'lucide-react';
+import { Home, MessageCircle, Film, GraduationCap, Settings, ChevronLeft, ChevronRight, Clock, Plus, LogOut } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import SocratesLogo from '../3d/SocratesLogo';
 import { useAuth } from '../context/AuthContext';
@@ -6,8 +6,8 @@ import { useAuth } from '../context/AuthContext';
 const navItems = [
   { id: 'home', label: 'Home', icon: Home, path: '/app/home' },
   { id: 'scoratis', label: 'Scoratis AI', icon: MessageCircle, path: '/app/scoratis', primary: true },
-  { id: 'quizzes', label: 'Quizzes', icon: GraduationCap, path: '/app/quizzes' },
-  { id: 'review', label: 'Review', icon: Brain, path: '/app/review' },
+  { id: 'lessons', label: 'Lessons', icon: GraduationCap, path: '/app/lessons' },
+  { id: 'videos', label: 'Video Vault', icon: Film, path: '/app/videos' },
   { id: 'settings', label: 'AI Settings', icon: Settings, path: '/app/settings' },
 ];
 
@@ -62,9 +62,6 @@ export default function Sidebar({
             </div>
             <div className="flex-1 min-w-0">
               <h2 className="text-text-primary font-semibold text-sm truncate">{user?.username || 'Loading...'}</h2>
-              <p className="text-xs text-text-muted">
-                {stats.journals_this_week || 0} entries this week
-              </p>
             </div>
             <button
               onClick={handleLogout}
@@ -189,28 +186,6 @@ export default function Sidebar({
         </button>
       )}
 
-      {/* Quick Stats - Hidden when collapsed */}
-      {!collapsed && (
-        <div className="glass-card rounded-xl p-3 mt-4">
-          <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-2">
-            Quick Stats
-          </h3>
-          <div className="grid grid-cols-2 gap-2">
-            <div className="text-center">
-              <div className="text-xl font-semibold text-text-primary">
-                {stats.total_journals || 0}
-              </div>
-              <div className="text-xs text-text-muted">Journals</div>
-            </div>
-            <div className="text-center">
-              <div className="text-xl font-semibold text-text-primary">
-                {stats.total_folders || 0}
-              </div>
-              <div className="text-xs text-text-muted">Folders</div>
-            </div>
-          </div>
-        </div>
-      )}
     </aside>
   );
 }

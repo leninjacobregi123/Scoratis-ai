@@ -99,3 +99,6 @@ htmlcov/
 *.pid.lock
 backend/uploads/
 .qwen/
+
+# Manim render scratch (partial movie files, texts, images)
+backend/media/

@@ -1,6 +1,6 @@
 """
 Migration Service for RAG System
-Migrates existing journals and conversations to the new document/chunk structure
+Migrates existing conversations to the new document/chunk structure
 """
 
 import logging
@@ -10,7 +10,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import (
-    Document, Chunk, Journal, Conversation, ChatMessage,
+    Document, Chunk, Conversation, ChatMessage,
     SourceType, DocumentStatus
 )
 from services.ingestion_service import get_ingestion_service
@@ -24,7 +24,6 @@ class MigrationService:
     Service for migrating existing data to the new RAG system.
 
     Handles:
-    - Journal to Document/Chunk migration
     - Conversation to Document/Chunk migration
     - Batch processing with progress tracking
     """
@@ -38,94 +37,6 @@ class MigrationService:
         if self._ingestion_service is None:
             self._ingestion_service = get_ingestion_service()
         return self._ingestion_service
-
-    async def migrate_journal(
-        self,
-        db: AsyncSession,
-        journal: Journal,
-        generate_chunks: bool = True
-    ) -> Optional[Document]:
-        """
-        Migrate a single journal to the document/chunk structure.
-
-        Args:
-            db: Database session
-            journal: Journal to migrate
-            generate_chunks: Whether to generate chunks and embeddings
-
-        Returns:
-            Created Document or None if failed
-        """
-        try:
-            # Check if already migrated
-            existing = await db.execute(
-                select(Document).where(
-                    Document.source_type == SourceType.JOURNAL,
-                    Document.source_id == journal.id
-                )
-            )
-            if existing.scalar_one_or_none():
-                logger.info(f"Journal {journal.id} already migrated, skipping")
-                return None
-
-            # Prepare metadata
-            metadata = {
-                "original_tags": journal.tags,
-                "folder_id": journal.folder_id,
-                "word_count": len(journal.content.split()) if journal.content else 0,
-            }
-
-            if generate_chunks:
-                # Generate summary, chunks, and embeddings
-                summary, summary_embedding, chunks, chunk_embeddings = \
-                    self.ingestion_service.process_text_content(
-                        content=journal.content,
-                        title=journal.title,
-                        metadata=metadata
-                    )
-            else:
-                summary = self.ingestion_service.generate_summary(journal.content)
-                summary_embedding = None
-                chunks = []
-                chunk_embeddings = []
-
-            # Create document
-            document = Document(
-                user_id=journal.user_id,
-                title=journal.title,
-                content=journal.content,
-                source_type=SourceType.JOURNAL,
-                source_id=journal.id,
-                document_metadata=metadata,
-                summary=summary,
-                embedding=summary_embedding,
-                status=DocumentStatus.COMPLETED if generate_chunks else DocumentStatus.PENDING,
-                created_at=journal.created_at,
-                updated_at=journal.updated_at,
-            )
-            db.add(document)
-            await db.flush()
-
-            # Create chunks
-            if generate_chunks and chunks:
-                for chunk_data, embedding in zip(chunks, chunk_embeddings):
-                    chunk = Chunk(
-                        document_id=document.id,
-                        chunk_index=chunk_data.chunk_index,
-                        content=chunk_data.content,
-                        chunk_metadata=chunk_data.metadata,
-                        embedding=embedding,
-                    )
-                    db.add(chunk)
-
-            await db.commit()
-            logger.info(f"Migrated journal {journal.id} -> document {document.id} with {len(chunks)} chunks")
-            return document
-
-        except Exception as e:
-            await db.rollback()
-            logger.error(f"Error migrating journal {journal.id}: {e}")
-            return None
 
     async def migrate_conversation(
         self,
@@ -237,67 +148,6 @@ class MigrationService:
             logger.error(f"Error migrating conversation {conversation.id}: {e}")
             return None
 
-    async def migrate_all_journals(
-        self,
-        db: AsyncSession,
-        batch_size: int = 50,
-        generate_chunks: bool = True
-    ) -> Dict[str, Any]:
-        """
-        Migrate all journals to the new structure.
-
-        Args:
-            db: Database session
-            batch_size: Number of journals to process per batch
-            generate_chunks: Whether to generate chunks and embeddings
-
-        Returns:
-            Migration statistics
-        """
-        logger.info("Starting journal migration...")
-
-        stats = {
-            "total": 0,
-            "migrated": 0,
-            "skipped": 0,
-            "failed": 0,
-        }
-
-        # Count total journals
-        count_result = await db.execute(
-            select(func.count(Journal.id)).where(Journal.is_deleted == False)
-        )
-        stats["total"] = count_result.scalar()
-
-        # Process in batches
-        offset = 0
-        while True:
-            journals_result = await db.execute(
-                select(Journal)
-                .where(Journal.is_deleted == False)
-                .offset(offset)
-                .limit(batch_size)
-            )
-            journals = journals_result.scalars().all()
-
-            if not journals:
-                break
-
-            for journal in journals:
-                result = await self.migrate_journal(db, journal, generate_chunks)
-                if result:
-                    stats["migrated"] += 1
-                elif result is None:
-                    stats["skipped"] += 1
-                else:
-                    stats["failed"] += 1
-
-            offset += batch_size
-            logger.info(f"Migrated {offset} journals...")
-
-        logger.info(f"Journal migration complete: {stats}")
-        return stats
-
     async def migrate_all_conversations(
         self,
         db: AsyncSession,
@@ -365,7 +215,7 @@ class MigrationService:
         generate_chunks: bool = True
     ) -> Dict[str, Any]:
         """
-        Run full migration of journals and conversations.
+        Run full migration of conversations.
 
         Args:
             db: Database session
@@ -377,14 +227,12 @@ class MigrationService:
         """
         logger.info("Starting full migration...")
 
-        journal_stats = await self.migrate_all_journals(db, batch_size, generate_chunks)
         conversation_stats = await self.migrate_all_conversations(db, batch_size, generate_chunks)
 
         return {
-            "journals": journal_stats,
             "conversations": conversation_stats,
-            "total_migrated": journal_stats["migrated"] + conversation_stats["migrated"],
-            "total_failed": journal_stats["failed"] + conversation_stats["failed"],
+            "total_migrated": conversation_stats["migrated"],
+            "total_failed": conversation_stats["failed"],
         }
 
     async def verify_migration(self, db: AsyncSession) -> Dict[str, Any]:
