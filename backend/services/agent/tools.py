@@ -112,7 +112,7 @@ def create_search_knowledge_base_tool(
 ) -> Callable[..., Awaitable[Dict[str, Any]]]:
     """
     Factory for the knowledge base search tool.
-    Searches journals, documents, and past conversations.
+    Searches documents and past conversations.
 
     Enhanced with:
     - Query reformulation (automatic query optimization)
@@ -225,47 +225,6 @@ def create_search_knowledge_base_tool(
             }
 
     return search_knowledge_base
-
-
-def create_search_journals_tool(
-    db_session: AsyncSession,
-    rag_service: Any,
-    user_id: int = 1
-) -> Callable[..., Awaitable[Dict[str, Any]]]:
-    """Factory for the journal-specific search tool."""
-    async def search_journals(query: str, limit: int = 5) -> Dict[str, Any]:
-        """Search the user's journal entries for relevant notes."""
-        try:
-            # Ensure limit is an integer
-            limit_int = int(limit) if limit else 5
-            results = await rag_service.search_journals(db_session, query, user_id, limit_int)
-
-            return {
-                "success": True,
-                "query": query,
-                "results_count": len(results) if results else 0,
-                "journals": [
-                    {
-                        "title": getattr(r, 'title', ''),
-                        "content_preview": str(getattr(r, 'content', '') or '')[:300],
-                        "similarity": round(getattr(r, 'similarity', 0.0), 3),
-                        "tags": getattr(r, 'metadata', {}).get("tags", []) if hasattr(r, 'metadata') else []
-                    }
-                    for r in (results or [])
-                ]
-            }
-
-        except Exception as e:
-            logger.error(f"Journal search error: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "query": query,
-                "results_count": 0,
-                "journals": []
-            }
-
-    return search_journals
 
 
 def create_search_past_conversations_tool(
@@ -1052,6 +1011,89 @@ class AgenticToolCategory(str, Enum):
     VERIFICATION = "verification"
 
 
+def create_generate_lesson_tool(
+    user_id: int,
+    session_id: str,
+) -> Callable[..., Awaitable[Dict[str, Any]]]:
+    """Factory for the full-lesson generation tool.
+
+    Sits alongside generate_video, at a different altitude: generate_video
+    makes ONE animation for the current explanation, this builds a multi-scene
+    interactive lesson (slides + narration + optionally embedded animations)
+    that the learner works through in the lesson player.
+
+    Same per-turn guard as generate_video - a lesson is a minutes-long job, so
+    the model must not be able to queue several in one response.
+    """
+    call_count = {"n": 0}
+
+    async def generate_lesson(
+        requirement: str,
+        reason: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Build a complete interactive lesson on a topic: an outline, several
+        slides with spoken narration, and animations where motion genuinely
+        teaches something.
+
+        Call this when the student wants to LEARN A TOPIC properly rather than
+        get a single answer - "teach me X", "I need to understand X for my
+        exam", "walk me through X from scratch". It takes a few minutes to
+        build, so prefer it for real study intent, not passing curiosity.
+
+        Do NOT call this for: a quick factual question, a follow-up inside an
+        explanation you are already giving, or anything a single reply covers.
+
+        Args:
+            requirement: What to teach, in the student's own framing.
+            reason: One sentence on why a full lesson suits this request.
+        """
+        if call_count["n"] > 0:
+            return {
+                "success": False,
+                "error": "A lesson was already requested for this response - only one per turn.",
+                "requirement": requirement,
+            }
+
+        try:
+            from models import Lesson, LessonStatus
+            from database import get_database
+            from tasks.lesson_tasks import generate_lesson_task
+
+            db = get_database()
+            async with db.get_session() as session:
+                lesson = Lesson(
+                    user_id=user_id,
+                    requirement=requirement[:2000],
+                    session_id=session_id,
+                    status=LessonStatus.PENDING,
+                    message="Queued",
+                )
+                session.add(lesson)
+                await session.flush()
+                lesson_id = lesson.id
+
+            generate_lesson_task.delay(lesson_id)
+            call_count["n"] += 1
+            logger.info(f"Agent triggered lesson generation: {requirement[:60]} ({reason})")
+
+            return {
+                "success": True,
+                "lesson_id": lesson_id,
+                "requirement": requirement,
+                "message": (
+                    "Lesson generation started. Tell the student it is being built "
+                    "and will appear in their lessons shortly."
+                ),
+            }
+
+        except Exception as e:
+            logger.error(f"Lesson generation trigger error: {e}")
+            return {"success": False, "error": str(e), "requirement": requirement}
+
+    return generate_lesson
+
+
 TOOL_REGISTRY: List[ToolDefinition] = [
     # === Agentic Loop Tools ===
     ToolDefinition(
@@ -1289,7 +1331,7 @@ IMPORTANT: Only use after both search tools have been tried and returned empty."
     # === Knowledge Tools ===
     ToolDefinition(
         name="search_knowledge_base",
-        description="""Search the user's PRIVATE knowledge base including journals, uploaded documents, and notes.
+        description="""Search the user's PRIVATE knowledge base including uploaded documents and notes.
 
 **THIS IS YOUR PRIMARY INFORMATION SOURCE - ALWAYS TRY FIRST**
 
@@ -1328,40 +1370,6 @@ Returns: Relevant chunks with citation numbers for reference. May be empty if no
         examples=[
             "search_knowledge_base(query='photosynthesis notes')",
             "search_knowledge_base(query='calculus derivatives', limit=3)"
-        ]
-    ),
-
-    ToolDefinition(
-        name="search_journals",
-        description="""Search specifically through the user's journal entries.
-Use this when:
-- The user asks about their personal notes or reflections
-- Looking for study notes on a specific topic
-- The user mentions "my journal" or "what I learned"
-
-Returns journal entries with titles and content previews.""",
-        category=ToolCategory.KNOWLEDGE,
-        parameters=[
-            ToolParameter(
-                name="query",
-                type="string",
-                description="The search query for journal entries",
-                required=True
-            ),
-            ToolParameter(
-                name="limit",
-                type="integer",
-                description="Maximum number of journals to return (default: 5)",
-                required=False,
-                default=5
-            )
-        ],
-        factory=create_search_journals_tool,
-        requires_db=True,
-        requires_rag=True,
-        examples=[
-            "search_journals(query='physics momentum')",
-            "search_journals(query='essay ideas', limit=3)"
         ]
     ),
 
@@ -1563,6 +1571,47 @@ concepts; the render pipeline generates the actual script and scene code.""",
     ),
 
     ToolDefinition(
+        name="generate_lesson",
+        category=ToolCategory.UTILITY,
+        description="""Build a COMPLETE interactive lesson on a topic: outline, slides with spoken narration, and animations where motion teaches.
+
+**Altitude matters**: `generate_video` makes one animation for the point you are currently explaining. `generate_lesson` builds a whole multi-scene lesson the student works through separately.
+
+Call this when the student wants to LEARN A TOPIC properly:
+- "teach me X", "I want to understand X from scratch"
+- "I have an exam on X, walk me through it"
+- Any request for structured study rather than a single answer
+
+Do NOT call this for:
+- A quick factual question, or a follow-up inside an explanation you are already giving
+- Anything one reply covers
+
+Takes a few minutes to build, so reserve it for genuine study intent.""",
+        parameters=[
+            ToolParameter(
+                name="requirement",
+                type="string",
+                description="What to teach, in the student's own framing",
+                required=True
+            ),
+            ToolParameter(
+                name="reason",
+                type="string",
+                description="One sentence on why a full lesson suits this request",
+                required=False,
+                default=""
+            )
+        ],
+        factory=create_generate_lesson_tool,
+        examples=[
+            """generate_lesson(
+    requirement='Teach me how a four-stroke engine works, from scratch',
+    reason='The student asked to learn the whole topic, not a single fact'
+)"""
+        ]
+    ),
+
+    ToolDefinition(
         name="link_preview",
         description="""Generate a rich preview card for a URL with title, description, and image.
 
@@ -1667,3 +1716,4 @@ def get_tools_by_category(category: ToolCategory) -> List[ToolDefinition]:
 def get_all_tool_schemas() -> List[Dict[str, Any]]:
     """Get OpenAI function schemas for all tools"""
     return [tool.to_openai_schema() for tool in TOOL_REGISTRY]
+

@@ -86,7 +86,7 @@ class QueryClassifier:
     # Patterns that indicate substantive query (definitely need tools)
     SUBSTANTIVE_INDICATORS = [
         # Personal context references
-        r"(my|our) (notes|documents|journal|files|uploads|papers)",
+        r"(my|our) (notes|documents|files|uploads|papers)",
         r"(i|we) (wrote|uploaded|saved|noted|recorded)",
         r"(in|from) my (notes|documents|files|uploads)",
         r"what (did|have) (i|we) (learn|write|note|save)",

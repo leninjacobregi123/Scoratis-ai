@@ -14,7 +14,9 @@ import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import LLMSwitcher from '../components/LLMSwitcher';
 import { THEME, TUTOR, getStandardizedThemeClasses } from '../config/subjectThemes';
 import { parseCitations, buildSourceMap, hasCitations } from '../utils/citations';
-import { getAuthHeaders, refreshAccessToken, clearTokens } from '../utils/auth';
+import { getAuthHeaders, refreshAccessToken, clearTokens, getRefreshToken } from '../utils/auth';
+import { stripReasoning } from '../utils/stripReasoning';
+import LessonCard from '../components/LessonCard';
 import { CitationNumber, CitationPopup, CitationList, SourcesBadge, FootnotesSection } from '../components/Citation';
 import AgenticWorkflow, { useAgenticWorkflow } from '../components/AgenticWorkflow';
 import { AttachmentButton, AttachmentPreview, UploadProgressOverlay } from '../components/ChatAttachments';
@@ -40,9 +42,14 @@ async function fetchWithAuthRetry(url, options) {
 
   const newToken = await refreshAccessToken();
   if (!newToken) {
-    clearTokens();
-    if (window.location.pathname !== '/login') {
-      window.location.href = '/login';
+    // Same rule as useApi.js: only bail to /login when the refresh token was
+    // actually rejected (refreshAccessToken clears it in that case). A
+    // transient backend outage must not end a still-valid session.
+    if (!getRefreshToken()) {
+      clearTokens();
+      if (window.location.pathname !== '/login') {
+        window.location.href = '/login';
+      }
     }
     return response;
   }
@@ -363,14 +370,11 @@ function VideoOfferCard({ recommendation, onAccept, onDismiss }) {
   );
 }
 
-// Helper function to strip pedagogical plan from AI responses
+// Helper function to strip pedagogical plan from AI responses.
+// Mirrors backend/api/routes/chat.py's strip_internal_reasoning - keep the
+// two in sync; this one cleans the live stream, that one the persisted copy.
 function stripPedagogicalPlan(content) {
-  if (!content) return content;
-  // Remove <pedagogical_plan>...</pedagogical_plan> sections (including multi-line)
-  return content
-    .replace(/<pedagogical_plan>[\s\S]*?<\/pedagogical_plan>/gi, '')
-    .replace(/\*\*<pedagogical_plan>\*\*[\s\S]*?<\/pedagogical_plan>/gi, '')
-    .trim();
+  return stripReasoning(content);
 }
 
 // Message card - Claude.ai inspired professional design
@@ -384,6 +388,7 @@ function MessageCard({
   onPauseAudio,
   video,
   generatingVideo,
+  lesson,
   onRemoveVideo,
   videoRecommendation,
   onAcceptVideo,
@@ -638,6 +643,10 @@ function MessageCard({
             )}
 
             {/* Inline video section - shows after AI messages */}
+            {lesson?.lessonId && (
+              <LessonCard lessonId={lesson.lessonId} requirement={lesson.requirement} />
+            )}
+
             {(video || generatingVideo) && (
               <InlineVideoCard
                 video={video}
@@ -807,6 +816,7 @@ export default function Chat() {
 
   // Per-message video state (inline display)
   const [messageVideos, setMessageVideos] = useState({});       // {msgId: {path, topic}}
+  const [messageLessons, setMessageLessons] = useState({});     // {msgId: {lessonId, requirement}}
   const [generatingVideos, setGeneratingVideos] = useState({}); // {msgId: {taskId, topic, progress, stage}}
 
   // Video recommendations based on learning state (3-tier system)
@@ -1033,7 +1043,7 @@ export default function Chat() {
 
     try {
       const baseUrl = import.meta.env.VITE_API_URL || '';
-      const response = await fetch(`${baseUrl}/chat/tts`, {
+      const response = await fetchWithAuthRetry(`${baseUrl}/chat/tts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ text })
@@ -1109,15 +1119,54 @@ export default function Chat() {
       // (and the chat-stream endpoint itself) key off session_id, not this
       // conversation's numeric id, so a synthesized `conv_${id}` string
       // would never match the row in the conversations table.
-      setSessionId(data.session_id || `conv_${conversationId}`);
-      setMessages(data.messages?.map(m => ({
+      const realSessionId = data.session_id || `conv_${conversationId}`;
+      setSessionId(realSessionId);
+      const loaded = data.messages?.map(m => ({
         ...m,
         timestamp: new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      })) || []);
+      })) || [];
+      setMessages(loaded);
+      restoreLessonCards(realSessionId, loaded);
     } catch (error) {
       console.error('Failed to load conversation:', error);
     } finally {
       setIsRestoringConversation(false);
+    }
+  };
+
+  // The lesson->message link lives only in component state, so reopening a
+  // thread would otherwise lose every lesson card the agent produced in it.
+  // Lessons carry their session_id, and the assistant reply is saved after
+  // the lesson row is created, so each lesson belongs to the first assistant
+  // message at or after its created_at.
+  const restoreLessonCards = async (chatSessionId, loadedMessages) => {
+    if (!chatSessionId) return;
+    try {
+      const { lessons } = await api.get(
+        `/lessons?session_id=${encodeURIComponent(chatSessionId)}`
+      );
+      if (!lessons?.length) return;
+
+      const assistantMsgs = loadedMessages
+        .filter(m => m.role === 'assistant' || m.role === 'ai')
+        .map(m => ({ id: m.id, at: new Date(m.created_at).getTime() }))
+        .sort((a, b) => a.at - b.at);
+
+      const restored = {};
+      for (const lesson of lessons) {
+        const createdAt = new Date(lesson.created_at).getTime();
+        const target = assistantMsgs.find(m => m.at >= createdAt)
+          || assistantMsgs[assistantMsgs.length - 1];
+        if (target) {
+          restored[target.id] = {
+            lessonId: lesson.id,
+            requirement: lesson.requirement,
+          };
+        }
+      }
+      setMessageLessons(prev => ({ ...prev, ...restored }));
+    } catch (error) {
+      console.error('Failed to restore lesson cards:', error);
     }
   };
 
@@ -1277,7 +1326,7 @@ export default function Chat() {
 
     try {
       const baseUrl = import.meta.env.VITE_API_URL || '';
-      const response = await fetch(`${baseUrl}/chat/generate-video`, {
+      const response = await fetchWithAuthRetry(`${baseUrl}/chat/generate-video`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
@@ -1329,7 +1378,7 @@ export default function Chat() {
   const fetchCanvasDocuments = useCallback(async () => {
     try {
       const baseUrl = import.meta.env.VITE_API_URL || '';
-      const response = await fetch(`${baseUrl}/v1/documents?status=COMPLETED`, {
+      const response = await fetchWithAuthRetry(`${baseUrl}/v1/documents?status=COMPLETED`, {
         headers: { ...getAuthHeaders() },
       });
       if (response.ok) {
@@ -1681,6 +1730,18 @@ export default function Chat() {
                   fetchTTSAudio(newMessageId, fullContent);
                 }
 
+                // A lesson the agent chose to build this turn. The card
+                // polls its own progress, so nothing else is needed here.
+                if (data.auto_lesson?.lesson_id) {
+                  setMessageLessons(prev => ({
+                    ...prev,
+                    [newMessageId]: {
+                      lessonId: data.auto_lesson.lesson_id,
+                      requirement: data.auto_lesson.requirement,
+                    }
+                  }));
+                }
+
                 // NEW: Handle AUTOMATIC video generation
                 if (data.auto_video) {
                   const { task_id, topic, concepts, visualization_type, estimated_duration } = data.auto_video;
@@ -1947,6 +2008,7 @@ export default function Chat() {
                 onPauseAudio={pauseAudio}
                 video={messageVideos[msg.id]}
                 generatingVideo={generatingVideos[msg.id]}
+                lesson={messageLessons[msg.id]}
                 onRemoveVideo={() => removeMessageVideo(msg.id)}
                 videoRecommendation={videoRecommendations[msg.id]}
                 onAcceptVideo={handleAcceptVideoOffer}

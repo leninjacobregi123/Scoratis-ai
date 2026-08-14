@@ -495,7 +495,7 @@ class ScoratisAgent:
         # Search tools that should be tracked
         SEARCH_TOOLS = {
             "search_knowledge_base", "web_search",
-            "search_journals", "search_past_conversations"
+            "search_past_conversations"
         }
 
         async def tools_node(state: AgentState) -> Dict[str, Any]:
@@ -909,6 +909,7 @@ class ScoratisAgent:
         # now the sole source of auto-video-generation for the agentic path,
         # replacing the old separate post-hoc video_analyzer_service call.
         auto_video = None
+        auto_lesson = None
 
         # Agentic loop with streaming
         max_iterations = 5
@@ -957,6 +958,15 @@ class ScoratisAgent:
                                 "concepts": result.get("concepts", []),
                                 "visualization_type": result.get("visualization_type"),
                                 "estimated_duration": result.get("estimated_duration"),
+                            }
+
+                        # Same treatment for a whole lesson: the tool kicks off
+                        # a multi-minute Celery job, so the id has to reach the
+                        # client for it to show progress and link to the lesson.
+                        if tool_name == "generate_lesson" and isinstance(result, dict) and result.get("success"):
+                            auto_lesson = {
+                                "lesson_id": result.get("lesson_id"),
+                                "requirement": result.get("requirement"),
                             }
 
                         # Yield tool end
@@ -1047,6 +1057,7 @@ class ScoratisAgent:
                 "sources": rag_context.get("sources", []) if rag_context else [],
                 "tools_used": len(tool_results),
                 "auto_video": auto_video,
+                "auto_lesson": auto_lesson,
             }
         }
 
