@@ -9,13 +9,19 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@maic/dsl": "file:vendor/maic-dsl",
+    "@maic/renderer": "file:vendor/maic-renderer",
     "axios": "^1.6.3",
+    "echarts": "^6.1.0",
+    "katex": "^0.18.4",
     "lucide-react": "^0.303.0",
+    "motion": "^13.1.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-markdown": "^10.1.0",
     "react-router-dom": "^6.21.1",
     "react-syntax-highlighter": "^16.1.0",
+    "shiki": "^4.4.3",
     "three": "^0.160.0"
   },
   "devDependencies": {
