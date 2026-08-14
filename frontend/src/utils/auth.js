@@ -29,27 +29,43 @@ export function getAuthHeaders() {
 }
 
 // Refreshes the access token using the stored refresh token. Returns the new
-// access token on success, or null if the refresh token is missing/invalid
-// (callers should treat null as "log the user out").
+// access token on success, or null if the refresh could not be completed
+// (callers should treat null as "this request failed").
+//
+// Only an actual credential rejection (401/403) clears the stored tokens.
+// A network error or a 5xx means the SERVER is unavailable, not that the
+// refresh token is bad - wiping credentials there logs the user out for
+// what is usually a few seconds of backend downtime (a restart, a deploy),
+// and they lose their session with no way to tell why. Those cases keep the
+// tokens so the next attempt can succeed.
 export async function refreshAccessToken() {
   const refreshToken = getRefreshToken()
   if (!refreshToken) return null
 
+  let response
   try {
-    const response = await fetch('/auth/refresh', {
+    response = await fetch('/auth/refresh', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refresh_token: refreshToken }),
     })
-    if (!response.ok) {
-      clearTokens()
-      return null
-    }
+  } catch {
+    return null // network/server unreachable - keep credentials, retry later
+  }
+
+  if (response.status === 401 || response.status === 403) {
+    clearTokens() // genuinely rejected - this session is over
+    return null
+  }
+  if (!response.ok) {
+    return null // 5xx etc - transient, keep credentials
+  }
+
+  try {
     const data = await response.json()
     setTokens(data)
     return data.access_token
   } catch {
-    clearTokens()
     return null
   }
 }

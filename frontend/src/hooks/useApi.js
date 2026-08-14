@@ -1,6 +1,6 @@
 import { useMemo, useCallback } from 'react'
 import axios from 'axios'
-import { getAccessToken, refreshAccessToken, clearTokens } from '../utils/auth'
+import { getAccessToken, refreshAccessToken, clearTokens, getRefreshToken } from '../utils/auth'
 
 const API_BASE = '/api'
 
@@ -33,9 +33,15 @@ instance.interceptors.response.use(
         original.headers.Authorization = `Bearer ${newToken}`
         return instance(original)
       }
-      clearTokens()
-      if (window.location.pathname !== '/login') {
-        window.location.href = '/login'
+      // refreshAccessToken() only clears the stored tokens when the refresh
+      // was genuinely rejected. If one is still there the failure was
+      // transient (backend restarting, network blip) - fail this one request
+      // rather than throwing the user out of a session that's still valid.
+      if (!getRefreshToken()) {
+        clearTokens()
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login'
+        }
       }
     }
     return Promise.reject(error)
