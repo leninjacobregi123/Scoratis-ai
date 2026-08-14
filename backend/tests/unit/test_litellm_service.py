@@ -143,6 +143,7 @@ class TestLiteLLMServiceGeneration:
             messages=[{"role": "user", "content": "Hello"}],
             system_prompt="You are helpful.",
             provider=ProviderType.GROQ,
+            model="llama-3.3-70b-versatile",
             api_key_encrypted="fake_encrypted_key",
         )
 
@@ -177,6 +178,7 @@ class TestLiteLLMServiceGeneration:
                 system_prompt="You are helpful.",
                 tools=[{"type": "function", "function": {"name": "search"}}],
                 provider=ProviderType.GROQ,
+                model="llama-3.3-70b-versatile",
                 api_key_encrypted="fake_encrypted_key",
             )
 
@@ -197,6 +199,7 @@ class TestLiteLLMServiceGeneration:
                     messages=[{"role": "user", "content": "Hello"}],
                     system_prompt="You are helpful.",
                     provider=ProviderType.GROQ,
+                    model="llama-3.3-70b-versatile",
                     api_key_encrypted="fake_encrypted_key",
                 )
 

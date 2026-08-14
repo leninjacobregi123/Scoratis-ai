@@ -122,10 +122,6 @@ export const CLOUD_PROVIDERS = {
     recommended: true,
     description: "Karunya University's Sofie Code LLM gateway - just paste your personal key",
     color: '#6b7c5e',
-    // Pre-filled so the user only has to paste their personal sk- key -
-    // campus network/VPN only, see llm.karunya.edu docs.
-    defaultBaseUrl: 'https://llm.karunya.edu/v1',
-    defaultModelName: 'sofie-code',
     networkNote: 'Campus network or VPN only - "connection refused/timed out" almost always means you\'re off-campus.',
     models: [],
   },

@@ -450,8 +450,8 @@ class LiteLLMService:
         Raises:
             LLMGenerationError: On any LLM failure with structured error info
         """
-        provider = provider or ProviderType(settings.DEFAULT_LLM_PROVIDER)
-        model = model or settings.DEFAULT_LLM_MODEL
+        if provider is None or model is None:
+            raise ValueError("No LLM provider configured - provider and model must be explicitly supplied")
         api_key = self._get_api_key(provider, api_key_encrypted)
 
         provider_info = PROVIDER_INFO.get(provider, {})
@@ -500,8 +500,8 @@ class LiteLLMService:
         """
         Generate a streaming response from any supported provider.
         """
-        provider = provider or ProviderType(settings.DEFAULT_LLM_PROVIDER)
-        model = model or settings.DEFAULT_LLM_MODEL
+        if provider is None or model is None:
+            raise ValueError("No LLM provider configured - provider and model must be explicitly supplied")
         api_key = self._get_api_key(provider, api_key_encrypted)
 
         provider_info = PROVIDER_INFO.get(provider, {})
@@ -552,8 +552,8 @@ class LiteLLMService:
         """
         Generate a response with tool/function calling support.
         """
-        provider = provider or ProviderType(settings.DEFAULT_LLM_PROVIDER)
-        model = model or settings.DEFAULT_LLM_MODEL
+        if provider is None or model is None:
+            raise ValueError("No LLM provider configured - provider and model must be explicitly supplied")
         api_key = self._get_api_key(provider, api_key_encrypted)
 
         provider_info = PROVIDER_INFO.get(provider, {})
