@@ -3,7 +3,10 @@ Video Generation Service for Scoratis
 Interfaces with maestro-studio for AI-powered educational video generation
 """
 
+import ast
+import builtins
 import os
+import re
 import sys
 import asyncio
 import uuid
@@ -12,9 +15,11 @@ import httpx
 import logging
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Set
 from dataclasses import dataclass, field
 from enum import Enum
+
+import manim as manim_module
 
 logger = logging.getLogger(__name__)
 
@@ -24,102 +29,37 @@ if MAESTRO_PATH.exists():
     sys.path.insert(0, str(MAESTRO_PATH))
 
 
-class OllamaVideoClient:
-    """
-    Ollama client wrapper compatible with LlamaCppClient interface.
-    Used for generating video content (titles, bullet points, narration, etc.)
-    """
-
-    def __init__(self, base_url: str = None, model: str = "llama3.2"):
-        self.base_url = base_url or os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.model = model
-        logger.info(f"OllamaVideoClient initialized: {self.base_url} with model {self.model}")
-
-    def check_model_exists(self) -> bool:
-        """Check if the model exists in Ollama"""
-        try:
-            with httpx.Client(timeout=10.0) as client:
-                response = client.get(f"{self.base_url}/api/tags")
-                if response.status_code == 200:
-                    models = response.json().get("models", [])
-                    return any(m.get("name", "").startswith(self.model) for m in models)
-        except Exception:
-            pass
-        return False
-
-    def generate(
-        self,
-        prompt: str,
-        max_tokens: int = 2048,
-        temperature: float = 0.7,
-        top_p: float = 0.9,
-        stop: Optional[list] = None
-    ) -> str:
-        """Generate text completion using Ollama."""
-        try:
-            with httpx.Client(timeout=120.0) as client:
-                response = client.post(
-                    f"{self.base_url}/api/generate",
-                    json={
-                        "model": self.model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {
-                            "temperature": temperature,
-                            "top_p": top_p,
-                            "num_predict": max_tokens,
-                            "stop": stop or []
-                        }
-                    }
-                )
-                response.raise_for_status()
-                result = response.json()
-                output = result.get("response", "").strip()
-                logger.info(f"OllamaVideoClient generated {len(output)} chars using {self.model}")
-                return output
-        except Exception as e:
-            logger.error(f"Ollama generation failed: {e}")
-            raise
-
-
 class SmartVideoClient:
     """
-    Smart video client that automatically chooses between API and local Ollama.
-    - If API key is configured → Use cloud API (Groq, OpenAI, etc.)
-    - If no API key → Fallback to local Ollama
+    Video content client (titles, bullet points, narration).
+
+    Cloud/API only - local providers (Ollama/LM Studio/LocalAI/Text Gen
+    WebUI) were removed from the product in migration 010, so there is no
+    local fallback to degrade to. Callers must have a configured provider
+    with an API key; generate() raises otherwise rather than silently
+    emitting placeholder content.
     """
 
     def __init__(self):
-        self._api_client = None
-        self._ollama_client = None
+        self._llm_service = None
         self._use_api = False
         self._initialize()
 
     def _initialize(self):
-        """Initialize the appropriate client based on API key availability"""
+        """Initialize from the current per-user LLM config."""
         try:
             from llm_service import llm_service
             config = llm_service.get_current_config()
 
-            if config:
-                provider = config.get("provider", "ollama")
-                # Check if using a cloud provider (not ollama/local)
-                if provider not in ["ollama", "lmstudio", "localai", "textgenwebui"]:
-                    # Check if API key is available by checking the current config has encrypted key
-                    if llm_service.has_api_key():
-                        self._use_api = True
-                        self._llm_service = llm_service
-                        logger.info(f"SmartVideoClient: Using API ({provider}/{config.get('model')})")
-                    else:
-                        logger.info(f"SmartVideoClient: No API key for {provider}, falling back to Ollama")
-
-            if not self._use_api:
-                self._ollama_client = OllamaVideoClient()
-                logger.info("SmartVideoClient: Using local Ollama")
+            if config and llm_service.has_api_key():
+                self._use_api = True
+                self._llm_service = llm_service
+                logger.info(f"SmartVideoClient: Using API ({config.get('provider')}/{config.get('model')})")
+            else:
+                logger.warning("SmartVideoClient: No configured provider/API key available")
 
         except Exception as e:
-            logger.warning(f"SmartVideoClient init error: {e}, falling back to Ollama")
-            self._ollama_client = OllamaVideoClient()
+            logger.warning(f"SmartVideoClient init error: {e}")
 
     @property
     def model(self) -> str:
@@ -127,7 +67,7 @@ class SmartVideoClient:
         if self._use_api:
             config = self._llm_service.get_current_config()
             return config.get("model", "unknown") if config else "unknown"
-        return self._ollama_client.model if self._ollama_client else "llama3.2"
+        return "unconfigured"
 
     @property
     def provider(self) -> str:
@@ -135,13 +75,11 @@ class SmartVideoClient:
         if self._use_api:
             config = self._llm_service.get_current_config()
             return config.get("provider", "api") if config else "api"
-        return "ollama"
+        return "unconfigured"
 
     def check_model_exists(self) -> bool:
         """Check if the model is available"""
-        if self._use_api:
-            return True  # Assume API is available if configured
-        return self._ollama_client.check_model_exists() if self._ollama_client else False
+        return self._use_api
 
     def generate(
         self,
@@ -151,10 +89,12 @@ class SmartVideoClient:
         top_p: float = 0.9,
         stop: Optional[list] = None
     ) -> str:
-        """Generate text using the best available model"""
-        if self._use_api:
-            return self._generate_with_api(prompt, max_tokens, temperature)
-        return self._ollama_client.generate(prompt, max_tokens, temperature, top_p, stop)
+        """Generate text using the configured provider."""
+        if not self._use_api:
+            raise RuntimeError(
+                "No LLM provider configured - add a provider and API key in AI Settings."
+            )
+        return self._generate_with_api(prompt, max_tokens, temperature)
 
     def _generate_with_api(self, prompt: str, max_tokens: int, temperature: float) -> str:
         """Generate using the configured API"""
@@ -184,75 +124,47 @@ class SmartVideoClient:
 
 class SmartManimClient:
     """
-    Smart Manim code generator that automatically chooses between API and local Ollama.
-    - If API key is configured → Use cloud API for better code generation
-    - If no API key → Fallback to local Ollama with code-optimized models
-    """
+    Manim code generator.
 
-    CODE_MODELS = ["manim-llama", "deepseek-coder", "codellama", "llama3.2", "mistral"]
+    Cloud/API only - see SmartVideoClient's docstring. There is no local
+    model fallback; generate_manim_code() raises if no provider is
+    configured rather than emitting a placeholder scene.
+    """
 
     def __init__(self):
         self._use_api = False
-        self._ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-        self._ollama_model = "llama3.2"
+        self._llm_service = None
         self._initialize()
 
     def _initialize(self):
-        """Initialize the appropriate backend"""
+        """Initialize from the current per-user LLM config."""
         try:
             from llm_service import llm_service
             config = llm_service.get_current_config()
 
-            if config:
-                provider = config.get("provider", "ollama")
-                if provider not in ["ollama", "lmstudio", "localai", "textgenwebui"]:
-                    if llm_service.has_api_key():
-                        self._use_api = True
-                        self._llm_service = llm_service
-                        logger.info(f"SmartManimClient: Using API ({provider}/{config.get('model')})")
-                        return
-
-            # Fallback to Ollama - detect best code model
-            self._ollama_model = self._detect_best_ollama_model()
-            logger.info(f"SmartManimClient: Using local Ollama ({self._ollama_model})")
+            if config and llm_service.has_api_key():
+                self._use_api = True
+                self._llm_service = llm_service
+                logger.info(f"SmartManimClient: Using API ({config.get('provider')}/{config.get('model')})")
+            else:
+                logger.warning("SmartManimClient: No configured provider/API key available")
 
         except Exception as e:
             logger.warning(f"SmartManimClient init error: {e}")
-            self._ollama_model = self._detect_best_ollama_model()
-
-    def _detect_best_ollama_model(self) -> str:
-        """Detect the best available Ollama model for code generation"""
-        try:
-            with httpx.Client(timeout=10.0) as client:
-                response = client.get(f"{self._ollama_base_url}/api/tags")
-                if response.status_code == 200:
-                    models = response.json().get("models", [])
-                    model_names = [m.get("name", "") for m in models]
-
-                    for preferred in self.CODE_MODELS:
-                        if any(preferred in name for name in model_names):
-                            return preferred
-
-                    if model_names:
-                        return model_names[0].split(":")[0]
-        except Exception as e:
-            logger.warning(f"Could not detect Ollama models: {e}")
-
-        return "llama3.2"
 
     @property
     def model(self) -> str:
         if self._use_api:
             config = self._llm_service.get_current_config()
             return config.get("model", "unknown") if config else "unknown"
-        return self._ollama_model
+        return "unconfigured"
 
     @property
     def provider(self) -> str:
         if self._use_api:
             config = self._llm_service.get_current_config()
             return config.get("provider", "api") if config else "api"
-        return "ollama"
+        return "unconfigured"
 
     def generate_manim_code(
         self,
@@ -261,13 +173,14 @@ class SmartManimClient:
         duration: int = 30,
         context: Optional[Dict[str, Any]] = None
     ) -> str:
-        """Generate Manim code using the best available model"""
-        prompt = self._build_manim_prompt(topic, description, duration, context)
+        """Generate Manim code using the configured provider."""
+        if not self._use_api:
+            raise RuntimeError(
+                "No LLM provider configured - add a provider and API key in AI Settings."
+            )
 
-        if self._use_api:
-            code = self._generate_with_api(prompt)
-        else:
-            code = self._generate_with_ollama(prompt)
+        prompt = self._build_manim_prompt(topic, description, duration, context)
+        code = self._generate_with_api(prompt)
 
         # Clean and validate
         code = self._clean_manim_code(code)
@@ -322,30 +235,6 @@ OUTPUT: Return ONLY valid Python code starting with `from manim import *`"""
         except RuntimeError:
             return asyncio.run(_async_generate())
 
-    def _generate_with_ollama(self, prompt: str) -> str:
-        """Generate using local Ollama"""
-        try:
-            with httpx.Client(timeout=300.0) as client:
-                response = client.post(
-                    f"{self._ollama_base_url}/api/generate",
-                    json={
-                        "model": self._ollama_model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {
-                            "temperature": 0.2,
-                            "num_predict": 6000,
-                        }
-                    }
-                )
-                response.raise_for_status()
-                code = response.json().get("response", "").strip()
-                logger.info(f"SmartManimClient generated {len(code)} chars using Ollama/{self._ollama_model}")
-                return code
-        except Exception as e:
-            logger.error(f"Ollama Manim generation failed: {e}")
-            return self._generate_fallback_code(prompt.split('\n')[0], 30)
-
     def _clean_manim_code(self, code: str) -> str:
         """Clean up generated Manim code"""
         if "```python" in code:
@@ -379,6 +268,12 @@ OUTPUT: Return ONLY valid Python code starting with `from manim import *`"""
             code = code.replace("class ManimScene(Scene):",
                               "class ManimScene(Scene):\n    def construct(self):\n        pass")
 
+        # No-ops for this client's single-construct output, but keeps both
+        # generators behaving identically if the prompt ever grows scenes.
+        code = _inject_manim_compat(code)
+        code = _enforce_scene_isolation(code)
+        code = _stub_undefined_names(code)
+
         return code
 
     def _generate_fallback_code(self, topic: str, duration: int) -> str:
@@ -393,258 +288,6 @@ class ManimScene(Scene):
         self.play(FadeOut(title))
 '''
 
-
-class ManimCodeClient:
-    """
-    Pure AI-driven Manim code generator.
-    Uses LLM to generate complete, contextual Manim animations based on conversation context.
-    No hardcoded templates - everything is generated dynamically by AI.
-    """
-
-    # Preferred models for code generation (in order of preference)
-    CODE_MODELS = ["deepseek-coder", "codellama", "llama3.2", "mistral"]
-
-    def __init__(self, base_url: str = None):
-        self.base_url = base_url or os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.model = self._detect_best_model()
-        logger.info(f"ManimCodeClient initialized: {self.base_url} with model {self.model}")
-
-    def _detect_best_model(self) -> str:
-        """Detect the best available model for code generation"""
-        try:
-            with httpx.Client(timeout=10.0) as client:
-                response = client.get(f"{self.base_url}/api/tags")
-                if response.status_code == 200:
-                    models = response.json().get("models", [])
-                    model_names = [m.get("name", "") for m in models]
-
-                    # Check for preferred code models in order
-                    for preferred in self.CODE_MODELS:
-                        if any(preferred in name for name in model_names):
-                            logger.info(f"Using code-optimized model: {preferred}")
-                            return preferred
-
-                    # Use first available model
-                    if model_names:
-                        return model_names[0].split(":")[0]
-
-        except Exception as e:
-            logger.warning(f"Could not detect models: {e}")
-
-        return "llama3.2"  # Default fallback
-
-    def generate_manim_code(
-        self,
-        topic: str,
-        description: str = "",
-        duration: int = 30,
-        context: Optional[Dict[str, Any]] = None
-    ) -> str:
-        """
-        Generate complete Manim animation code using AI.
-        All code is generated dynamically based on topic and context - no templates.
-
-        Args:
-            topic: The topic to animate
-            description: Additional description or context
-            duration: Target video duration in seconds
-            context: Conversation context including key_concepts, visual_elements, animation_suggestions
-
-        Returns:
-            Complete Manim Python code as a string
-        """
-        # Build comprehensive context for AI
-        context_sections = []
-
-        if context:
-            if context.get("key_concepts"):
-                context_sections.append(f"Key concepts to visualize:\n- " + "\n- ".join(context["key_concepts"][:5]))
-
-            if context.get("visual_elements"):
-                context_sections.append(f"Visual elements to include:\n- " + "\n- ".join(context["visual_elements"][:5]))
-
-            if context.get("animation_suggestions"):
-                context_sections.append(f"Animation suggestions:\n- " + "\n- ".join(context["animation_suggestions"][:5]))
-
-            if context.get("visualization_type"):
-                context_sections.append(f"Visualization type: {context['visualization_type']}")
-
-            if context.get("conversation_summary"):
-                context_sections.append(f"Conversation context:\n{context['conversation_summary'][:500]}")
-
-        context_info = "\n\n".join(context_sections) if context_sections else "No additional context provided."
-
-        prompt = f"""You are an expert Manim animator creating educational videos.
-Generate a complete, working Manim animation for the following topic.
-
-## TOPIC
-{topic}
-
-## ADDITIONAL DESCRIPTION
-{description if description else "Create an engaging educational animation that clearly explains this concept."}
-
-## CONTEXT FROM CONVERSATION
-{context_info}
-
-## REQUIREMENTS
-
-1. **Code Structure:**
-   - Use ManimCE (Community Edition) syntax
-   - Create a class called `ManimScene` that inherits from `Scene`
-   - Implement the `construct(self)` method
-   - Import everything needed: `from manim import *`
-
-2. **Animation Guidelines:**
-   - Target duration: approximately {duration} seconds
-   - Use smooth, educational animations
-   - Include clear text labels and explanations
-   - Use appropriate colors for different elements
-   - Add pauses (self.wait()) for readability
-   - Build up complexity gradually
-
-3. **Visual Quality:**
-   - Use Create(), Write(), FadeIn(), Transform() for smooth animations
-   - Group related elements together
-   - Use VGroup for organizing multiple objects
-   - Include a title at the start
-   - Use appropriate positioning (UP, DOWN, LEFT, RIGHT, etc.)
-
-4. **Educational Focus:**
-   - Make the animation self-explanatory
-   - Highlight key concepts with color or emphasis
-   - Use arrows, labels, and annotations
-   - Show cause and effect relationships
-   - Build understanding step by step
-
-## OUTPUT FORMAT
-Return ONLY valid Python code. Start with `from manim import *` and end with the complete class definition.
-Do NOT include any explanations, comments outside the code, or markdown formatting.
-
-```python
-from manim import *
-
-class ManimScene(Scene):
-    def construct(self):
-        # Your animation code here
-        pass
-```"""
-
-        try:
-            with httpx.Client(timeout=300.0) as client:  # Longer timeout for complex code
-                response = client.post(
-                    f"{self.base_url}/api/generate",
-                    json={
-                        "model": self.model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {
-                            "temperature": 0.2,  # Low temperature for reliable code
-                            "top_p": 0.9,
-                            "num_predict": 6000,  # Allow longer code output
-                        }
-                    }
-                )
-                response.raise_for_status()
-                result = response.json()
-                code = result.get("response", "").strip()
-
-                # Clean and validate the code
-                code = self._clean_manim_code(code)
-                code = self._validate_and_fix_code(code, topic)
-
-                logger.info(f"ManimCodeClient generated {len(code)} chars of Manim code using {self.model}")
-                return code
-
-        except Exception as e:
-            logger.error(f"Manim code generation failed: {e}")
-            # Return a minimal working fallback
-            return self._generate_fallback_code(topic, duration)
-
-    def _clean_manim_code(self, code: str) -> str:
-        """Clean up generated Manim code"""
-        # Remove markdown code blocks if present
-        if "```python" in code:
-            parts = code.split("```python")
-            if len(parts) > 1:
-                code = parts[1].split("```")[0]
-        elif "```" in code:
-            parts = code.split("```")
-            if len(parts) > 1:
-                code = parts[1].split("```")[0]
-
-        # Ensure it starts with imports
-        if not code.strip().startswith("from manim"):
-            if "from manim" in code:
-                code = code[code.find("from manim"):]
-            else:
-                code = "from manim import *\n\n" + code
-
-        return code.strip()
-
-    def _validate_and_fix_code(self, code: str, topic: str) -> str:
-        """Validate and fix common issues in generated Manim code"""
-        lines = code.split("\n")
-        fixed_lines = []
-        has_class = False
-        has_construct = False
-
-        for line in lines:
-            # Check for class definition
-            if "class ManimScene" in line or "class " in line and "Scene" in line:
-                has_class = True
-            if "def construct" in line:
-                has_construct = True
-            fixed_lines.append(line)
-
-        code = "\n".join(fixed_lines)
-
-        # Add missing class structure if needed
-        if not has_class:
-            code = code + f"""
-
-class ManimScene(Scene):
-    def construct(self):
-        title = Text("{topic}", font_size=48)
-        self.play(Write(title))
-        self.wait(2)
-        self.play(FadeOut(title))
-"""
-        elif not has_construct:
-            # Find the class and add construct method
-            code = code.replace(
-                "class ManimScene(Scene):",
-                f"""class ManimScene(Scene):
-    def construct(self):
-        title = Text("{topic}", font_size=48)
-        self.play(Write(title))
-        self.wait(2)"""
-            )
-
-        return code
-
-    def _generate_fallback_code(self, topic: str, duration: int) -> str:
-        """Generate a minimal working Manim animation as fallback"""
-        return f'''from manim import *
-
-class ManimScene(Scene):
-    def construct(self):
-        # Title
-        title = Text("{topic}", font_size=48, color=BLUE)
-        self.play(Write(title))
-        self.wait(1)
-        self.play(title.animate.to_edge(UP))
-
-        # Main content
-        content = Text(
-            "Visual explanation coming soon...",
-            font_size=32
-        )
-        self.play(FadeIn(content))
-        self.wait({max(2, duration - 4)})
-
-        # Outro
-        self.play(FadeOut(content), FadeOut(title))
-'''
 
 
 # =============================================================================
@@ -818,6 +461,708 @@ class ManimScene(Scene):
 ```"""
 
 
+# A scene call that isn't already followed by a clear - the negative
+# lookahead keeps the transform idempotent, so a re-run (e.g. the render
+# retry path) can't stack duplicate cleanups.
+_SCENE_CALL_RE = re.compile(
+    r'^([ \t]*)self\.(scene_\w+)\(\)[ \t]*$(?!\n[ \t]*self\._clear_screen\(\))',
+    re.MULTILINE,
+)
+
+# `self.play(FadeOut(*self.mobjects))` and `self.play(*[FadeOut(m) for m in
+# self.mobjects])`, with or without trailing kwargs like run_time=. Both
+# raise ValueError when the stage happens to be empty.
+_FULL_STAGE_FADE_RE = re.compile(
+    r'^([ \t]*)self\.play\(\s*(?:FadeOut\(\s*\*\s*self\.mobjects\s*\)'
+    r'|\*\s*\[\s*FadeOut\([^\]]*\)\s+for\s+\w+\s+in\s+self\.mobjects\s*\])'
+    r'[^\n)]*\)[ \t]*$',
+    re.MULTILINE,
+)
+
+# NOTE: _clear_screen's body deliberately iterates a local `_mobs` copy
+# rather than `self.mobjects` directly. Iterating self.mobjects here would
+# make the helper itself match _FULL_STAGE_FADE_RE, so re-running the
+# transform would rewrite the helper's own body into a call to itself -
+# infinite recursion. Keeping it off that pattern is what makes the pass
+# idempotent.
+#
+# _resolve_overlaps fixes the *within-scene* half of the overlap problem.
+# The model routinely anchors a caption to a thin connector rather than to
+# the tall shapes around it - e.g.
+#     arrow = Arrow(box_a.get_right(), box_b.get_left())   # at box mid-height
+#     caption.next_to(arrow, DOWN, buff=0.5)               # 0.5 < box half-height
+# which lands the caption inside both boxes. Prompt rules don't reliably
+# prevent this, so the overridden wait() de-clutters the frame right before
+# it's held on screen (every scene ends up calling wait()).
+#
+# A label fully INSIDE a shape is intentional ("Master" centred in its box)
+# and is left alone; only partial intersections - the ones that read as
+# broken - get nudged clear.
+# Colour names the model reaches for that Manim CE does not define, mapped
+# to the nearest real constant. Single source of truth: the injected shim
+# and the undefined-name checker are both built from this, so they cannot
+# drift apart and start flagging names the shim already supplies.
+_COLOR_ALIASES = (
+    ("BROWN", "DARK_BROWN"), ("CYAN", "TEAL"), ("MAGENTA", "PINK"),
+    ("SILVER", "GREY_B"), ("INDIGO", "PURPLE_E"), ("VIOLET", "PURPLE"),
+    ("LIME", "GREEN_A"), ("OLIVE", "GREEN_E"), ("NAVY", "BLUE_E"),
+    ("BEIGE", "LIGHT_BROWN"), ("TAN", "LIGHT_BROWN"), ("CRIMSON", "RED_E"),
+    ("SCARLET", "RED"), ("AMBER", "YELLOW_E"), ("TURQUOISE", "TEAL_A"),
+    ("EMERALD", "GREEN_D"), ("CHARCOAL", "GREY_E"), ("IVORY", "WHITE"),
+    ("LIGHTBLUE", "BLUE_B"), ("DARKBLUE", "BLUE_E"),
+    ("LIGHTGREEN", "GREEN_B"), ("DARKGREEN", "GREEN_E"),
+    ("LIGHTRED", "RED_B"), ("DARKRED", "RED_E"),
+    ("LIGHTGRAY", "GREY_B"), ("LIGHTGREY", "GREY_B"),
+    ("DARKGRAY", "GREY_E"), ("DARKGREY", "GREY_E"),
+    ("LIGHTYELLOW", "YELLOW_B"), ("DARKYELLOW", "YELLOW_E"),
+    ("LIGHTPURPLE", "PURPLE_B"), ("DARKPURPLE", "PURPLE_E"),
+    ("LIGHTORANGE", "GOLD_B"), ("DARKORANGE", "GOLD_E"),
+)
+
+_SHIM_SHAPES = ("Diamond", "Oval")
+
+_MANIM_COMPAT = '''
+# --- injected: names the model reaches for that Manim CE does not define ---
+# A NameError anywhere in the file aborts the entire render, and the lesson
+# then silently degrades that scene to a static slide - real examples from
+# one lesson: `BROWN` (Manim has DARK_BROWN) and `Diamond` (no such class).
+# Purely additive: an alias is skipped whenever Manim defines that name.
+for _alias, _target in (
+''' + "".join(
+    f'    ("{a}", "{b}"),\n' for a, b in _COLOR_ALIASES
+) + '''):
+    if _alias not in globals() and _target in globals():
+        globals()[_alias] = globals()[_target]
+
+if "Diamond" not in globals():
+    def Diamond(**kwargs):
+        return Square(**kwargs).rotate(PI / 4)
+
+if "Oval" not in globals():
+    def Oval(**kwargs):
+        return Ellipse(**kwargs)
+
+
+# arrange_in_grid(rows=1, cols=4) on a VGroup holding 8 things raises
+# "Too few rows and columns to fit all submobjects" and kills the render.
+# The model picks the grid from how it imagines the diagram, not from how
+# many mobjects it actually built, so widen the grid to fit rather than
+# refusing to lay it out.
+try:
+    import math as _math
+
+    _orig_arrange_in_grid = Mobject.arrange_in_grid
+
+    def _safe_arrange_in_grid(self, *args, **kwargs):
+        _rows, _cols = kwargs.get("rows"), kwargs.get("cols")
+        _n = len(self.submobjects)
+        if _rows and _cols and _rows * _cols < _n:
+            kwargs["cols"] = int(_math.ceil(_n / float(_rows)))
+        try:
+            return _orig_arrange_in_grid(self, *args, **kwargs)
+        except Exception:
+            # Positional rows/cols, or some other shape mismatch - let
+            # Manim choose the grid itself.
+            _clean = {k: v for k, v in kwargs.items() if k not in ("rows", "cols")}
+            return _orig_arrange_in_grid(self, **_clean)
+
+    Mobject.arrange_in_grid = _safe_arrange_in_grid
+except Exception:
+    pass
+
+'''
+
+_MISSING_REF_CLASS = '''
+
+class _MissingRef:
+    """Stands in for a name the model used but never defined.
+
+    The model writes things like `Text("RuBP").move_to(CIRCLE.get_center())`
+    where `CIRCLE` was never assigned - it means "the circle I just made".
+    Python raises NameError, the render dies, and the scene silently becomes
+    a static slide, so the student loses the whole animation over one bad
+    identifier. Answering positional queries with ORIGIN keeps the render
+    alive; the object lands at the centre instead of nowhere at all, and
+    the layout passes then push it clear of whatever it overlaps.
+    """
+
+    def __init__(self, name="?"):
+        self._name = name
+
+    def _origin(self, *a, **k):
+        return ORIGIN
+
+    get_center = get_top = get_bottom = get_left = get_right = _origin
+    get_corner = get_start = get_end = get_center_of_mass = _origin
+
+    @property
+    def width(self):
+        return 1.0
+
+    @property
+    def height(self):
+        return 1.0
+
+    def __getattr__(self, item):
+        # Any other method call resolves to ORIGIN rather than exploding.
+        return lambda *a, **k: ORIGIN
+
+    def __add__(self, other):
+        return ORIGIN + other
+
+    def __radd__(self, other):
+        return other + ORIGIN
+
+    def __sub__(self, other):
+        return ORIGIN - other
+
+    def __rsub__(self, other):
+        return other - ORIGIN
+
+    def __mul__(self, other):
+        return ORIGIN
+
+    __rmul__ = __mul__
+
+    def __truediv__(self, other):
+        return ORIGIN
+
+    def __iter__(self):
+        return iter(ORIGIN)
+'''
+
+
+def _inject_manim_compat(code: str) -> str:
+    """Put the compatibility shim straight after the manim import."""
+    if "_alias, _target" in code:
+        return code
+    lines = code.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("from manim import"):
+            lines.insert(i + 1, _MANIM_COMPAT)
+            return "\n".join(lines)
+    return _MANIM_COMPAT + "\n" + code
+
+
+def _undefined_names(code: str) -> List[str]:
+    """Names the code reads but never binds anywhere.
+
+    Deliberately scope-blind: it unions every binding in the file, so a name
+    is reported only when nothing in the module defines it under any
+    circumstances. That makes false positives very unlikely, which matters
+    because each one becomes a stubbed-out object.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+
+    bound: Set[str] = set()
+    loaded: Set[str] = set()
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            (bound if isinstance(node.ctx, (ast.Store, ast.Del)) else loaded).add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            bound.add(node.name)
+            args = node.args
+            for a in (*args.posonlyargs, *args.args, *args.kwonlyargs):
+                bound.add(a.arg)
+            if args.vararg:
+                bound.add(args.vararg.arg)
+            if args.kwarg:
+                bound.add(args.kwarg.arg)
+        elif isinstance(node, ast.ClassDef):
+            bound.add(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                bound.add((alias.asname or alias.name).split(".")[0])
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            bound.update(node.names)
+
+    known = set(dir(builtins)) | set(dir(manim_module)) | bound
+    known.update(a for a, _ in _COLOR_ALIASES)
+    known.update(_SHIM_SHAPES)
+    known.update({"self", "_MissingRef", "__name__", "__file__"})
+    return sorted(n for n in loaded - known if not n.startswith("__"))
+
+
+def _stub_undefined_names(code: str) -> str:
+    """Bind every unresolvable name to a placeholder before the render.
+
+    `from manim import *` means most names resolve, so whatever is left is
+    genuinely invented. Stubbing beats failing: the alternative is the whole
+    animation disappearing and the lesson quietly showing a static slide in
+    its place.
+    """
+    missing = _undefined_names(code)
+    if not missing:
+        return code
+    logger.warning(
+        f"Generated Manim code references {len(missing)} undefined name(s), "
+        f"stubbing to keep the render alive: {', '.join(missing[:10])}"
+    )
+
+    # What the name is used FOR decides what it should become. `CIRCLE` in
+    # `CIRCLE.get_center()` needs an object; `LIGHTBLUE` in `color=LIGHTBLUE`
+    # needs a colour, and handing Manim a placeholder object there just
+    # trades a NameError for a TypeError. Anything touched with an attribute
+    # or called is an object; everything else is a bare constant.
+    object_like: Set[str] = set()
+    try:
+        tree = ast.parse(code)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+                object_like.add(node.value.id)
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                object_like.add(node.func.id)
+    except SyntaxError:
+        object_like = set(missing)
+
+    stubs = "\n".join(
+        f'{name} = _MissingRef("{name}")' if name in object_like else f"{name} = WHITE"
+        for name in missing
+    )
+    # Carries its own class definition rather than relying on the compat
+    # shim having been injected first. Re-running the pipeline over code
+    # that already contains a shim skips re-injection, and this block would
+    # then reference a _MissingRef that was never defined - swapping one
+    # NameError for another.
+    prelude = "" if "class _MissingRef" in code else _MISSING_REF_CLASS
+    block = (
+        f"\n# --- injected: names used but never defined ---{prelude}\n{stubs}\n"
+    )
+
+    lines = code.splitlines()
+    # After the shim (which defines _MissingRef) but before the class that
+    # uses these names.
+    for i, line in enumerate(lines):
+        if line.startswith("class ") and "Scene" in line:
+            lines.insert(i, block)
+            return "\n".join(lines)
+    return code + block
+
+
+_LAYOUT_HELPERS = '''
+    def _run_scene(self, _name):
+        """Run one scene method, surviving a crash inside it.
+
+        Manim aborts the whole render on any exception, so a single bad
+        call in scene 4 of 6 used to cost every scene - and the lesson then
+        quietly showed a static slide where the animation should be. Losing
+        one scene is a far better failure than losing the video.
+        """
+        try:
+            getattr(self, _name)()
+        except Exception as _exc:
+            print(f"[scoratis] scene {_name} failed, skipping: "
+                  f"{type(_exc).__name__}: {_exc}")
+            # Whatever it managed to draw before dying stays on stage;
+            # the _clear_screen() that follows this call wipes it.
+
+    def _clear_screen(self):
+        """Injected - fade out everything the previous scene left on stage so
+        the next one starts on a blank frame. No-ops on an empty stage, where
+        FadeOut() would otherwise raise."""
+        _mobs = list(self.mobjects)
+        if _mobs:
+            self.play(*[FadeOut(_m) for _m in _mobs], run_time=0.4)
+            self.clear()
+
+    def _bbox(self, m):
+        return (m.get_left()[0], m.get_right()[0], m.get_bottom()[1], m.get_top()[1])
+
+    def _overlaps(self, a, b):
+        al, ar, ab, at = self._bbox(a)
+        bl, br, bb, bt = self._bbox(b)
+        return al < br and bl < ar and ab < bt and bb < at
+
+    def _inside(self, outer, inner):
+        ol, orr, ob, ot = self._bbox(outer)
+        il, ir, ib, it = self._bbox(inner)
+        return ol <= il and ir <= orr and ob <= ib and it <= ot
+
+    def _is_box(self, m):
+        """A small closed shape used as a container - a label centred in one
+        of these is deliberate and must not be moved. Deliberately excludes
+        VGroup/NumberLine/Axes: a caption landing inside one of THOSE
+        bounding boxes is an accident (it collides with the ticks and
+        numbers inside), not an intentional label."""
+        try:
+            return isinstance(m, (Rectangle, RoundedRectangle, Square, Circle, Ellipse, Polygon))
+        except NameError:
+            return False
+
+    def _is_caption(self, m):
+        """True for a pure block of text - a bare label, or a group whose
+        every leaf is a label (a legend, a bullet list).
+
+        Checking `isinstance(m, Text)` alone missed the common case: the
+        model builds its bullet lists and legends with
+        VGroup(Text, Text, ...).arrange(DOWN), so `self.mobjects` holds a
+        VGroup, not Text, and the whole block sailed straight through the
+        old filter and over the diagram beside it.
+
+        A group mixing text WITH geometry (a labelled box, an annotated
+        arrow) is deliberately not a caption: its parts are positioned
+        relative to each other, and nudging it apart would break the very
+        thing it draws.
+        """
+        try:
+            _types = (Text, MathTex, Tex)
+        except NameError:
+            return False
+        if isinstance(m, _types):
+            return True
+        _subs = getattr(m, "submobjects", None) or []
+        if not _subs:
+            return False
+        return all(self._is_caption(_c) for _c in _subs)
+
+    def _resolve_overlaps(self):
+        """Nudge captions off anything they collide with, along whichever
+        axis needs the smaller move.
+
+        Pushing purely vertically (what this used to do) is the wrong
+        instinct for a caption sitting beside a diagram: the short sideways
+        step that clears it gets passed over in favour of a long slide up or
+        down, which just lands the caption on the title instead.
+        """
+        _labels = [m for m in self.mobjects if self._is_caption(m)]
+        if not _labels:
+            return
+        _others = [m for m in self.mobjects if not self._is_caption(m)]
+        try:
+            _hw = config.frame_width / 2 - 0.35
+            _hh = config.frame_height / 2 - 0.35
+        except Exception:
+            _hw, _hh = 7.0, 3.9
+
+        for _ in range(8):
+            _moved = False
+            # Labels vs everything else, then labels vs each other - two
+            # captions colliding reads just as broken as a caption on a box.
+            for _lab in _labels:
+                for _sh in _others + [x for x in _labels if x is not _lab]:
+                    if not self._overlaps(_lab, _sh):
+                        continue
+                    if self._is_box(_sh) and self._inside(_sh, _lab):
+                        continue  # deliberate label-in-box
+                    _al, _ar, _ab, _at = self._bbox(_lab)
+                    _bl, _br, _bb, _bt = self._bbox(_sh)
+                    _pad = 0.22
+                    # How far to push along each axis to break contact,
+                    # signed towards the nearer way out.
+                    _dx = (_br - _al + _pad) if (_br - _al) < (_ar - _bl) \
+                        else -(_ar - _bl + _pad)
+                    _dy = (_bt - _ab + _pad) if (_bt - _ab) < (_at - _bb) \
+                        else -(_at - _bb + _pad)
+                    # Cheaper axis first, but never off the edge of the
+                    # frame - a caption pushed out of shot is worse than a
+                    # caption that still touches something.
+                    _cands = [(_dx, 0.0), (0.0, _dy)] if abs(_dx) <= abs(_dy) \
+                        else [(0.0, _dy), (_dx, 0.0)]
+                    _placed = False
+                    for _mx, _my in _cands:
+                        if (_al + _mx >= -_hw and _ar + _mx <= _hw
+                                and _ab + _my >= -_hh and _at + _my <= _hh):
+                            _lab.shift(RIGHT * _mx + UP * _my)
+                            _moved = True
+                            _placed = True
+                            break
+                    if _placed or self._is_caption(_sh):
+                        continue
+                    # The caption has nowhere to go: a full-width bullet
+                    # block spans the frame, so every shift takes it off
+                    # screen and it was simply left lying across the
+                    # diagram. Move the DIAGRAM out from under it instead -
+                    # it is the smaller of the two, and shifting the whole
+                    # group keeps its internal composition intact.
+                    _shifted = False
+                    for _mx, _my in [(-_a, -_b) for _a, _b in _cands]:
+                        if (_bl + _mx >= -_hw and _br + _mx <= _hw
+                                and _bb + _my >= -_hh and _bt + _my <= _hh):
+                            _sh.shift(RIGHT * _mx + UP * _my)
+                            _moved = True
+                            _shifted = True
+                            break
+                    if _shifted:
+                        continue
+                    # Neither can move: the shape is nearly as big as the
+                    # frame, so there is no empty space to move anything
+                    # into - a title laid over a circle that fills the shot.
+                    # Make room by shrinking the shape a little. Bounded by
+                    # the outer loop, and only when the shape is clearly the
+                    # bigger of the two, so a caption never shrinks a
+                    # diagram it merely brushes against.
+                    if (_sh.width * _sh.height) > 4.0 * max(
+                            _lab.width * _lab.height, 0.01):
+                        _sh.scale(0.9)
+                        _moved = True
+            if not _moved:
+                break
+
+    def _separate_labels_from_shapes(self):
+        """Move a single line of a caption off a shape it lands on.
+
+        _resolve_overlaps moves a caption as a WHOLE and gives up when the
+        whole block has nowhere to go - the normal case for a full-width
+        bullet list. _separate_labels only handles text meeting other text.
+        One line of a list struck through by a circle fell between the two,
+        and looked exactly like that: a single bullet crossed out by a
+        diagram while every other line sat clear.
+
+        Only leaves of pure captions move. A label inside a mixed group
+        belongs to the shape it annotates, and moving it independently
+        would tear the label off its own arrow.
+        """
+        _shapes = [m for m in self.mobjects if not self._is_caption(m)]
+        if not _shapes:
+            return
+        _leaves = []
+        for _m in self.mobjects:
+            if self._is_caption(_m):
+                _leaves.extend(self._text_leaves(_m))
+        if not _leaves:
+            return
+        try:
+            _hw = config.frame_width / 2 - 0.35
+            _hh = config.frame_height / 2 - 0.35
+        except Exception:
+            _hw, _hh = 7.0, 3.9
+
+        for _ in range(6):
+            _moved = False
+            for _lab in _leaves:
+                for _sh in _shapes:
+                    if not self._overlaps(_lab, _sh):
+                        continue
+                    if self._is_box(_sh) and self._inside(_sh, _lab):
+                        continue  # deliberate label-in-box
+                    _al, _ar, _ab, _at = self._bbox(_lab)
+                    _bl, _br, _bb, _bt = self._bbox(_sh)
+                    _pad = 0.20
+                    _dx = (_br - _al + _pad) if (_br - _al) < (_ar - _bl) \
+                        else -(_ar - _bl + _pad)
+                    _dy = (_bt - _ab + _pad) if (_bt - _ab) < (_at - _bb) \
+                        else -(_at - _bb + _pad)
+                    _cands = [(_dx, 0.0), (0.0, _dy)] if abs(_dx) <= abs(_dy) \
+                        else [(0.0, _dy), (_dx, 0.0)]
+                    for _mx, _my in _cands:
+                        if (_al + _mx >= -_hw and _ar + _mx <= _hw
+                                and _ab + _my >= -_hh and _at + _my <= _hh):
+                            _lab.shift(RIGHT * _mx + UP * _my)
+                            _moved = True
+                            break
+            if not _moved:
+                break
+
+    def _fit_to_frame(self):
+        """Pull anything hanging off the edge back into the visible frame.
+
+        Manim renders only x in [-frame_width/2, +frame_width/2] and y in
+        [-frame_height/2, +frame_height/2]; anything outside is simply not in
+        the video. The model routinely places wide diagrams and long titles
+        past those bounds, so the viewer sees text clipped mid-word and graphs
+        running off the side. Scale down what is too big, then shift what is
+        merely misplaced.
+        """
+        try:
+            half_w = config.frame_width / 2 - 0.35
+            half_h = config.frame_height / 2 - 0.35
+        except Exception:
+            return
+
+        for _m in list(self.mobjects):
+            try:
+                if _m.width <= 0 or _m.height <= 0:
+                    continue
+                # 1. Too large to ever fit -> scale about its own centre.
+                _s = min((2 * half_w) / _m.width, (2 * half_h) / _m.height, 1.0)
+                if _s < 0.999:
+                    _m.scale(_s)
+                # 2. Now shift it fully inside.
+                _dx = _dy = 0.0
+                if _m.get_left()[0] < -half_w:
+                    _dx = -half_w - _m.get_left()[0]
+                elif _m.get_right()[0] > half_w:
+                    _dx = half_w - _m.get_right()[0]
+                if _m.get_bottom()[1] < -half_h:
+                    _dy = -half_h - _m.get_bottom()[1]
+                elif _m.get_top()[1] > half_h:
+                    _dy = half_h - _m.get_top()[1]
+                if abs(_dx) > 0.01 or abs(_dy) > 0.01:
+                    _m.shift(RIGHT * _dx + UP * _dy)
+            except Exception:
+                continue
+
+    def _text_leaves(self, m):
+        try:
+            _types = (Text, MathTex, Tex)
+        except NameError:
+            return []
+        if isinstance(m, _types):
+            return [m]
+        _out = []
+        for _c in getattr(m, "submobjects", None) or []:
+            _out.extend(self._text_leaves(_c))
+        return _out
+
+    def _separate_labels(self):
+        """Push apart two pieces of text that landed on each other, wherever
+        they sit in the hierarchy.
+
+        _resolve_overlaps only ever moves whole captions, so two labels that
+        each belong to a mixed group - the 'F = Force' annotation on one
+        arrow and the 'a = Acceleration' one on the arrow beside it - could
+        sit directly on top of each other with neither eligible to move.
+        Nudging the leaves themselves, half the distance each, keeps every
+        label near the thing it annotates while making both readable.
+        """
+        _leaves = []
+        for _m in self.mobjects:
+            _leaves.extend(self._text_leaves(_m))
+        if len(_leaves) < 2:
+            return
+        for _ in range(6):
+            _moved = False
+            for _i in range(len(_leaves)):
+                for _j in range(_i + 1, len(_leaves)):
+                    _a, _b = _leaves[_i], _leaves[_j]
+                    if not self._overlaps(_a, _b):
+                        continue
+                    _al, _ar, _ab, _at = self._bbox(_a)
+                    _bl, _br, _bb, _bt = self._bbox(_b)
+                    _pad = 0.18
+                    _dx = (_br - _al + _pad) if (_br - _al) < (_ar - _bl) \
+                        else -(_ar - _bl + _pad)
+                    _dy = (_bt - _ab + _pad) if (_bt - _ab) < (_at - _bb) \
+                        else -(_at - _bb + _pad)
+                    if abs(_dx) <= abs(_dy):
+                        _a.shift(RIGHT * (_dx / 2.0))
+                        _b.shift(LEFT * (_dx / 2.0))
+                    else:
+                        _a.shift(UP * (_dy / 2.0))
+                        _b.shift(DOWN * (_dy / 2.0))
+                    _moved = True
+            if not _moved:
+                break
+
+    def _relayout(self):
+        # Order matters: fit first (scaling/shifting changes geometry), then
+        # de-overlap the corrected positions. Separating individual labels
+        # can push one back over an edge, so fit again to finish.
+        self._fit_to_frame()
+        self._resolve_overlaps()
+        # Shapes first - those displacements are the larger ones - then
+        # tidy up any text-on-text the shape moves created.
+        self._separate_labels_from_shapes()
+        self._separate_labels()
+        self._fit_to_frame()
+
+    def wait(self, *args, **kwargs):
+        self._relayout()
+        return super().wait(*args, **kwargs)
+
+    def _preplace(self, args):
+        """Lay out what an animation is about to reveal, BEFORE it plays.
+
+        Correcting only after play() returns leaves the collision on screen
+        for the whole animation - a `FadeIn(..., run_time=3)` means three
+        seconds of a diagram sitting on top of the text it landed on, which
+        is most of a short scene. Positioning the incoming mobject up front
+        means it fades in already clear of everything else.
+        """
+        _added = []
+        try:
+            for _a in args:
+                _m = getattr(_a, "mobject", None)
+                if _m is None:
+                    continue
+                # `in` on a Mobject list is an identity check here; anything
+                # already on stage is being transformed, not introduced, and
+                # its placement is the author's business.
+                if not any(_m is _x for _x in self.mobjects):
+                    _added.append(_m)
+            if not _added:
+                return
+            self.add(*_added)
+            self._relayout()
+            # Hand them back to the animation to add for real, so play()
+            # behaves exactly as it would have.
+            self.remove(*_added)
+        except Exception:
+            return
+
+    def play(self, *args, **kwargs):
+        # Hooking wait() alone left a hole: whatever the LAST play() of a
+        # scene puts on screen is never checked, because no wait() follows
+        # it. That is exactly where collisions survived - a caption written
+        # in at the end sat on top of one already there, and stayed there
+        # for the rest of the shot. Correcting after the animation settles
+        # costs a single-frame nudge and catches every one of those.
+        self._preplace(args)
+        _r = super().play(*args, **kwargs)
+        self._relayout()
+        return _r
+'''
+
+
+def _enforce_scene_isolation(code: str) -> str:
+    """Guarantee each scene method starts from a blank frame, safely.
+
+    The generated construct() is a flat list of scene calls:
+
+        def construct(self):
+            self.scene_1()
+            self.scene_2()
+
+    Manim keeps every mobject on stage until something explicitly removes
+    it, so unless each method fades out what it added, scene_2 renders ON
+    TOP of scene_1 - the title, labels and diagrams from every scene all
+    pile up in one unreadable frame.
+
+    Two transforms, both needed:
+
+    1. Rewrite every whole-stage fade (`self.play(FadeOut(*self.mobjects))`
+       and the list-comprehension spelling) into `self._clear_screen()`.
+       The model emits these unguarded, including at the TOP of the first
+       scene where the stage is still empty - and `FadeOut()` with zero
+       mobjects raises "At least one mobject must be passed", failing the
+       whole render. The helper guards on `self.mobjects` first.
+
+    2. Insert `self._clear_screen()` between consecutive scene calls, so
+       isolation holds even when the model forgets to clean up at all.
+
+    The helper is appended only if something references it and it isn't
+    already defined, so this is safe to run repeatedly.
+    """
+    # 1. Make every whole-stage fade empty-safe.
+    code = _FULL_STAGE_FADE_RE.sub(lambda m: f"{m.group(1)}self._clear_screen()", code)
+
+    # 2. Separate consecutive scenes.
+    if len(_SCENE_CALL_RE.findall(code)) >= 2:
+        def _insert_clear(match: "re.Match") -> str:
+            indent, name = match.group(1), match.group(2)
+            # Route through _run_scene so one scene raising does not destroy
+            # the entire video. Before this, a single bad call anywhere in a
+            # six-scene file - a ValueError from arrange_in_grid, say - lost
+            # all six, and the lesson silently showed a static slide instead.
+            return f'{indent}self._run_scene("{name}")\n{indent}self._clear_screen()'
+
+        code = _SCENE_CALL_RE.sub(_insert_clear, code)
+
+    # 3. Always attach the layout helpers. Even a scene that never needs a
+    #    cleanup still benefits from the wait() override, which de-clutters
+    #    overlapping captions before each held frame.
+    if "def _clear_screen" not in code and "class ManimScene(Scene):" in code:
+        code = code.rstrip() + "\n" + _LAYOUT_HELPERS
+
+    return code
+
+
 ENHANCED_MANIM_PROMPT = """You are an expert Manim animator creating professional educational videos.
 Generate a complete, production-quality Manim animation based on this script:
 
@@ -829,7 +1174,44 @@ Generate a complete, production-quality Manim animation based on this script:
 ### 1. CODE STRUCTURE
 {code_structure}
 
-### 2. VISUAL DENSITY (8-10 elements per major concept)
+### 2. SCENE ISOLATION (MOST IMPORTANT - GET THIS RIGHT)
+Manim never removes a mobject on its own: anything you draw stays on screen
+until you explicitly fade or remove it. If a scene method ends without
+cleaning up, the NEXT scene draws directly on top of it and the frame turns
+into unreadable overlapping text.
+
+- EVERY scene method MUST end by removing everything it added:
+  `self.play(FadeOut(*self.mobjects))`
+- Do NOT put that call at the START of a method. The stage is already blank
+  when a scene begins, and `FadeOut()` with nothing on stage raises
+  "At least one mobject must be passed" and fails the whole render.
+  Clean up at the END only.
+- Within a single scene, never place two elements at the same position.
+  Anchor every element explicitly with `.to_edge()`, `.next_to()`, `.shift()`
+  or `.move_to()`. Two bare `Text(...)` objects with no positioning both land
+  dead-center and overlap.
+- Keep a title at `.to_edge(UP)` and body content below it - never both at
+  the center.
+
+### 3. EVERYTHING MUST FIT THE FRAME (CRITICAL)
+
+The camera shows ONLY x from -7.1 to +7.1 and y from -4.0 to +4.0. Anything
+outside is invisible - text gets clipped mid-word, graphs run off the side.
+
+- Keep every element within x in [-6.5, 6.5] and y in [-3.5, 3.5].
+- A full-width title must be `font_size<=44` and `.to_edge(UP)`. Long titles
+  need a smaller size, not more width.
+- Axes/graphs: use `x_length<=10` and `y_length<=5.5`, then `.move_to(ORIGIN)`
+  or `.to_edge(DOWN)`. Never let a plotted region extend past the axes.
+- After building any wide group, constrain it explicitly:
+  `group.scale_to_fit_width(12)` and `group.move_to(ORIGIN)`.
+- Never place a label at an absolute position you have not checked; anchor it
+  to the object it describes with `.next_to(obj, DIRECTION, buff=0.3)`.
+
+If a scene has both a title and a diagram, the diagram gets the middle of the
+frame and the title sits at the top edge - they must not occupy the same band.
+
+### 4. VISUAL DENSITY (8-10 elements per major concept)
 - Use VGroup for organizing related elements
 - Layer elements for visual depth
 - Include labels, annotations, and arrows
@@ -847,7 +1229,28 @@ Generate a complete, production-quality Manim animation based on this script:
   `.next_to()`/`.shift()` against the other sub-elements, not the group),
   then combine them into the VGroup as the last step.
 
-### 3. ANIMATION TIMING
+### 5. THIS IS AN ANIMATION, NOT A SLIDESHOW
+
+The whole reason this is a video and not a slide is MOTION. If a frame could
+be a screenshot, it does not belong here.
+
+Every scene must show something CHANGING:
+- values moving, updating, or being recomputed step by step
+- a pointer/arrow/highlight travelling across a structure
+- a shape being built up piece by piece, or transformed into another
+- a graph being drawn, a region filling in, a curve being traced
+- a before state visibly BECOMING an after state (use Transform)
+
+Concretely, per scene: at least 4-6 separate `self.play(...)` calls that each
+advance the idea, with `self.wait()` between them so the viewer can follow.
+A scene that writes a title, shows a bullet list and waits is a FAILURE -
+that is a slide, and the lesson already has slides.
+
+Walk through worked examples on screen: show the actual numbers changing at
+each step rather than stating the result. If a value updates, animate the
+update so the viewer sees WHICH value changed.
+
+### 6. ANIMATION TIMING
 - Title animations: 2-3 seconds with Write()
 - Concept introductions: 3-4 seconds with Create()/FadeIn()
 - Diagram building: 2-3 seconds per stage
@@ -862,7 +1265,7 @@ Generate a complete, production-quality Manim animation based on this script:
   NameError. If the script's "animation" hint isn't in this list, substitute
   FadeIn.
 
-### 4. PROFESSIONAL STYLING
+### 7. PROFESSIONAL STYLING
 - Title: font_size=48, color=BLUE
 - Headers: font_size=36, color=YELLOW
 - Body text: font_size=28, color=WHITE
@@ -870,20 +1273,20 @@ Generate a complete, production-quality Manim animation based on this script:
 - Formulas: MathTex with color=GOLD
 - Minimum 24pt for all text
 
-### 5. VISUAL HIERARCHY
+### 8. VISUAL HIERARCHY
 - Primary concept: Center, large, bold color
 - Supporting details: Positioned around primary
 - Annotations: Smaller, positioned with arrows
 - Use buff=0.5 for consistent spacing
 
-### 6. EDUCATIONAL BEST PRACTICES
+### 9. EDUCATIONAL BEST PRACTICES
 - Build complexity gradually (simple → complex)
 - Show cause → effect with animated arrows
 - Use before/after comparisons
 - Highlight key terms when mentioned in narration
 - Include visual metaphors for abstract concepts
 
-### 7. COLOR PALETTE
+### 10. COLOR PALETTE
 - Primary (concepts): BLUE, BLUE_C, BLUE_D
 - Highlights: YELLOW, GOLD
 - Success/Growth: GREEN, GREEN_C
@@ -936,8 +1339,9 @@ class EnhancedVideoGenerator:
     DURATION_MODERATE = 90    # 1.5 minutes for moderate
     DURATION_COMPLEX = 120    # 2 minutes for complex topics
 
-    # Local fallback duration
-    DURATION_LOCAL = 25       # Quick videos for local mode
+    # Duration used when no provider is configured and only the minimal
+    # placeholder path is reachable.
+    DURATION_MINIMAL = 25
 
     def __init__(self):
         self._use_api = False
@@ -951,16 +1355,12 @@ class EnhancedVideoGenerator:
             self._llm_service = llm_service
             config = llm_service.get_current_config()
 
-            if config:
-                provider = config.get("provider", "ollama")
-                # Check if using cloud provider with API key
-                if provider not in ["ollama", "lmstudio", "localai", "textgenwebui"]:
-                    if llm_service.has_api_key():
-                        self._use_api = True
-                        logger.info(f"EnhancedVideoGenerator: API mode enabled ({provider})")
-                        return
+            if config and llm_service.has_api_key():
+                self._use_api = True
+                logger.info(f"EnhancedVideoGenerator: API mode enabled ({config.get('provider')})")
+                return
 
-            logger.info("EnhancedVideoGenerator: Local mode (quick videos)")
+            logger.warning("EnhancedVideoGenerator: No configured provider/API key available")
         except Exception as e:
             logger.warning(f"EnhancedVideoGenerator init error: {e}")
 
@@ -976,7 +1376,7 @@ class EnhancedVideoGenerator:
         if not self._use_api:
             return {
                 "complexity": "simple",
-                "recommended_duration": self.DURATION_LOCAL,
+                "recommended_duration": self.DURATION_MINIMAL,
                 "visual_elements": [],
                 "visualization_type": "diagram"
             }
@@ -1013,7 +1413,7 @@ class EnhancedVideoGenerator:
     def get_optimal_duration(self, complexity: str) -> int:
         """Get optimal duration based on complexity"""
         if not self._use_api:
-            return self.DURATION_LOCAL
+            return self.DURATION_MINIMAL
 
         duration_map = {
             "simple": self.DURATION_SIMPLE,
@@ -1027,14 +1427,9 @@ class EnhancedVideoGenerator:
         Phase 1: Generate structured video script with scene breakdown.
         """
         if not self._use_api:
-            # Quick script for local mode
-            return {
-                "title": topic[:50],
-                "total_duration": duration,
-                "scenes": [{"scene_number": 1, "name": "Main", "duration": duration}],
-                "key_concepts": [topic],
-                "visual_style": "diagram"
-            }
+            raise RuntimeError(
+                "No LLM provider configured - add a provider and API key in AI Settings."
+            )
 
         try:
             prompt = SCRIPT_PLANNING_PROMPT.format(
@@ -1091,7 +1486,9 @@ class EnhancedVideoGenerator:
         reroll that's just as likely to hit a different bug.
         """
         if not self._use_api or not script.get("scenes"):
-            # Use SmartManimClient for local mode
+            # Single-scene path: no structured script to expand, so fall back
+            # to the simpler prompt. Still API-backed - SmartManimClient
+            # raises if no provider is configured.
             client = SmartManimClient()
             return client.generate_manim_code(
                 topic=topic,
@@ -1160,8 +1557,19 @@ class EnhancedVideoGenerator:
         # -> more surface area for the model to get wrong).
         requested_duration = (context or {}).get("duration_suggestion")
         if requested_duration:
-            duration = max(10, min(30, int(requested_duration)))
-            complexity = "simple"
+            # Upper bound raised from 30s: a 30s cap forced every lesson
+            # animation into a title card plus one idea, which is why they
+            # felt scarce. Complexity now scales with the request instead of
+            # being pinned to "simple" - that flag drives how many scenes the
+            # script planner writes, so pinning it was the other half of the
+            # same problem.
+            duration = max(10, min(180, int(requested_duration)))
+            if duration >= 90:
+                complexity = "complex"
+            elif duration >= 45:
+                complexity = "moderate"
+            else:
+                complexity = "simple"
         else:
             complexity_info = await self.analyze_complexity(topic, context)
             complexity = complexity_info.get("complexity", "moderate")
@@ -1246,6 +1654,11 @@ class EnhancedVideoGenerator:
         # clobber a substring inside an unrelated identifier.
         for old_name, new_name in self._DEPRECATED_MANIM_ALIASES.items():
             code = re.sub(rf'\b{old_name}\b', new_name, code)
+
+        # Stop each scene from drawing on top of the previous one.
+        code = _inject_manim_compat(code)
+        code = _enforce_scene_isolation(code)
+        code = _stub_undefined_names(code)
 
         return code
 

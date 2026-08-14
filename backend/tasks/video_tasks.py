@@ -26,7 +26,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from celery.exceptions import Retry
 from sqlalchemy import create_engine
@@ -70,11 +70,11 @@ def _configure_llm_for_user(db, user_id: int) -> None:
 
     Mirrors chat.py's _resolve_llm_config: use the user's own default/most-
     recent active provider config, for WHICHEVER provider they actually
-    configured - not a single hardcoded provider. The previous version only
-    ever looked for settings.DEFAULT_LLM_PROVIDER (formerly a hardcoded
-    "groq"), so any user on a different provider - e.g. the institutional
-    Custom endpoint - silently fell through to no key at all. It also never
-    passed base_url, which the Custom provider requires to work at all.
+    configured - not a single hardcoded provider. There is no app-wide
+    default provider to fall back to anymore - a user with no active
+    LLMProviderConfig can't generate videos, and that's raised here rather
+    than silently attempting a keyless request that would only fail later
+    with a more confusing error.
     """
     provider_config = (
         db.query(LLMProviderConfig)
@@ -86,24 +86,27 @@ def _configure_llm_for_user(db, user_id: int) -> None:
         .first()
     )
 
-    if provider_config:
-        provider = (
-            provider_config.provider
-            if isinstance(provider_config.provider, ProviderType)
-            else ProviderType(provider_config.provider)
+    if not provider_config:
+        raise ValueError(
+            f"No active LLM provider configured for user {user_id} - "
+            "configure a provider in AI Settings before generating videos."
         )
-        model = (
-            (provider_config.extra_settings or {}).get("default_model")
-            or next(iter(PROVIDER_INFO.get(provider, {}).get("models", [])), None)
-            or settings.DEFAULT_LLM_MODEL
+
+    provider = (
+        provider_config.provider
+        if isinstance(provider_config.provider, ProviderType)
+        else ProviderType(provider_config.provider)
+    )
+    model = (
+        (provider_config.extra_settings or {}).get("default_model")
+        or next(iter(PROVIDER_INFO.get(provider, {}).get("models", [])), None)
+    )
+    if not model:
+        raise ValueError(
+            f"No model configured for user {user_id}'s {provider.value} provider."
         )
-        encrypted_key = provider_config.api_key_encrypted
-        base_url = provider_config.base_url
-    else:
-        provider = ProviderType(settings.DEFAULT_LLM_PROVIDER)
-        model = settings.DEFAULT_LLM_MODEL
-        encrypted_key = None
-        base_url = None
+    encrypted_key = provider_config.api_key_encrypted
+    base_url = provider_config.base_url
 
     llm_service.set_provider(
         model=model,
@@ -168,20 +171,172 @@ def _find_rendered_video(media_dir: Path, output_name: str) -> Optional[Path]:
     return matches[0] if matches else None
 
 
-def _mux_audio_video(video_path: Path, audio_path: Path, output_path: Path) -> None:
-    """Overlay narration onto the rendered video. `-shortest` truncates to
-    whichever track is shorter rather than trying to time-stretch either -
-    a simple, robust default until per-scene audio/video timing sync is
-    built (a real future improvement, not attempted here)."""
+def _extract_thumbnail(video_path: Path, output_path: Path) -> bool:
+    """Grab a poster frame so the Video Vault has something to show.
+
+    frontend/src/pages/VideoVault.jsx derives the thumbnail URL by swapping
+    the .mp4 extension for .jpg, so the filename here must match the video's
+    exactly apart from the extension.
+
+    Seeks 1s in rather than to frame 0 - Manim scenes open on an empty
+    background and fade content in, so the very first frame is usually a
+    blank rectangle. Best-effort: a failure here must not fail the job,
+    since the video itself is already rendered and usable.
+    """
     cmd = [
         "ffmpeg", "-y",
+        "-ss", "1",
         "-i", str(video_path),
-        "-i", str(audio_path),
-        "-c:v", "copy",
-        "-c:a", "aac",
-        "-shortest",
+        "-frames:v", "1",
+        "-q:v", "3",
         str(output_path),
     ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.returncode != 0 or not output_path.exists():
+            logger.warning(f"Thumbnail extraction failed: {result.stderr[-300:]}")
+            return False
+        return True
+    except Exception as e:
+        logger.warning(f"Thumbnail extraction error: {e}")
+        return False
+
+
+def _probe_duration(path: Path) -> Optional[float]:
+    """Duration of a media file in seconds, or None if ffprobe can't tell."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", str(path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            return float(result.stdout.strip())
+    except Exception as e:
+        logger.warning(f"ffprobe failed for {path.name}: {e}")
+    return None
+
+
+def _content_end(path: Path) -> Optional[float]:
+    """Timestamp of the last frame that still shows something.
+
+    Manim scenes end by fading everything out, so the literal last frame is
+    blank. That matters because narration routinely outruns the animation
+    and `tpad` clones the last frame to cover the gap - cloning a blank one
+    turns the whole tail black. Measured on a real render: 57s of content
+    followed by 35s of frozen black, well over a third of the video.
+
+    ffmpeg's own `blackdetect` is the obvious tool and is the wrong one
+    here: it only fires once a frame is *almost entirely* black, which on a
+    dark theme lands partway through the fade, so the held frame is still
+    nearly invisible. Sampling average luminance and taking the last frame
+    that is clearly above the floor finds the end of the content itself.
+
+    Returns None if the video never goes dark or on any failure, in which
+    case the caller pads exactly as it did before.
+    """
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-nostdin", "-i", str(path), "-vf",
+             "fps=4,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-",
+             "-f", "null", "/dev/null"],
+            capture_output=True, text=True, timeout=300,
+        )
+        samples: List[tuple] = []
+        t: Optional[float] = None
+        for line in proc.stdout.splitlines():
+            line = line.strip()
+            if line.startswith("frame:"):
+                for token in line.split():
+                    if token.startswith("pts_time:"):
+                        t = float(token.split(":", 1)[1])
+            elif "YAVG=" in line and t is not None:
+                samples.append((t, float(line.split("=", 1)[1])))
+        if len(samples) < 8:
+            return None
+
+        ys = sorted(y for _, y in samples)
+        y_min = ys[0]
+        y_med = ys[len(ys) // 2]
+        # A video that never darkens has nothing to trim.
+        if y_med - y_min < 1.0:
+            return None
+        floor = y_min + 0.35 * (y_med - y_min)
+
+        last = None
+        for ts, y in samples:
+            if y >= floor:
+                last = ts
+        return last
+    except Exception as exc:
+        logger.warning(f"content-end detection failed for {path.name}: {exc}")
+        return None
+
+
+def _mux_audio_video(video_path: Path, audio_path: Path, output_path: Path) -> None:
+    """Overlay narration onto the rendered video without truncating either.
+
+    This used to pass `-shortest`, which ends the output at whichever track
+    finishes first. Because the Manim animation and the TTS narration are
+    generated independently, their lengths never match - so in practice every
+    render was cut off: an animation that outran its narration was chopped
+    mid-motion, and narration that outran its animation was cut mid-sentence.
+
+    Instead: probe both, then pad the shorter one to the longer.
+      - audio shorter -> pad with silence (`apad`), so the animation finishes
+      - video shorter -> hold the final frame (`tpad`), so narration finishes
+
+    Falls back to a plain copy-mux if probing fails, since a slightly
+    mismatched video still beats no video at all.
+    """
+    v_dur = _probe_duration(video_path)
+    a_dur = _probe_duration(audio_path)
+
+    cmd = ["ffmpeg", "-y", "-i", str(video_path), "-i", str(audio_path)]
+
+    if v_dur and a_dur:
+        target = max(v_dur, a_dur)
+        # Pad the video by holding its last frame, and/or the audio with
+        # silence. -t pins the result so neither stream runs past the target.
+        if a_dur < v_dur - 0.05:
+            cmd += ["-af", "apad", "-c:v", "copy"]
+        elif v_dur < a_dur - 0.05:
+            # Hold the last frame that still shows something. Cloning the
+            # literal last frame means cloning the closing fade-to-black,
+            # which leaves the viewer staring at nothing while the narration
+            # finishes. Trim the blank tail first, then pad from there.
+            content_at = _content_end(video_path)
+            keep = v_dur
+            filters = []
+            # A threshold in seconds is the wrong instinct here: what makes
+            # the tail black is not how LONG the fade is but that the frame
+            # being cloned is the faded one. A half-second closing fade with
+            # 18s of narration left still blanks 18s of video, so trim any
+            # blank end at all.
+            if content_at is not None and content_at > 1.0 and (v_dur - content_at) > 0.3:
+                keep = content_at
+                filters.append(f"trim=end={keep:.2f}")
+                filters.append("setpts=PTS-STARTPTS")
+                logger.info(
+                    f"Trimming {v_dur - keep:.1f}s of blank tail before padding "
+                    f"(content ends at {keep:.1f}s)"
+                )
+            filters.append(f"tpad=stop_mode=clone:stop_duration={a_dur - keep:.2f}")
+            # tpad re-encodes the video (can't clone frames with -c:v copy).
+            cmd += ["-vf", ",".join(filters), "-c:v", "libx264", "-pix_fmt", "yuv420p"]
+        else:
+            cmd += ["-c:v", "copy"]
+        cmd += ["-t", f"{target:.2f}"]
+        logger.info(
+            f"Muxing: video={v_dur:.1f}s audio={a_dur:.1f}s -> {target:.1f}s "
+            f"(padding {'audio' if a_dur < v_dur else 'video' if v_dur < a_dur else 'neither'})"
+        )
+    else:
+        cmd += ["-c:v", "copy"]
+        logger.warning("Could not probe durations - muxing without padding")
+
+    cmd += ["-c:a", "aac", str(output_path)]
+
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg mux failed: {result.stderr[-1000:]}")
@@ -229,6 +384,17 @@ def render_video_task(self, video_job_id: int) -> dict:
         scene_file = work_dir / "scene.py"
         scene_file.write_text(manim_code)
 
+        # Keep a copy outside work_dir, which is wiped in `finally`. Without
+        # it the only record of what was actually rendered is the video
+        # itself, so diagnosing a layout problem means guessing at the code
+        # from pixels. Cheap (a few KB) and the file is overwritten per job.
+        try:
+            archive = OUTPUT_DIR / "scene_sources"
+            archive.mkdir(parents=True, exist_ok=True)
+            (archive / f"{job.id}_scene.py").write_text(manim_code)
+        except Exception as exc:  # never fail a render over a debug artefact
+            logger.warning(f"Could not archive scene source for job {job.id}: {exc}")
+
         quality_flag = MANIM_QUALITY_FLAGS.get(job.quality, "-qh")
         output_name = "scene_video.mp4"
         # Module form (see _synthesize_narration's docstring for why: PATH
@@ -274,6 +440,9 @@ def render_video_task(self, video_job_id: int) -> dict:
             _mux_audio_video(rendered_video, audio_path, final_path)
         else:
             shutil.copy(rendered_video, final_path)
+
+        # Poster frame for the Video Vault grid - best-effort, never fatal.
+        _extract_thumbnail(final_path, final_path.with_suffix(".jpg"))
 
         _update_job(
             db, job,
