@@ -12,6 +12,7 @@ from .base import Base
 if TYPE_CHECKING:
     from .user import User
     from .chat_message import ChatMessage
+    from .notebook import Notebook
 
 
 class Conversation(Base):
@@ -22,6 +23,12 @@ class Conversation(Base):
     title: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     user_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("users.id", ondelete="CASCADE")
+    )
+    # Which notebook this chat belongs to. Nullable so an archived or
+    # removed notebook leaves the conversation intact and unfiled rather
+    # than taking the student's history down with it.
+    notebook_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("notebooks.id", ondelete="SET NULL"), nullable=True, index=True
     )
     created_at: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -36,6 +43,9 @@ class Conversation(Base):
 
     # Relationships
     user: Mapped["User"] = relationship("User", back_populates="conversations")
+    notebook: Mapped[Optional["Notebook"]] = relationship(
+        "Notebook", back_populates="conversations"
+    )
     messages: Mapped[List["ChatMessage"]] = relationship(
         "ChatMessage", back_populates="conversation", cascade="all, delete-orphan"
     )

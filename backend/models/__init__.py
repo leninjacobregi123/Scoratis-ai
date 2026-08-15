@@ -12,6 +12,7 @@ from .document import Document, SourceType, DocumentStatus
 from .chunk import Chunk
 from .video_job import VideoJob, VideoJobStatus
 from .lesson import Lesson, LessonStatus
+from .notebook import Notebook, MAX_NOTEBOOK_DEPTH
 
 __all__ = [
     "Base",
@@ -31,4 +32,6 @@ __all__ = [
     "VideoJobStatus",
     "Lesson",
     "LessonStatus",
+    "Notebook",
+    "MAX_NOTEBOOK_DEPTH",
 ]

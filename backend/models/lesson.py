@@ -27,6 +27,7 @@ from .base import Base
 
 if TYPE_CHECKING:
     from .user import User
+    from .notebook import Notebook
 
 
 class LessonStatus(str, enum.Enum):
@@ -44,6 +45,11 @@ class Lesson(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Which notebook this course belongs to. Nullable and SET NULL on
+    # delete: losing the folder must never destroy a generated course.
+    notebook_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("notebooks.id", ondelete="SET NULL"), nullable=True, index=True
     )
 
     # What the learner asked for, verbatim - kept for regeneration/debugging.
@@ -94,6 +100,9 @@ class Lesson(Base):
     )
 
     user: Mapped["User"] = relationship("User", back_populates="lessons")
+    notebook: Mapped[Optional["Notebook"]] = relationship(
+        "Notebook", back_populates="lessons"
+    )
 
     def to_dict(self, include_scenes: bool = True) -> dict:
         """Serialise for the API. `include_scenes=False` keeps list responses

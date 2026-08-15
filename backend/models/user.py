@@ -14,6 +14,8 @@ if TYPE_CHECKING:
     from .learning_state import LearningState
     from .llm_provider import LLMProviderConfig
     from .document import Document
+    from .lesson import Lesson
+    from .notebook import Notebook
 
 
 class User(Base):
@@ -44,6 +46,9 @@ class User(Base):
     )
     lessons: Mapped[List["Lesson"]] = relationship(
         "Lesson", back_populates="user", cascade="all, delete-orphan"
+    )
+    notebooks: Mapped[List["Notebook"]] = relationship(
+        "Notebook", back_populates="user", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:
