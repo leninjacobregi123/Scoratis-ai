@@ -41,7 +41,8 @@ celery_app = Celery(
     "scoratis",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
-    include=["tasks.ingestion_tasks", "tasks.video_tasks", "tasks.lesson_tasks"],
+    include=["tasks.ingestion_tasks", "tasks.video_tasks", "tasks.lesson_tasks",
+             "tasks.review_tasks"],
 )
 
 # Celery configuration
@@ -60,6 +61,11 @@ celery_app.conf.update(
         # Lessons render videos inline, so they share the video queue's
         # concurrency budget rather than competing with it on another.
         "tasks.lesson_tasks.*": {"queue": "video"},
+        # Its own queue on purpose. This runs after a lesson finishes and is
+        # several model calls long; on the video queue it would sit in front
+        # of the next student's render for no reason, since nothing is
+        # waiting on its output.
+        "tasks.review_tasks.*": {"queue": "review"},
     },
 
     # Task defaults

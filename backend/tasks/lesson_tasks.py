@@ -220,6 +220,16 @@ def generate_lesson_task(self, lesson_id: int) -> dict:
         _update(db, lesson, status=LessonStatus.COMPLETED, stage="completed",
                 progress_percent=100, message="Lesson ready", scenes=scenes)
         logger.info(f"Lesson complete: lesson_id={lesson_id} ({len(scenes)} scenes)")
+
+        # Tag concepts and write review questions on a separate queue. The
+        # lesson is already usable, so this must never delay it - and a
+        # failure here must never fail a lesson that generated fine.
+        try:
+            from tasks.review_tasks import process_lesson_review_task
+            process_lesson_review_task.delay(lesson_id)
+        except Exception as exc:
+            logger.warning(f"Could not queue review processing for {lesson_id}: {exc}")
+
         return {"status": "success", "lesson_id": lesson_id, "scene_count": len(scenes)}
 
     except Exception as e:
