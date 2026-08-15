@@ -742,7 +742,8 @@ class ScoratisAgent:
         session_id: str,
         message: str,
         db_session: Optional[AsyncSession] = None,
-        user_id: int = 1
+        user_id: int = 1,
+        notebook_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Process a message through the agent (non-streaming).
@@ -767,6 +768,7 @@ class ScoratisAgent:
             llm_service=self.llm_service,
             session_id=session_id,
             user_id=user_id,
+            notebook_id=notebook_id,
             orchestrator=self._orchestrator,
             verifier=self._verifier
         )
@@ -821,7 +823,8 @@ class ScoratisAgent:
         message: str,
         db_session: Optional[AsyncSession] = None,
         user_id: int = 1,
-        history: Optional[List[Dict[str, str]]] = None
+        history: Optional[List[Dict[str, str]]] = None,
+        notebook_id: Optional[int] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Stream a response from the agent.
@@ -850,6 +853,7 @@ class ScoratisAgent:
             llm_service=self.llm_service,
             session_id=session_id,
             user_id=user_id,
+            notebook_id=notebook_id,
             orchestrator=self._orchestrator,
             verifier=self._verifier
         )

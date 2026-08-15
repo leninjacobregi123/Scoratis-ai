@@ -53,6 +53,9 @@ class ToolDependencies:
     llm_service: Any = None
     session_id: str = ""
     user_id: int = 1
+    # The notebook the student is working in, so a lesson the agent decides
+    # to build is filed where they will look for it.
+    notebook_id: Optional[int] = None
     # Agentic components
     orchestrator: Any = None
     verifier: Any = None
@@ -199,7 +202,9 @@ class ToolBuilder:
             return create_generate_video_tool(self.deps.user_id, self.deps.session_id)
 
         elif name == "generate_lesson":
-            return create_generate_lesson_tool(self.deps.user_id, self.deps.session_id)
+            return create_generate_lesson_tool(
+                self.deps.user_id, self.deps.session_id, self.deps.notebook_id
+            )
 
         elif name == "link_preview":
             # Preview service is optional - tool has built-in fallback
@@ -266,6 +271,7 @@ def build_tools(
     llm_service: Any = None,
     session_id: str = "",
     user_id: int = 1,
+    notebook_id: Optional[int] = None,
     tool_names: Optional[List[str]] = None,
     orchestrator: Any = None,
     verifier: Any = None,

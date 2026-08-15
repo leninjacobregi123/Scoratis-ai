@@ -30,6 +30,11 @@ class ChatMessage(BaseModel):
     # resolves against what is on screen rather than being answered blind.
     lesson_id: Optional[int] = None
     scene_id: Optional[str] = None
+    # The notebook the student is working in. New conversations and any
+    # lesson the agent builds this turn are filed into it, so a chat is
+    # findable later from where it was started rather than only from a
+    # flat global list.
+    notebook_id: Optional[int] = None
 
 class DeleteConversation(BaseModel):
     permanent: Optional[bool] = False

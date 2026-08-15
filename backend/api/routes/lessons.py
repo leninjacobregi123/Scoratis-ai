@@ -45,6 +45,7 @@ async def create_lesson(payload: dict, current_user: User = Depends(get_current_
             user_id=current_user.id,
             requirement=requirement,
             session_id=payload.get("session_id"),
+            notebook_id=payload.get("notebook_id"),
             status=LessonStatus.PENDING,
             message="Queued",
         )
@@ -64,6 +65,7 @@ async def create_lesson(payload: dict, current_user: User = Depends(get_current_
 @router.get("")
 async def list_lessons(
     session_id: str | None = None,
+    notebook_id: int | None = None,
     current_user: User = Depends(get_current_user),
 ):
     """Recent lessons. Scenes omitted - a full lesson's slide JSON is large
@@ -79,6 +81,8 @@ async def list_lessons(
         query = select(Lesson).where(Lesson.user_id == current_user.id)
         if session_id:
             query = query.where(Lesson.session_id == session_id)
+        if notebook_id is not None:
+            query = query.where(Lesson.notebook_id == notebook_id)
         rows = (await session.execute(
             query.order_by(Lesson.created_at.desc()).limit(50)
         )).scalars().all()

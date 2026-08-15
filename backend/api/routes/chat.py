@@ -555,7 +555,7 @@ async def chat(message: ChatMessage, current_user: User = Depends(get_current_us
             conversation_memory[session_id] = []
 
         # Save user message to database with embedding
-        conversation_id = await db.add_chat_message(session_id, 'user', user_message, user_id=current_user.id)
+        conversation_id = await db.add_chat_message(session_id, 'user', user_message, user_id=current_user.id, notebook_id=message.notebook_id)
 
         # Add to memory service
         memory_service.add_message(session_id, "user", user_message)
@@ -827,7 +827,7 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
             conversation_memory[session_id] = []
         history_before = list(conversation_memory[session_id])
 
-        await db.add_chat_message(session_id, 'user', user_message, user_id=current_user.id)
+        await db.add_chat_message(session_id, 'user', user_message, user_id=current_user.id, notebook_id=message.notebook_id)
         memory_service.add_message(session_id, "user", user_message)
         conversation_memory[session_id].append({"role": "user", "content": user_message})
         if len(conversation_memory[session_id]) > 20:
@@ -842,7 +842,8 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                         message=user_message,
                         db_session=db_session,
                         user_id=current_user.id,
-                        history=history_before
+                        history=history_before,
+                        notebook_id=message.notebook_id,
                     ):
                         event_type = event.get("type")
 
@@ -955,7 +956,7 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
         conversation_memory[session_id] = []
 
     # Save user message to database with embedding
-    conversation_id = await db.add_chat_message(session_id, 'user', user_message, user_id=current_user.id)
+    conversation_id = await db.add_chat_message(session_id, 'user', user_message, user_id=current_user.id, notebook_id=message.notebook_id)
 
     # Add to memory service
     memory_service.add_message(session_id, "user", user_message)
@@ -1677,10 +1678,16 @@ async def get_conversation_history(limit: int = Query(20, le=50), current_user: 
     return {"conversations": conversations}
 
 @router.get("/chat/conversations")
-async def get_all_conversations(limit: int = Query(50, le=100), current_user: User = Depends(get_current_user)):
-    """Get all conversations for sidebar"""
+async def get_all_conversations(
+    limit: int = Query(50, le=100),
+    notebook_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+):
+    """Get conversations for the sidebar, optionally scoped to a notebook."""
     db = get_database()
-    conversations = await db.get_conversations(user_id=current_user.id, limit=limit)
+    conversations = await db.get_conversations(
+        user_id=current_user.id, limit=limit, notebook_id=notebook_id
+    )
     return {"conversations": conversations}
 
 @router.get("/chat/conversation/{conversation_id}")

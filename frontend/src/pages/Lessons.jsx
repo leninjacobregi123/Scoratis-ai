@@ -8,11 +8,13 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { GraduationCap, Loader2, Plus, AlertCircle, Play } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
+import { useNotebook } from '../context/NotebookContext';
 
 const POLL_MS = 4000;
 
 export default function Lessons() {
   const api = useApi();
+  const { activeId: activeNotebookId, active: activeNotebook } = useNotebook();
   const navigate = useNavigate();
 
   const [lessons, setLessons] = useState([]);
@@ -23,14 +25,16 @@ export default function Lessons() {
 
   const load = useCallback(async () => {
     try {
-      const data = await api.get('/lessons');
+      const data = await api.get(
+        activeNotebookId ? `/lessons?notebook_id=${activeNotebookId}` : '/lessons'
+      );
       setLessons(data.lessons || []);
     } catch (e) {
       setError(e.message || 'Could not load lessons');
     } finally {
       setLoading(false);
     }
-  }, [api]);
+  }, [api, activeNotebookId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -48,7 +52,10 @@ export default function Lessons() {
     setCreating(true);
     setError(null);
     try {
-      const res = await api.post('/lessons', { requirement: text });
+      const res = await api.post('/lessons', {
+        requirement: text,
+        notebook_id: activeNotebookId,
+      });
       setRequirement('');
       await load();
       if (res?.id) navigate(`/app/lessons/${res.id}`);
@@ -70,6 +77,11 @@ export default function Lessons() {
           >
             Lessons
           </h1>
+          {/* The list is scoped, so say to what - otherwise a student who
+              switched notebooks reads a short list as lost work. */}
+          {activeNotebook && (
+            <span className="text-sm text-text-muted">in {activeNotebook.name}</span>
+          )}
         </div>
 
         {/* Create */}

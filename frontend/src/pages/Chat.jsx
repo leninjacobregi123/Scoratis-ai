@@ -7,6 +7,7 @@ import {
   Globe, Brain, Share2, Link2, Copy, AlertTriangle
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
+import { useNotebook } from '../context/NotebookContext';
 import SocratesLogo from '../3d/SocratesLogo';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -911,6 +912,7 @@ export default function Chat() {
   const inputRef = useRef(null);
   const videoPollingRefs = useRef({}); // Store polling intervals by taskId
   const api = useApi();
+  const { activeId: activeNotebookId } = useNotebook();
 
   // Transcript export/share menu state
   const [shareMenuOpen, setShareMenuOpen] = useState(false);
@@ -1094,7 +1096,9 @@ export default function Chat() {
 
   const loadConversations = async () => {
     try {
-      const data = await api.get('/chat/conversations');
+      const data = await api.get(
+        activeNotebookId ? `/chat/conversations?notebook_id=${activeNotebookId}` : '/chat/conversations'
+      );
       setConversations(data.conversations || []);
       // Also update the sidebar in Dashboard
       if (onConversationCreated) {
@@ -1498,7 +1502,10 @@ export default function Chat() {
             use_web_search: chatOptions.useWebSearch,
             use_reasoning: chatOptions.useReasoning,
             provider: currentLLMProvider,
-            model: currentLLMModel
+            model: currentLLMModel,
+            // Files this chat, and any lesson the agent builds from it,
+            // into the notebook the student is working in.
+            notebook_id: activeNotebookId,
           })
         });
       }

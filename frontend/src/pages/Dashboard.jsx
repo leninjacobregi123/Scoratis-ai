@@ -3,6 +3,7 @@ import { useSearchParams, Outlet, useNavigate, useLocation } from 'react-router-
 import Sidebar from '../components/Sidebar';
 import Toast from '../components/Toast';
 import { useApi } from '../hooks/useApi';
+import { useNotebook } from '../context/NotebookContext';
 
 function Dashboard() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -21,6 +22,7 @@ function Dashboard() {
   const [activeSessionId, setActiveSessionId] = useState(sessionId);
 
   const api = useApi();
+  const { activeId: activeNotebookId } = useNotebook();
 
   useEffect(() => {
     loadData();
@@ -51,7 +53,9 @@ function Dashboard() {
   // Load chat conversations for sidebar
   const loadConversations = useCallback(async () => {
     try {
-      const data = await api.get('/chat/conversations');
+      const data = await api.get(
+        activeNotebookId ? `/chat/conversations?notebook_id=${activeNotebookId}` : '/chat/conversations'
+      );
       setConversations(data.conversations || []);
     } catch (error) {
       console.error('Failed to load conversations:', error);

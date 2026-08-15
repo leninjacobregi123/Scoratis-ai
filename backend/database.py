@@ -172,6 +172,7 @@ class DatabaseManager:
         *,
         user_id: int,
         title: Optional[str] = None,
+        notebook_id: Optional[int] = None,
     ) -> int:
         """Create a new conversation record"""
         async with self.get_session() as session:
@@ -179,13 +180,14 @@ class DatabaseManager:
                 session_id=session_id,
                 title=title,
                 user_id=user_id,
+                notebook_id=notebook_id,
             )
             session.add(conv)
             await session.flush()
             return conv.id
 
     async def get_or_create_conversation(
-        self, session_id: str, *, user_id: int
+        self, session_id: str, *, user_id: int, notebook_id: Optional[int] = None
     ) -> int:
         """Get existing conversation or create new one"""
         async with self.get_session() as session:
@@ -200,7 +202,9 @@ class DatabaseManager:
                 return conv.id
 
             # Create new
-            conv = Conversation(session_id=session_id, user_id=user_id)
+            conv = Conversation(
+                session_id=session_id, user_id=user_id, notebook_id=notebook_id
+            )
             session.add(conv)
             await session.flush()
             return conv.id
@@ -212,6 +216,7 @@ class DatabaseManager:
         message: str,
         *,
         user_id: int,
+        notebook_id: Optional[int] = None,
     ) -> int:
         """Add a message to the conversation with embedding"""
         async with self.get_session() as session:
@@ -227,9 +232,17 @@ class DatabaseManager:
                 conv = Conversation(
                     session_id=session_id,
                     user_id=user_id,
+                    notebook_id=notebook_id,
                 )
                 session.add(conv)
                 await session.flush()
+            elif notebook_id is not None and conv.notebook_id is None:
+                # A chat started before notebooks existed, or outside one,
+                # gets filed the first time it is used inside a notebook.
+                # Only ever fills a gap - a chat already filed somewhere
+                # stays put, so switching notebooks mid-thread cannot drag
+                # an existing conversation out of its own.
+                conv.notebook_id = notebook_id
 
             # Generate embedding (if service available)
             embedding = None
@@ -324,8 +337,16 @@ class DatabaseManager:
 
             return messages
 
-    async def get_conversations(self, *, user_id: int, limit: int = 50) -> List[Dict]:
-        """Get all conversations for sidebar display"""
+    async def get_conversations(
+        self, *, user_id: int, limit: int = 50, notebook_id: Optional[int] = None
+    ) -> List[Dict]:
+        """Get conversations for sidebar display.
+
+        `notebook_id` narrows this to one notebook. Passing None means "all
+        of them" rather than "the unfiled ones" - the sidebar falls back to
+        the whole list when no notebook is active, which is what a student
+        with no notebooks yet should still see.
+        """
         async with self.get_session() as session:
             stmt = (
                 select(
@@ -339,6 +360,8 @@ class DatabaseManager:
                 .order_by(Conversation.updated_at.desc())
                 .limit(limit)
             )
+            if notebook_id is not None:
+                stmt = stmt.where(Conversation.notebook_id == notebook_id)
 
             result = await session.execute(stmt)
             conversations = []

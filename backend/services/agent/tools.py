@@ -1014,6 +1014,7 @@ class AgenticToolCategory(str, Enum):
 def create_generate_lesson_tool(
     user_id: int,
     session_id: str,
+    notebook_id: Optional[int] = None,
 ) -> Callable[..., Awaitable[Dict[str, Any]]]:
     """Factory for the full-lesson generation tool.
 
@@ -1066,6 +1067,7 @@ def create_generate_lesson_tool(
                     user_id=user_id,
                     requirement=requirement[:2000],
                     session_id=session_id,
+                    notebook_id=notebook_id,
                     status=LessonStatus.PENDING,
                     message="Queued",
                 )
