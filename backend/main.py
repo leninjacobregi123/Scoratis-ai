@@ -32,6 +32,7 @@ from api.routes.documents import router as documents_router
 from api.routes.agent import router as agent_router
 from api.routes.lessons import router as lessons_router
 from api.routes.notebooks import router as notebooks_router
+from api.routes.review import router as review_router
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -256,6 +257,7 @@ app.include_router(documents_router)
 app.include_router(agent_router)
 app.include_router(lessons_router)
 app.include_router(notebooks_router)
+app.include_router(review_router)
 
 # Run with: uvicorn main:app --reload --port 8000
 if __name__ == "__main__":
