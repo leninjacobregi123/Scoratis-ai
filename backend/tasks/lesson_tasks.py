@@ -17,6 +17,7 @@ scenes this is the obvious thing to parallelise.
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import create_engine
@@ -93,6 +94,106 @@ def _make_llm_callable(user_id: int):
         )
 
     return call
+
+
+def _cached_render(db, user_id: int, title: str) -> Optional[Dict[str, str]]:
+    """A previous render of this same idea, if there is one.
+
+    Matched on the title embedding, then confirmed by a shared content word.
+    Both are needed: the embedding alone puts "Four-Stroke Engine Cycle
+    Animation" and "Calvin Cycle Animation" at 0.50 on the strength of
+    "cycle" and "animation", and generic scene vocabulary should never be
+    what makes two scenes look alike.
+
+    Returns None on any doubt. A miss costs one re-render, which is what
+    used to happen every time anyway; a false hit puts the wrong animation
+    in front of a student.
+    """
+    from pathlib import Path
+    from models import RenderedScene, SCENE_REUSE_THRESHOLD, meaningful_tokens
+    from services.review.mastery import _cosine
+    from services.review.extractor import slug_for
+
+    tokens = meaningful_tokens(title)
+    if not tokens:
+        return None
+
+    try:
+        from services.embedding_service import get_embedding_service
+        service = get_embedding_service()
+        vector = service.embed_text(title) if service else None
+    except Exception as exc:
+        logger.warning(f"Scene-reuse lookup unavailable: {exc}")
+        return None
+    if vector is None:
+        return None
+
+    candidates = (
+        db.query(RenderedScene)
+        .filter(RenderedScene.user_id == user_id, RenderedScene.embedding.isnot(None))
+        .order_by(RenderedScene.embedding.cosine_distance(vector))
+        .limit(5)
+        .all()
+    )
+
+    root = Path(__file__).parent.parent
+    for cached in candidates:
+        similarity = _cosine(vector, list(cached.embedding))
+        if similarity < SCENE_REUSE_THRESHOLD:
+            break  # ordered by distance, so nothing further can qualify
+        if not (tokens & meaningful_tokens(cached.title)):
+            continue
+        # The row can outlive the file - renders get cleaned up, disks get
+        # restored. Serving a path to a missing mp4 would give the student a
+        # broken player rather than a lesson.
+        on_disk = root / cached.video_path.lstrip("/")
+        if not on_disk.exists():
+            logger.info(f"Cached render {cached.id} missing from disk, re-rendering")
+            continue
+
+        cached.use_count = (cached.use_count or 1) + 1
+        cached.last_used_at = datetime.now(timezone.utc)
+        db.commit()
+        logger.info(
+            f"Reusing render {cached.id} ({cached.title!r}, similarity "
+            f"{similarity:.3f}) instead of rendering {title!r}"
+        )
+        return {"src": cached.video_path, "poster": cached.poster_path or ""}
+
+    return None
+
+
+def _remember_render(
+    db, user_id: int, title: str, result: Dict[str, str], lesson_id: Optional[int]
+) -> None:
+    """Record a finished render so the next lesson on this idea can reuse it."""
+    from models import RenderedScene
+    from services.review.extractor import slug_for
+
+    try:
+        from services.embedding_service import get_embedding_service
+        service = get_embedding_service()
+        vector = service.embed_text(title) if service else None
+    except Exception:
+        vector = None
+
+    try:
+        db.add(RenderedScene(
+            user_id=user_id,
+            title=title[:500],
+            slug=slug_for(title),
+            embedding=vector,
+            video_path=result["src"],
+            poster_path=result.get("poster"),
+            source_lesson_id=lesson_id,
+            last_used_at=datetime.now(timezone.utc),
+        ))
+        db.commit()
+    except Exception as exc:
+        # Never fail a lesson over a cache write - the render itself
+        # succeeded and the scene is already usable.
+        logger.warning(f"Could not cache render for {title!r}: {exc}")
+        db.rollback()
 
 
 def _render_video_scene(user_id: int, outline: Dict[str, Any], session_id: Optional[str]) -> Optional[Dict[str, str]]:
@@ -195,7 +296,16 @@ def generate_lesson_task(self, lesson_id: int) -> dict:
             slide: Optional[Dict[str, Any]] = None
 
             if scene_type == "video":
-                media = _render_video_scene(lesson.user_id, so, lesson.session_id)
+                # A previous lesson may already have animated this idea.
+                # Rendering is the most expensive step in the pipeline, so
+                # check before paying for it again.
+                media = _cached_render(db, lesson.user_id, so["title"])
+                if media:
+                    _update(db, lesson, message=f"Reusing animation: {so['title'][:40]}")
+                else:
+                    media = _render_video_scene(lesson.user_id, so, lesson.session_id)
+                    if media:
+                        _remember_render(db, lesson.user_id, so["title"], media, lesson_id)
                 if media:
                     slide = build_video_slide(media["src"], media.get("poster"), so["title"])
                 else:

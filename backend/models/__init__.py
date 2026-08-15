@@ -18,6 +18,9 @@ from .concept import (
     EMBEDDING_DIM, CONCEPT_MERGE_THRESHOLD,
 )
 from .review import ReviewItem, ReviewSchedule, ReviewLog, ReviewKind
+from .rendered_scene import (
+    RenderedScene, SCENE_REUSE_THRESHOLD, meaningful_tokens,
+)
 
 __all__ = [
     "Base",
@@ -49,4 +52,7 @@ __all__ = [
     "ReviewSchedule",
     "ReviewLog",
     "ReviewKind",
+    "RenderedScene",
+    "SCENE_REUSE_THRESHOLD",
+    "meaningful_tokens",
 ]

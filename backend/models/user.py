@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from .notebook import Notebook
     from .concept import Concept, ConceptMastery
     from .review import ReviewItem
+    from .rendered_scene import RenderedScene
 
 
 class User(Base):
@@ -60,6 +61,9 @@ class User(Base):
     )
     review_items: Mapped[List["ReviewItem"]] = relationship(
         "ReviewItem", back_populates="user", cascade="all, delete-orphan"
+    )
+    rendered_scenes: Mapped[List["RenderedScene"]] = relationship(
+        "RenderedScene", back_populates="user", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:
