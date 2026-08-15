@@ -1,13 +1,16 @@
-import { Home, MessageCircle, Film, GraduationCap, Settings, ChevronLeft, ChevronRight, Clock, Plus, LogOut, BookMarked as NotebookIcon } from 'lucide-react';
+import { Home, MessageCircle, Film, GraduationCap, Settings, ChevronLeft, ChevronRight, Clock, Plus, LogOut, BookMarked as NotebookIcon, Brain } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import SocratesLogo from '../3d/SocratesLogo';
 import { useAuth } from '../context/AuthContext';
 import { useNotebook } from '../context/NotebookContext';
+import { useApi } from '../hooks/useApi';
+import { useState, useEffect } from 'react';
 
 const navItems = [
   { id: 'home', label: 'Home', icon: Home, path: '/app/home' },
   { id: 'notebooks', label: 'Notebooks', icon: NotebookIcon, path: '/app/notebooks' },
   { id: 'scoratis', label: 'Scoratis AI', icon: MessageCircle, path: '/app/scoratis', primary: true },
+  { id: 'review', label: 'Review', icon: Brain, path: '/app/review', badge: 'due' },
   { id: 'lessons', label: 'Lessons', icon: GraduationCap, path: '/app/lessons' },
   { id: 'videos', label: 'Video Vault', icon: Film, path: '/app/videos' },
   { id: 'settings', label: 'AI Settings', icon: Settings, path: '/app/settings' },
@@ -25,7 +28,27 @@ export default function Sidebar({
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout } = useAuth();
-  const { active: activeNotebook } = useNotebook();
+  const { active: activeNotebook, activeId: activeNotebookId } = useNotebook();
+  const api = useApi();
+  const [dueCount, setDueCount] = useState(0);
+
+  // The review queue only works if the student knows it is waiting. Polled
+  // rather than pushed: it changes on a timescale of hours, and a stale
+  // count for a minute costs nothing.
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const stats = await api.get(
+          activeNotebookId ? `/review/stats?notebook_id=${activeNotebookId}` : '/review/stats'
+        );
+        if (alive) setDueCount(stats.due || 0);
+      } catch { /* a missing badge is not worth surfacing an error for */ }
+    };
+    load();
+    const timer = setInterval(load, 60000);
+    return () => { alive = false; clearInterval(timer); };
+  }, [api, activeNotebookId, location.pathname]);
 
   const handleLogout = () => {
     logout();
@@ -135,6 +158,11 @@ export default function Sidebar({
                   <span className="font-medium text-sm">{item.label}</span>
                   {item.primary && !isActive && (
                     <span className="ml-auto text-xs px-2 py-0.5 bg-accent-olive/20 text-accent-olive rounded-full">AI</span>
+                  )}
+                  {item.badge === 'due' && dueCount > 0 && (
+                    <span className="ml-auto text-xs px-2 py-0.5 bg-accent-olive text-white rounded-full tabular-nums">
+                      {dueCount}
+                    </span>
                   )}
                 </>
               )}

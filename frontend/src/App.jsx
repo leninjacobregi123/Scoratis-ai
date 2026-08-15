@@ -6,6 +6,7 @@ import VideoVault from './pages/VideoVault';
 import Lessons from './pages/Lessons';
 import Notebooks from './pages/Notebooks';
 import NotebookDetail from './pages/NotebookDetail';
+import Review from './pages/Review';
 import Lesson from './pages/Lesson';
 import Settings from './pages/Settings';
 import Login from './pages/Login';
@@ -90,6 +91,7 @@ function App() {
             <Route index element={<NotebookGate />} />
             <Route path="notebooks" element={<Notebooks />} />
             <Route path="notebooks/:notebookId" element={<NotebookDetail />} />
+            <Route path="review" element={<Review />} />
             <Route path="home" element={<Home />} />
             <Route path="scoratis" element={<Chat />} />
             <Route path="videos" element={<VideoVault />} />
