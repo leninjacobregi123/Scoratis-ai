@@ -64,10 +64,18 @@ export function useApi() {
     return response.data
   }, [])
 
+  const patch = useCallback(async (endpoint, data) => {
+    const response = await instance.patch(endpoint, data)
+    return response.data
+  }, [])
+
   const del = useCallback(async (endpoint) => {
     const response = await instance.delete(endpoint)
     return response.data
   }, [])
 
-  return useMemo(() => ({ get, post, put, del, delete: del }), [get, post, put, del])
+  return useMemo(
+    () => ({ get, post, put, patch, del, delete: del }),
+    [get, post, put, patch, del]
+  )
 }

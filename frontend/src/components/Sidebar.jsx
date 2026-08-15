@@ -1,10 +1,12 @@
-import { Home, MessageCircle, Film, GraduationCap, Settings, ChevronLeft, ChevronRight, Clock, Plus, LogOut } from 'lucide-react';
+import { Home, MessageCircle, Film, GraduationCap, Settings, ChevronLeft, ChevronRight, Clock, Plus, LogOut, BookMarked as NotebookIcon } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import SocratesLogo from '../3d/SocratesLogo';
 import { useAuth } from '../context/AuthContext';
+import { useNotebook } from '../context/NotebookContext';
 
 const navItems = [
   { id: 'home', label: 'Home', icon: Home, path: '/app/home' },
+  { id: 'notebooks', label: 'Notebooks', icon: NotebookIcon, path: '/app/notebooks' },
   { id: 'scoratis', label: 'Scoratis AI', icon: MessageCircle, path: '/app/scoratis', primary: true },
   { id: 'lessons', label: 'Lessons', icon: GraduationCap, path: '/app/lessons' },
   { id: 'videos', label: 'Video Vault', icon: Film, path: '/app/videos' },
@@ -23,6 +25,7 @@ export default function Sidebar({
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout } = useAuth();
+  const { active: activeNotebook } = useNotebook();
 
   const handleLogout = () => {
     logout();
@@ -88,6 +91,24 @@ export default function Sidebar({
             <LogOut className="w-4 h-4" />
           </button>
         </div>
+      )}
+
+      {/* Which notebook everything is filing into. Without this the
+          student has no way to tell where a new chat or course will land,
+          which matters most right after switching. */}
+      {!collapsed && activeNotebook && (
+        <Link
+          to={`/app/notebooks/${activeNotebook.id}`}
+          title={`Working in ${activeNotebook.name}`}
+          className="flex items-center gap-2 mb-4 px-3 py-2 rounded-lg bg-accent-olive/10 border border-accent-olive/30 hover:border-accent-olive transition-colors"
+        >
+          <NotebookIcon className="w-4 h-4 text-accent-olive shrink-0" />
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] uppercase tracking-wide text-text-muted">Notebook</div>
+            <div className="text-sm text-text-primary truncate">{activeNotebook.name}</div>
+          </div>
+          <ChevronRight className="w-3.5 h-3.5 text-text-muted shrink-0" />
+        </Link>
       )}
 
       {/* Navigation */}
