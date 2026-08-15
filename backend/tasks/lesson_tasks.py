@@ -168,7 +168,16 @@ def generate_lesson_task(self, lesson_id: int) -> dict:
         llm = _make_llm_callable(lesson.user_id)
 
         # ---- Stage 1: outline
-        outline = asyncio.run(generate_outline(llm, lesson.requirement))
+        # What this learner has already proved they know, so the outline can
+        # skip it and spend the scenes on what they have not. Empty for a
+        # new student, which reads as an ordinary request.
+        from services.review.mastery import mastery_context_sync
+        mastery_context = mastery_context_sync(db, lesson.user_id, lesson.requirement)
+        if mastery_context:
+            logger.info(f"Lesson {lesson_id} personalised: {mastery_context[:160]}")
+        outline = asyncio.run(
+            generate_outline(llm, lesson.requirement, context=mastery_context)
+        )
         scene_outlines: List[Dict[str, Any]] = outline["outlines"]
         _update(db, lesson, title=outline["title"], summary=outline["summary"],
                 outline=outline, stage="scenes", progress_percent=15,

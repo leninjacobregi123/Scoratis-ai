@@ -43,6 +43,21 @@ request into a structured sequence of scene outlines.
 Choosing `video` is expensive (about a minute to render each). Prefer `slide`.
 A good 4-6 scene lesson has AT MOST 1-2 `video` scenes, often zero.
 
+## Adapting to the learner
+
+You may be told what this learner already understands and what they keep
+forgetting. When you are:
+
+- Do NOT spend a scene teaching something listed as already understood.
+  Reference it in one line as known ground and move on. A student made to
+  sit through what they have already proved they know stops trusting the
+  course.
+- DO give extra room to anything listed as struggled with, and explain it a
+  DIFFERENT way than a first pass would - a second identical explanation
+  fails for the same reason the first did.
+- Never mention this list to the learner, and never say "as you already
+  know" about something not on it.
+
 ## Design principles
 
 - Each scene has ONE clear teaching purpose.

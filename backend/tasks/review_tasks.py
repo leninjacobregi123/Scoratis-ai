@@ -11,6 +11,7 @@ lesson that takes even longer to appear, which everybody does.
 """
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
@@ -77,7 +78,14 @@ def _find_or_create_concept(db, user_id: int, spec: Dict) -> Concept:
         )
         if near is not None and near.embedding is not None:
             similarity = _cosine(embedding, list(near.embedding))
-            if similarity >= CONCEPT_MERGE_THRESHOLD:
+            if similarity >= CONCEPT_MERGE_THRESHOLD and _distinguishing_tokens(
+                spec["name"], near.name
+            ):
+                logger.info(
+                    f"Not merging {spec['name']!r} with {near.name!r} despite "
+                    f"similarity {similarity:.3f} - they differ meaningfully"
+                )
+            elif similarity >= CONCEPT_MERGE_THRESHOLD:
                 logger.info(
                     f"Merging concept {spec['name']!r} into existing "
                     f"{near.name!r} (similarity {similarity:.3f})"
@@ -94,6 +102,49 @@ def _find_or_create_concept(db, user_id: int, spec: Dict) -> Concept:
     db.add(concept)
     db.flush()
     return concept
+
+
+# Tokens that carry the whole distinction between two otherwise identical
+# concept names. Embeddings put "Newton's First Law" and "Newton's Second
+# Law" at 0.90 similarity - close enough to merge under any threshold loose
+# enough to also merge "binary search process" with "binary search
+# algorithm", which is a merge worth having.
+_ORDINALS = {
+    "first", "second", "third", "fourth", "fifth", "sixth", "seventh",
+    "eighth", "ninth", "tenth", "1st", "2nd", "3rd", "4th", "5th",
+    "i", "ii", "iii", "iv", "v",
+}
+_NEGATIONS = ("in", "un", "non", "anti", "de", "a")
+
+
+def _distinguishing_tokens(a: str, b: str) -> bool:
+    """True when two names differ in a way that must not be merged.
+
+    Two failure modes, both of which would silently credit mastery of one
+    idea to another the student has never studied:
+
+      ordinals   Newton's First Law  vs  Newton's Second Law
+      negation   light-dependent     vs  light-independent
+
+    Anything else close enough to pass the similarity threshold is a
+    genuine restatement and should merge.
+    """
+    ta = {t for t in re.split(r"[^a-z0-9]+", a.lower()) if t}
+    tb = {t for t in re.split(r"[^a-z0-9]+", b.lower()) if t}
+    only_a, only_b = ta - tb, tb - ta
+
+    # An ordinal or digit present on one side and not the other.
+    for side in (only_a, only_b):
+        if side & _ORDINALS or any(t.isdigit() for t in side):
+            return True
+
+    # A negated form of a word the other side has plainly.
+    for x in only_a:
+        for y in only_b:
+            for prefix in _NEGATIONS:
+                if x == prefix + y or y == prefix + x:
+                    return True
+    return False
 
 
 def _cosine(a: List[float], b: List[float]) -> float:
@@ -118,6 +169,12 @@ def _ensure_mastery(db, user_id: int, concept_id: int) -> None:
             strength=0.0,
             first_seen_at=datetime.now(timezone.utc),
         ))
+        # Flush immediately. This session is autoflush=False, and a concept
+        # taught in several scenes reaches here once per scene - without the
+        # flush the second call cannot see the first call's pending row,
+        # inserts a duplicate, and the unique constraint takes the whole
+        # lesson's processing down at commit.
+        db.flush()
 
 
 @celery_app.task(bind=True, max_retries=1, default_retry_delay=60)
