@@ -16,6 +16,8 @@ if TYPE_CHECKING:
     from .document import Document
     from .lesson import Lesson
     from .notebook import Notebook
+    from .concept import Concept, ConceptMastery
+    from .review import ReviewItem
 
 
 class User(Base):
@@ -49,6 +51,15 @@ class User(Base):
     )
     notebooks: Mapped[List["Notebook"]] = relationship(
         "Notebook", back_populates="user", cascade="all, delete-orphan"
+    )
+    concepts: Mapped[List["Concept"]] = relationship(
+        "Concept", back_populates="user", cascade="all, delete-orphan"
+    )
+    concept_mastery: Mapped[List["ConceptMastery"]] = relationship(
+        "ConceptMastery", back_populates="user", cascade="all, delete-orphan"
+    )
+    review_items: Mapped[List["ReviewItem"]] = relationship(
+        "ReviewItem", back_populates="user", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:

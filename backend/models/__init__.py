@@ -13,6 +13,11 @@ from .chunk import Chunk
 from .video_job import VideoJob, VideoJobStatus
 from .lesson import Lesson, LessonStatus
 from .notebook import Notebook, MAX_NOTEBOOK_DEPTH
+from .concept import (
+    Concept, ConceptEdge, SceneConcept, ConceptMastery,
+    EMBEDDING_DIM, CONCEPT_MERGE_THRESHOLD,
+)
+from .review import ReviewItem, ReviewSchedule, ReviewLog, ReviewKind
 
 __all__ = [
     "Base",
@@ -34,4 +39,14 @@ __all__ = [
     "LessonStatus",
     "Notebook",
     "MAX_NOTEBOOK_DEPTH",
+    "Concept",
+    "ConceptEdge",
+    "SceneConcept",
+    "ConceptMastery",
+    "EMBEDDING_DIM",
+    "CONCEPT_MERGE_THRESHOLD",
+    "ReviewItem",
+    "ReviewSchedule",
+    "ReviewLog",
+    "ReviewKind",
 ]
