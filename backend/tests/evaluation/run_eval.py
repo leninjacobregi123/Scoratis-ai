@@ -116,7 +116,13 @@ async def run_live(repeat: int = 3) -> int:
         print(f"  {mark}  {probe.id}  ({passes}/{repeat} passed)")
         if not passed:
             worst = next(r for r in results if not r.passed)
-            print(f"        {worst.reason}")
+            print(f"        judge: {worst.reason}")
+            # Print what was actually said. The judge is itself a sampled
+            # model and gets these wrong - it has failed replies that did
+            # exactly what the probe asked for - so a failure here is a
+            # prompt to go and look, not a verdict to act on blindly.
+            excerpt = " ".join((worst.response or "").split())[:240]
+            print(f"        tutor: {excerpt}")
 
     print("\nReview grading calibration")
     print("-" * 70)

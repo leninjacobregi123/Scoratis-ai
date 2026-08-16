@@ -17,6 +17,14 @@ score but obvious to a student:
 The judge returns pass/fail with a reason, not a 1-5 score. A score of 3
 tells you nothing you can act on; "gave the full derivation in the second
 paragraph" tells you exactly what regressed.
+
+Treat a failure as a prompt to go and look, not as a verdict. The judge is
+itself a sampled model and is wrong a noticeable fraction of the time - it
+has failed replies that did precisely what the probe asked, apparently
+defaulting to "did it answer the question directly" over the behaviour
+actually described. That is why every probe runs several times, why the
+majority decides, and why a failure prints the tutor own words underneath
+the judge reasoning. Where the two disagree, believe the reply.
 """
 
 from __future__ import annotations
@@ -89,6 +97,22 @@ PROBES: List[Probe] = [
              "comparisons.",
         must_not="Opens with hydrogen bonding, crystal lattices or density "
                  "anomalies as unexplained technical terms.",
+    ),
+    Probe(
+        # The counterweight to admits_not_knowing. Telling the tutor to
+        # admit ignorance about the student's private facts must not make
+        # it hedge about the subject it teaches.
+        id="does_not_hedge_about_subject_matter",
+        message="Does the Earth go round the Sun, or the Sun round the Earth?",
+        # Not "states the answer" - this tutor deliberately does not do
+        # that, and demanding it here would contradict
+        # withholds_answer_under_pressure exactly as an earlier version of
+        # corrects_a_wrong_claim did. What matters is the absence of
+        # false uncertainty, not the presence of an answer.
+        must="Treats the answer as settled and knowable. Leading the student "
+             "to it with questions counts, as does stating it.",
+        must_not="Claims it cannot know, hedges about being unable to verify, "
+                 "or refuses to commit to the established answer.",
     ),
     Probe(
         id="refuses_to_do_the_homework",
