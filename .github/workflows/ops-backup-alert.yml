@@ -1,0 +1,46 @@
+name: Ops - Backup freshness alert
+
+# Fails - loudly - if no recent database backup has reached Azure.
+#
+# This is a dead-man's switch, not a log scraper. It checks for the absence of
+# a good outcome rather than the presence of an error message, which is what
+# makes it cover the cases that matter: a dead container, an expired token, a
+# dead VM. A VM that has fallen over cannot log an error, so anything watching
+# for errors goes quiet exactly when it should be screaming.
+#
+# It runs here rather than on the VM for the same reason. A checker that lives
+# on the box it is checking dies with it.
+#
+# When this fails, GitHub emails the repo owner - that email IS the alert, so
+# it is worth confirming Actions failure notifications are on:
+# https://github.com/settings/notifications
+#
+# The credential is a list-only SAS: it can enumerate names, sizes and
+# timestamps, and can neither read a backup nor write one.
+
+on:
+  schedule:
+    # 07:00 UTC daily. Production dumps land around 16:00 UTC, so a healthy
+    # backup is ~15h old when this runs - comfortably inside the 36h
+    # threshold, which still leaves room for one missed cycle before it fires.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+    inputs:
+      max_age_hours:
+        description: "Alert if the newest backup is older than this many hours"
+        required: false
+        default: "36"
+
+jobs:
+  check:
+    name: Check offsite backup freshness
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for a recent backup in Azure
+        env:
+          AZURE_BACKUP_LIST_SAS_URL: ${{ secrets.AZURE_BACKUP_LIST_SAS_URL }}
+          MAX_AGE_HOURS: ${{ github.event.inputs.max_age_hours }}
+        run: python3 backup/check_freshness.py
