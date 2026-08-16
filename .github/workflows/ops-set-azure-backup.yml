@@ -1,0 +1,61 @@
+name: Ops - Set Azure backup SAS URL
+
+# One-off (and idempotent): writes AZURE_BACKUP_SAS_URL into .env.production
+# on the VM and restarts the two backup containers so they pick it up.
+#
+# .env.production is deliberately excluded from the CD rsync - it lives only
+# on the VM and never in the repo - so secrets have to arrive this way.
+#
+# Re-run this when the SAS token is rotated or approaching expiry. The
+# uploader reports an expired token as "HTTP 403 - SAS token expired" rather
+# than a generic failure, which is the signal to come back here.
+#
+# The line is removed and re-appended rather than sed-replaced in place: a
+# SAS URL is full of & characters, and & in a sed replacement means "the
+# whole match", which would silently write a corrupted token.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  set-sas:
+    name: Write Azure backup SAS URL to the VM
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up deploy SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VM_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Write AZURE_BACKUP_SAS_URL into .env.production
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
+            "cd ~/scoratis-deploy && \
+             touch .env.production && \
+             grep -v '^AZURE_BACKUP_SAS_URL=' .env.production > .env.production.tmp && \
+             printf '%s\n' 'AZURE_BACKUP_SAS_URL=${{ secrets.AZURE_BACKUP_SAS_URL }}' >> .env.production.tmp && \
+             mv .env.production.tmp .env.production && \
+             chmod 600 .env.production"
+
+      - name: Recreate the backup containers
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
+            "cd ~/scoratis-deploy && sudo docker compose --env-file .env.production \
+               -f docker-compose.prod.yml up -d --no-deps backup backup-offsite"
+
+      - name: Confirm the uploader accepted the token
+        run: |
+          sleep 20
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
+            "sudo docker logs scoratis-backup-offsite --tail 20 2>&1" | tee out.txt
+          # "offsite disabled" means the variable never reached the container.
+          if grep -q 'offsite backup disabled' out.txt; then
+            echo "::error::AZURE_BACKUP_SAS_URL did not reach the container"
+            exit 1
+          fi

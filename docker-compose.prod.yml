@@ -49,17 +49,8 @@ services:
     mem_limit: 256m
     cpus: "0.5"
 
-  # Nightly database dump. Without this, the only copy of every student's
-  # notebooks, courses, concepts and review history is one Docker volume on
-  # one VM - a single bad disk, or a single `docker compose down -v`, from
-  # gone for good.
-  #
-  # Runs the same image as postgres so pg_dump always matches the server
-  # major version, and writes a custom-format dump (restore with pg_restore).
-  # The dump is written under a temp name and renamed only after pg_dump
-  # exits clean, so a dump interrupted halfway can never be mistaken for a
-  # usable backup - which is the failure mode that makes people think they
-  # have backups when they do not.
+  # Nightly database dump. See backup/dump.sh - the temp-name-then-rename
+  # and the retention behaviour are load-bearing and explained there.
   backup:
     image: pgvector/pgvector:pg16
     container_name: scoratis-backup
@@ -68,25 +59,38 @@ services:
         condition: service_healthy
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD}
+      AZURE_BACKUP_SAS_URL: ${AZURE_BACKUP_SAS_URL:-}
     volumes:
       - postgres_backups:/backups
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        while true; do
-          ts=$$(date +%Y%m%d-%H%M%S)
-          if pg_dump -h postgres -U scoratis -d scoratis -Fc -f /backups/.in-progress.dump; then
-            mv /backups/.in-progress.dump /backups/scoratis-$$ts.dump
-            echo "backup ok: scoratis-$$ts.dump"
-          else
-            rm -f /backups/.in-progress.dump
-            echo "backup FAILED at $$ts" >&2
-          fi
-          ls -1t /backups/scoratis-*.dump 2>/dev/null | tail -n +8 | xargs -r rm -f
-          sleep 86400
-        done
+      - ./backup:/scripts:ro
+    entrypoint: ["/bin/sh", "/scripts/dump.sh"]
     restart: unless-stopped
     mem_limit: 256m
+    cpus: "0.5"
+
+  # Ships those dumps to Azure Blob Storage. Separate container because
+  # pg_dump and curl are not in the same prebuilt image, and having the
+  # backup path depend on a package mirror at build time is a bad trade.
+  #
+  # Runs as root only to write marker files into the shared volume, which
+  # postgres created; it has no network access to anything but Azure.
+  #
+  # Without AZURE_BACKUP_SAS_URL this exits cleanly and backups stay local,
+  # which is what a dev clone wants.
+  backup-offsite:
+    image: curlimages/curl:latest
+    container_name: scoratis-backup-offsite
+    user: "0:0"
+    depends_on:
+      - backup
+    environment:
+      AZURE_BACKUP_SAS_URL: ${AZURE_BACKUP_SAS_URL:-}
+    volumes:
+      - postgres_backups:/backups
+      - ./backup:/scripts:ro
+    entrypoint: ["/bin/sh", "/scripts/upload.sh"]
+    restart: unless-stopped
+    mem_limit: 128m
     cpus: "0.5"
 
   backend:
