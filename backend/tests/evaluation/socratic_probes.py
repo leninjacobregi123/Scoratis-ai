@@ -227,6 +227,37 @@ GRADING_CASES = [
         "expect_max": 1,
     },
     {
+        # The other side of the 1/2 boundary: correct but thin must stay at
+        # 2, or tightening "confidently wrong" would just push everything
+        # down to 1 and re-drill things the student actually knows.
+        "id": "correct_but_thin",
+        "prompt": "Why does a heavier cart accelerate less under the same push?",
+        "answer": "Acceleration equals force divided by mass, so for a fixed "
+                  "force a greater mass gives a smaller acceleration.",
+        "must_include": ["a = F/m relationship", "more mass means less acceleration"],
+        "response": "because it has more mass",
+        "expect_min": 2,
+        "expect_max": 3,
+    },
+    {
+        "id": "right_idea_wrong_words",
+        "prompt": "Where do the light-dependent reactions happen?",
+        "answer": "In the thylakoid membranes of the chloroplast.",
+        "must_include": ["thylakoid"],
+        "response": "in those stacked disc things inside the chloroplast",
+        "expect_min": 2,
+        "expect_max": 4,
+    },
+    {
+        "id": "plausible_but_wrong_location",
+        "prompt": "Where do the light-dependent reactions happen?",
+        "answer": "In the thylakoid membranes of the chloroplast.",
+        "must_include": ["thylakoid"],
+        "response": "in the stroma of the chloroplast, where the enzymes are",
+        "expect_min": 1,
+        "expect_max": 1,
+    },
+    {
         "id": "restates_the_question",
         "prompt": "Why does a heavier cart accelerate less under the same push?",
         "answer": "Acceleration equals force divided by mass.",

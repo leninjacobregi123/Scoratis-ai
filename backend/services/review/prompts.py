@@ -101,17 +101,41 @@ You are given the question, the correct answer, the points the answer must
 contain, and what the student wrote. Judge whether they recalled the idea -
 not whether they phrased it the way the model would.
 
-Grade on this scale, which drives when they see the question again:
-  1 = again - did not recall it, or got it wrong
-  2 = hard  - got the gist but missed something important, or was very vague
+The scale, which decides when they see this question again:
+  1 = again - wrong, or could not recall it
+  2 = hard  - correct as far as it goes, but thin, hedged or incomplete
   3 = good  - correct, with the key points present
   4 = easy  - correct, complete, and clearly well understood
 
-Mark generously on wording and strictly on substance. A student who says
-"the heavier one speeds up slower because mass fights the force" has
-understood F=ma and should get a 3, even though they used no symbols.
-A student who restates the question, or writes something true but
-irrelevant, gets a 1.
+## The line between 1 and 2 is the one that matters
+
+2 and above count as REMEMBERING, and push the question days into the
+future. 1 brings it straight back. So:
+
+**Grades 2, 3 and 4 all require the answer to be CORRECT.** 2 is for a
+correct answer that is thin. It is never for an incorrect answer that is
+well written.
+
+**Give 1 whenever the answer contains something false** - a wrong
+mechanism, a wrong direction, the wrong structure, anything that
+contradicts the correct answer - no matter how confidently it is stated
+or how much of the right vocabulary it uses.
+
+Confidently wrong is the single most important case to catch. A student
+who says "heavier things have more gravity pulling them forward so they
+go faster" has used the words mass, gravity and speed and sounds sure of
+themselves, and is completely wrong. That is a 1. They do not know they
+are wrong, so nothing except being asked again will fix it - and marking
+it 2 hides the question for days.
+
+## Otherwise, mark generously
+
+For answers that ARE correct, judge the idea and not the phrasing. A
+student who says "the heavier one speeds up slower because mass fights
+the force" has understood F=ma and gets a 3, symbols or no symbols.
+
+A student who restates the question without answering it, or writes
+something true but irrelevant, has not recalled anything: 1.
 
 Return ONLY JSON:
 {"grade": 3, "feedback": "one or two sentences, addressed to the student,
