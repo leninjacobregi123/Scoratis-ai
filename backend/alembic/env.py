@@ -7,6 +7,7 @@ Automatically loads models and configures pgvector support.
 
 import asyncio
 import os
+from pathlib import Path
 from logging.config import fileConfig
 
 from sqlalchemy import pool, text
@@ -22,8 +23,6 @@ from models.base import Base
 # Import all models to ensure they're registered with Base.metadata
 from models import (
     User,
-    Folder,
-    Journal,
     Conversation,
     ChatMessage,
     LearningState,
@@ -41,6 +40,16 @@ if config.config_file_name is not None:
 
 # Add your model's MetaData object here for 'autogenerate' support
 target_metadata = Base.metadata
+
+
+# Load backend/.env before resolving anything, so `alembic upgrade head`
+# uses exactly the database the app uses. Without this, alembic saw only
+# the shell environment and fell through to alembic.ini.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+except Exception:
+    pass
 
 
 def get_url() -> str:
@@ -61,8 +70,19 @@ def get_url() -> str:
             return url.replace("postgresql://", "postgresql+asyncpg://")
         return url
 
-    # Fall back to alembic.ini setting
-    return config.get_main_option("sqlalchemy.url")
+    # Fall back to alembic.ini, which deliberately ships without
+    # credentials. A hardcoded fallback here silently connected migrations
+    # to the wrong database with the wrong password - every alembic command
+    # failed authentication until DATABASE_URL was exported by hand, and on
+    # a fresh deploy it would fail at exactly the wrong moment.
+    url = config.get_main_option("sqlalchemy.url")
+    if not url:
+        raise RuntimeError(
+            "No database URL. Set DATABASE_URL (or DATABASE_URL_ASYNC) in the "
+            "environment or in backend/.env - alembic.ini intentionally holds "
+            "no credentials."
+        )
+    return url
 
 
 def get_sync_url() -> str:

@@ -1,6 +1,6 @@
 """
 Document Model for RAG System
-Stores uploaded documents and migrated content (journals, conversations)
+Stores uploaded documents and migrated content (conversations)
 """
 
 from datetime import datetime
@@ -74,13 +74,13 @@ class Document(Base):
         # migration-created `sourcetype` Postgres type only has the lowercase
         # .value labels ('journal', 'chat', 'upload'), so every insert would
         # fail with InvalidTextRepresentationError without this. Same
-        # pattern as ProviderType/VideoJobStatus/ReviewSourceType - see
-        # their comments in llm_provider.py/video_job.py/review_item.py.
+        # pattern as ProviderType/VideoJobStatus - see their comments in
+        # llm_provider.py/video_job.py.
         SQLEnum(SourceType, values_callable=lambda enum_cls: [e.value for e in enum_cls]),
         nullable=False,
         default=SourceType.UPLOAD
     )
-    source_id = Column(Integer, nullable=True)  # Original journal/chat ID for migrations
+    source_id = Column(Integer, nullable=True)  # Original source record ID for migrations
 
     # File information (for uploads)
     file_path = Column(String(1000), nullable=True)

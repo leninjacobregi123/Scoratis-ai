@@ -20,7 +20,7 @@ function CloudProviderCard({ provider, config, onSave, onTest, onDelete, isLoadi
   const handleSave = async () => {
     setTestResult(null)
     try {
-      await onSave({
+      await onSave(config?.id, {
         provider: provider.id,
         name: provider.displayName,
         api_key: apiKey || undefined,
@@ -224,10 +224,14 @@ export default function Settings() {
     }
   }
 
-  const saveProviderConfig = async (config) => {
+  const saveProviderConfig = async (existingId, config) => {
     setSaving(true)
     try {
-      await api.post('/llm/providers/configured', config)
+      if (existingId) {
+        await api.put(`/llm/providers/configured/${existingId}`, config)
+      } else {
+        await api.post('/llm/providers/configured', config)
+      }
       await loadAll()
     } catch (error) {
       console.error('Failed to save provider:', error)

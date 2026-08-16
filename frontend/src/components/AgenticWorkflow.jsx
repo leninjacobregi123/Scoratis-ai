@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import {
-  Brain, Search, BookOpen, Globe, CheckCircle, AlertCircle,
+  Brain, Search, Globe, CheckCircle, AlertCircle,
   Loader2, Lightbulb, ListTodo, Users, Shield, Send,
   Film, Link2, Image, HelpCircle, Database, MessageSquare
 } from 'lucide-react';
@@ -14,7 +14,6 @@ const TOOL_ICONS = {
   // Search tools (Private-First)
   search_knowledge_base: Database,
   knowledge_base: Database,
-  search_journals: BookOpen,
   search_past_conversations: MessageSquare,
   web_search: Globe,
 
@@ -47,7 +46,6 @@ const TOOL_NAMES = {
   // Search (Private-First)
   search_knowledge_base: 'Searching Your Notes',
   knowledge_base: 'Searching Your Notes',
-  search_journals: 'Searching Journals',
   search_past_conversations: 'Checking Past Chats',
   web_search: 'Web Search (Fallback)',
 
@@ -85,7 +83,7 @@ function WorkflowStep({ step, isActive, isComplete, theme }) {
   const displayName = TOOL_NAMES[step.tool] || step.tool;
 
   // Check if this is a search tool to show result count
-  const isSearchTool = ['search_knowledge_base', 'web_search', 'search_journals', 'search_past_conversations'].includes(step.tool);
+  const isSearchTool = ['search_knowledge_base', 'web_search', 'search_past_conversations'].includes(step.tool);
   const hasResults = step.result?.results_count > 0 || step.result?.sources?.length > 0;
 
   return (
@@ -462,7 +460,7 @@ export function useAgenticWorkflow() {
     }
 
     // Track search attempts in search trail
-    const searchTools = ['search_knowledge_base', 'web_search', 'search_journals', 'search_past_conversations'];
+    const searchTools = ['search_knowledge_base', 'web_search', 'search_past_conversations'];
     if (searchTools.includes(tool)) {
       setWorkflowState(prev => {
         const currentTrail = prev.searchTrail || { attempts: [] };

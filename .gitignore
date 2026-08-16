@@ -99,3 +99,12 @@ htmlcov/
 *.pid.lock
 backend/uploads/
 .qwen/
+
+# Manim render scratch (partial movie files, texts, images)
+backend/media/
+
+# Database dumps. These carry encrypted API keys and user rows; init.sql is
+# the one committed exception (schema bootstrap, no data).
+*.sql
+!init.sql
+!backend/alembic/**/*.sql

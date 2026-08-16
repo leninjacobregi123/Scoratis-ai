@@ -10,12 +10,15 @@ from typing import Optional, List, TYPE_CHECKING
 from .base import Base
 
 if TYPE_CHECKING:
-    from .folder import Folder
-    from .journal import Journal
     from .conversation import Conversation
     from .learning_state import LearningState
     from .llm_provider import LLMProviderConfig
     from .document import Document
+    from .lesson import Lesson
+    from .notebook import Notebook
+    from .concept import Concept, ConceptMastery
+    from .review import ReviewItem
+    from .rendered_scene import RenderedScene
 
 
 class User(Base):
@@ -32,12 +35,6 @@ class User(Base):
     )
 
     # Relationships
-    folders: Mapped[List["Folder"]] = relationship(
-        "Folder", back_populates="user", cascade="all, delete-orphan"
-    )
-    journals: Mapped[List["Journal"]] = relationship(
-        "Journal", back_populates="user", cascade="all, delete-orphan"
-    )
     conversations: Mapped[List["Conversation"]] = relationship(
         "Conversation", back_populates="user", cascade="all, delete-orphan"
     )
@@ -49,6 +46,24 @@ class User(Base):
     )
     documents: Mapped[List["Document"]] = relationship(
         "Document", back_populates="user", cascade="all, delete-orphan"
+    )
+    lessons: Mapped[List["Lesson"]] = relationship(
+        "Lesson", back_populates="user", cascade="all, delete-orphan"
+    )
+    notebooks: Mapped[List["Notebook"]] = relationship(
+        "Notebook", back_populates="user", cascade="all, delete-orphan"
+    )
+    concepts: Mapped[List["Concept"]] = relationship(
+        "Concept", back_populates="user", cascade="all, delete-orphan"
+    )
+    concept_mastery: Mapped[List["ConceptMastery"]] = relationship(
+        "ConceptMastery", back_populates="user", cascade="all, delete-orphan"
+    )
+    review_items: Mapped[List["ReviewItem"]] = relationship(
+        "ReviewItem", back_populates="user", cascade="all, delete-orphan"
+    )
+    rendered_scenes: Mapped[List["RenderedScene"]] = relationship(
+        "RenderedScene", back_populates="user", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:

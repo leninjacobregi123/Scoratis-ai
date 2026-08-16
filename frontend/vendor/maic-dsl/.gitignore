@@ -1,0 +1,11 @@
+node_modules
+dist
+*.log
+.DS_Store
+*.tsbuildinfo
+
+# Keep the built output in version control. package.json entry points at
+# ./dist, so a checkout without it cannot resolve the import - the frontend
+# build fails in CI while passing locally off a stale dist.
+!dist
+!dist/**

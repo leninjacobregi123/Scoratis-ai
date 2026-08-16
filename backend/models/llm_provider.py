@@ -51,7 +51,7 @@ class LLMProviderConfig(Base):
         # this, it mismatches the lowercase labels migration 007 actually
         # creates in Postgres ('groq', 'openai', ...) and every write fails
         # with InvalidTextRepresentationError. Same pattern as
-        # VideoJobStatus/ReviewSourceType below - see their comments.
+        # VideoJobStatus - see its comment.
         SQLEnum(ProviderType, name="provider_type", create_type=True,
                 values_callable=lambda enum_cls: [e.value for e in enum_cls]),
         nullable=False

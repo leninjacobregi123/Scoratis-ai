@@ -1,13 +1,18 @@
-import { Home, MessageCircle, Search, Settings, ChevronLeft, ChevronRight, Clock, Plus, LogOut, Brain, GraduationCap } from 'lucide-react';
+import { Home, MessageCircle, Film, GraduationCap, Settings, ChevronLeft, ChevronRight, Clock, Plus, LogOut, BookMarked as NotebookIcon, Brain } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import SocratesLogo from '../3d/SocratesLogo';
 import { useAuth } from '../context/AuthContext';
+import { useNotebook } from '../context/NotebookContext';
+import { useApi } from '../hooks/useApi';
+import { useState, useEffect } from 'react';
 
 const navItems = [
   { id: 'home', label: 'Home', icon: Home, path: '/app/home' },
+  { id: 'notebooks', label: 'Notebooks', icon: NotebookIcon, path: '/app/notebooks' },
   { id: 'scoratis', label: 'Scoratis AI', icon: MessageCircle, path: '/app/scoratis', primary: true },
-  { id: 'quizzes', label: 'Quizzes', icon: GraduationCap, path: '/app/quizzes' },
-  { id: 'review', label: 'Review', icon: Brain, path: '/app/review' },
+  { id: 'review', label: 'Review', icon: Brain, path: '/app/review', badge: 'due' },
+  { id: 'lessons', label: 'Lessons', icon: GraduationCap, path: '/app/lessons' },
+  { id: 'videos', label: 'Video Vault', icon: Film, path: '/app/videos' },
   { id: 'settings', label: 'AI Settings', icon: Settings, path: '/app/settings' },
 ];
 
@@ -23,6 +28,27 @@ export default function Sidebar({
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout } = useAuth();
+  const { active: activeNotebook, activeId: activeNotebookId } = useNotebook();
+  const api = useApi();
+  const [dueCount, setDueCount] = useState(0);
+
+  // The review queue only works if the student knows it is waiting. Polled
+  // rather than pushed: it changes on a timescale of hours, and a stale
+  // count for a minute costs nothing.
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const stats = await api.get(
+          activeNotebookId ? `/review/stats?notebook_id=${activeNotebookId}` : '/review/stats'
+        );
+        if (alive) setDueCount(stats.due || 0);
+      } catch { /* a missing badge is not worth surfacing an error for */ }
+    };
+    load();
+    const timer = setInterval(load, 60000);
+    return () => { alive = false; clearInterval(timer); };
+  }, [api, activeNotebookId, location.pathname]);
 
   const handleLogout = () => {
     logout();
@@ -62,9 +88,6 @@ export default function Sidebar({
             </div>
             <div className="flex-1 min-w-0">
               <h2 className="text-text-primary font-semibold text-sm truncate">{user?.username || 'Loading...'}</h2>
-              <p className="text-xs text-text-muted">
-                {stats.journals_this_week || 0} entries this week
-              </p>
             </div>
             <button
               onClick={handleLogout}
@@ -93,6 +116,24 @@ export default function Sidebar({
         </div>
       )}
 
+      {/* Which notebook everything is filing into. Without this the
+          student has no way to tell where a new chat or course will land,
+          which matters most right after switching. */}
+      {!collapsed && activeNotebook && (
+        <Link
+          to={`/app/notebooks/${activeNotebook.id}`}
+          title={`Working in ${activeNotebook.name}`}
+          className="flex items-center gap-2 mb-4 px-3 py-2 rounded-lg bg-accent-olive/10 border border-accent-olive/30 hover:border-accent-olive transition-colors"
+        >
+          <NotebookIcon className="w-4 h-4 text-accent-olive shrink-0" />
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] uppercase tracking-wide text-text-muted">Notebook</div>
+            <div className="text-sm text-text-primary truncate">{activeNotebook.name}</div>
+          </div>
+          <ChevronRight className="w-3.5 h-3.5 text-text-muted shrink-0" />
+        </Link>
+      )}
+
       {/* Navigation */}
       <nav className="space-y-1 mb-4">
         {navItems.map((item) => {
@@ -117,6 +158,11 @@ export default function Sidebar({
                   <span className="font-medium text-sm">{item.label}</span>
                   {item.primary && !isActive && (
                     <span className="ml-auto text-xs px-2 py-0.5 bg-accent-olive/20 text-accent-olive rounded-full">AI</span>
+                  )}
+                  {item.badge === 'due' && dueCount > 0 && (
+                    <span className="ml-auto text-xs px-2 py-0.5 bg-accent-olive text-white rounded-full tabular-nums">
+                      {dueCount}
+                    </span>
                   )}
                 </>
               )}
@@ -189,28 +235,6 @@ export default function Sidebar({
         </button>
       )}
 
-      {/* Quick Stats - Hidden when collapsed */}
-      {!collapsed && (
-        <div className="glass-card rounded-xl p-3 mt-4">
-          <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-2">
-            Quick Stats
-          </h3>
-          <div className="grid grid-cols-2 gap-2">
-            <div className="text-center">
-              <div className="text-xl font-semibold text-text-primary">
-                {stats.total_journals || 0}
-              </div>
-              <div className="text-xs text-text-muted">Journals</div>
-            </div>
-            <div className="text-center">
-              <div className="text-xl font-semibold text-text-primary">
-                {stats.total_folders || 0}
-              </div>
-              <div className="text-xs text-text-muted">Folders</div>
-            </div>
-          </div>
-        </div>
-      )}
     </aside>
   );
 }

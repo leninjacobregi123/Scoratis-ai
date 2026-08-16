@@ -325,7 +325,7 @@ class SearchAttempt(BaseModel):
     Used to track which sources were searched and their results,
     enabling the agent to show the user what was searched.
     """
-    source: str  # "knowledge_base", "web_search", "journals", "conversations"
+    source: str  # "knowledge_base", "web_search", "conversations"
     query: str
     results_count: int = 0
     success: bool = True

@@ -75,7 +75,7 @@ Return your findings in a structured format with:
 - Information gaps (if any)
 - Confidence level (0-1)""",
         max_iterations=4,
-        tools_allowed=["search_knowledge_base", "search_journals", "search_past_conversations", "web_search"],
+        tools_allowed=["search_knowledge_base", "search_past_conversations", "web_search"],
         temperature=0.5
     ),
 

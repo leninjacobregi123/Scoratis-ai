@@ -11,14 +11,13 @@ Enhanced with:
 """
 
 import logging
-import asyncio
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any, Tuple
 from dataclasses import dataclass, field
 from sqlalchemy import select, text, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import Journal, ChatMessage, Conversation, Document, Chunk, DocumentStatus, SourceType
+from models import ChatMessage, Conversation, Document, Chunk, DocumentStatus, SourceType
 from services.embedding_service import get_embedding_service
 from services.rrf_fusion import (
     reciprocal_rank_fusion,
@@ -45,12 +44,12 @@ class SearchFilters:
     Supports:
     - Date range filtering (created_at)
     - File type filtering (pdf, docx, txt, etc.)
-    - Source type filtering (upload, journal, chat)
+    - Source type filtering (upload, chat)
     """
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
     file_types: Optional[List[str]] = None  # ['pdf', 'docx', 'txt']
-    source_types: Optional[List[str]] = None  # ['upload', 'journal', 'chat']
+    source_types: Optional[List[str]] = None  # ['upload', 'chat']
     exclude_document_ids: Optional[List[int]] = None
 
     def to_sql_conditions(self) -> tuple[str, dict]:
@@ -96,7 +95,7 @@ class SearchFilters:
 class RAGResult:
     """A single RAG search result (legacy format)"""
     content: str
-    source_type: str  # 'journal' or 'conversation'
+    source_type: str  # 'conversation'
     source_id: int
     title: Optional[str]
     similarity: float
@@ -162,7 +161,7 @@ class HybridRAGService:
         self,
         db: AsyncSession,
         query: str,
-        user_id: int = 1,
+        user_id: int,
         limit: Optional[int] = None,
         query_embedding: Optional[List[float]] = None,
     ) -> List[ChunkResult]:
@@ -304,7 +303,7 @@ class HybridRAGService:
         self,
         db: AsyncSession,
         query: str,
-        user_id: int = 1,
+        user_id: int,
         limit: Optional[int] = None,
         query_embedding: Optional[List[float]] = None,
     ) -> List[DocumentResult]:
@@ -428,7 +427,7 @@ class HybridRAGService:
         self,
         db: AsyncSession,
         query: str,
-        user_id: int = 1,
+        user_id: int,
     ) -> List[ChunkResult]:
         """
         Perform multi-level retrieval with PARALLEL document and chunk search.
@@ -507,7 +506,7 @@ class HybridRAGService:
         self,
         db: AsyncSession,
         query: str,
-        user_id: int = 1,
+        user_id: int,
         conversation_history: Optional[List[Dict[str, str]]] = None,
         use_query_reformulation: bool = True,
         llm_service: Any = None,
@@ -614,73 +613,13 @@ class HybridRAGService:
 
     # ==================== LEGACY METHODS FOR BACKWARD COMPATIBILITY ====================
 
-    async def search_journals(
-        self,
-        db: AsyncSession,
-        query: str,
-        user_id: int = 1,
-        limit: Optional[int] = None,
-    ) -> List[RAGResult]:
-        """
-        Legacy method: Search journals using semantic similarity.
-        """
-        limit = limit or settings.RAG_MAX_JOURNAL_RESULTS
-
-        # Use async embedding
-        query_embedding = await self.embedding_service.embed_text_async(query)
-        if not query_embedding:
-            return []
-
-        try:
-            sql = text("""
-                SELECT
-                    id, title, content, tags, folder_id,
-                    1 - (embedding <=> CAST(:embedding AS vector)) as similarity
-                FROM journals
-                WHERE user_id = :user_id
-                    AND is_deleted = false
-                    AND embedding IS NOT NULL
-                    AND 1 - (embedding <=> CAST(:embedding AS vector)) > :threshold
-                ORDER BY similarity DESC
-                LIMIT :limit
-            """)
-
-            result = await db.execute(sql, {
-                "embedding": str(query_embedding),
-                "user_id": user_id,
-                "threshold": settings.RAG_SIMILARITY_THRESHOLD,
-                "limit": limit,
-            })
-
-            rows = result.fetchall()
-
-            return [
-                RAGResult(
-                    content=row.content,
-                    source_type="journal",
-                    source_id=row.id,
-                    title=row.title,
-                    similarity=row.similarity,
-                    metadata={"tags": row.tags, "folder_id": row.folder_id},
-                )
-                for row in rows
-            ]
-
-        except Exception as e:
-            logger.error(f"Error searching journals: {e}")
-            try:
-                await db.rollback()
-            except:
-                pass
-            return []
-
     async def search_conversations(
         self,
         db: AsyncSession,
         query: str,
+        user_id: int,
         session_id: Optional[str] = None,
         exclude_session_id: Optional[str] = None,
-        user_id: int = 1,
         limit: Optional[int] = None,
     ) -> List[RAGResult]:
         """
@@ -756,21 +695,16 @@ class HybridRAGService:
         db: AsyncSession,
         query: str,
         current_session_id: str,
-        user_id: int = 1,
+        user_id: int,
     ) -> Dict[str, List[RAGResult]]:
         """
-        Legacy method: Get all relevant context with PARALLEL searches.
+        Legacy method: Get all relevant context.
         """
-        # Run journal and conversation searches IN PARALLEL
-        journals_task = self.search_journals(db, query, user_id)
-        conversations_task = self.search_conversations(
+        conversations = await self.search_conversations(
             db, query, exclude_session_id=current_session_id, user_id=user_id
         )
 
-        journals, conversations = await asyncio.gather(journals_task, conversations_task)
-
         return {
-            "journals": journals,
             "conversations": conversations,
         }
 
@@ -779,13 +713,6 @@ class HybridRAGService:
         Legacy method: Format RAG results for LLM.
         """
         parts = []
-
-        if context.get("journals"):
-            parts.append("**Relevant Journal Entries:**")
-            for i, result in enumerate(context["journals"], 1):
-                parts.append(f"\n[Journal {i}] {result.title}")
-                parts.append(f"Content: {result.content[:500]}...")
-                parts.append(f"(Relevance: {result.similarity:.2f})")
 
         if context.get("conversations"):
             parts.append("\n**Relevant Past Discussions:**")
@@ -803,7 +730,7 @@ class HybridRAGService:
         self,
         db: AsyncSession,
         query: str,
-        user_id: int = 1,
+        user_id: int,
         filters: Optional[SearchFilters] = None,
         chat_history: Optional[List[Dict[str, str]]] = None,
         use_query_reformulation: bool = True,
@@ -985,7 +912,7 @@ class HybridRAGService:
         self,
         db: AsyncSession,
         query: str,
-        user_id: int = 1,
+        user_id: int,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         file_types: Optional[List[str]] = None,

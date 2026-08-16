@@ -2,7 +2,7 @@
 
 Requires a LIVE backend already running at BASE_URL, reachable over a real
 socket (plain httpx.Client, not FastAPI's in-process TestClient like
-test_ollama_gpu.py uses) - CI has no such server, and neither does a plain
+a live local LLM server) - CI has no such server, and neither does a plain
 `pytest -m integration` run unless one was started first. Actual Manim
 rendering is slow (minutes) too, so this is opt-in only: set
 RUN_LIVE_VIDEO_TESTS=true after starting the app yourself, e.g.

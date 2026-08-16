@@ -28,7 +28,6 @@ class MemoryContext:
     """Combined memory context for LLM"""
 
     short_term: List[Message]
-    rag_journals: List[RAGResult]
     rag_conversations: List[RAGResult]
     formatted_context: str = ""
 
@@ -37,7 +36,7 @@ class MemoryService:
     """
     Unified memory service combining:
     - Short-term: Recent messages in current session
-    - Long-term: RAG retrieval from journals and past conversations
+    - Long-term: RAG retrieval from past conversations
     """
 
     def __init__(self):
@@ -114,13 +113,11 @@ class MemoryService:
         # Format for LLM
         formatted = self._format_full_context(
             short_term,
-            rag_context.get("journals", []),
             rag_context.get("conversations", []),
         )
 
         return MemoryContext(
             short_term=short_term,
-            rag_journals=rag_context.get("journals", []),
             rag_conversations=rag_context.get("conversations", []),
             formatted_context=formatted,
         )
@@ -128,7 +125,6 @@ class MemoryService:
     def _format_full_context(
         self,
         short_term: List[Message],
-        journals: List[RAGResult],
         conversations: List[RAGResult],
     ) -> str:
         """
@@ -136,7 +132,6 @@ class MemoryService:
 
         Args:
             short_term: Recent messages
-            journals: Relevant journal entries
             conversations: Relevant past conversations
 
         Returns:
@@ -145,11 +140,6 @@ class MemoryService:
         parts = []
 
         # Add RAG context first (background knowledge)
-        if journals:
-            parts.append("**User's Relevant Journal Notes:**")
-            for j in journals:
-                parts.append(f"- [{j.title}]: {j.content[:300]}...")
-
         if conversations:
             parts.append("\n**Relevant Past Discussions:**")
             for c in conversations:
@@ -164,39 +154,6 @@ class MemoryService:
                 parts.append(f"{role_label}: {msg.content[:300]}...")
 
         return "\n".join(parts) if parts else ""
-
-    def format_for_ollama(
-        self, context: MemoryContext, current_message: str
-    ) -> List[Dict[str, str]]:
-        """
-        Format memory context for Ollama chat API format.
-
-        Args:
-            context: MemoryContext object
-            current_message: User's current message
-
-        Returns:
-            List of message dicts for Ollama
-        """
-        messages = []
-
-        # Add system context with RAG information
-        if context.formatted_context:
-            system_content = (
-                "You are Scoratis, a Socratic learning assistant. "
-                "Use the following context to inform your responses:\n\n"
-                f"{context.formatted_context}"
-            )
-            messages.append({"role": "system", "content": system_content})
-
-        # Add short-term conversation history
-        for msg in context.short_term:
-            messages.append({"role": msg.role, "content": msg.content})
-
-        # Add current message
-        messages.append({"role": "user", "content": current_message})
-
-        return messages
 
 
 # Singleton instance

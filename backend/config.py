@@ -29,7 +29,6 @@ class Settings(BaseSettings):
 
     # Legacy RAG Settings (for backward compatibility)
     RAG_SIMILARITY_THRESHOLD: float = 0.5
-    RAG_MAX_JOURNAL_RESULTS: int = 3
     RAG_MAX_CONVERSATION_RESULTS: int = 5
 
     # === NEW: Professional RAG System Settings ===
@@ -59,11 +58,6 @@ class Settings(BaseSettings):
     # Memory
     SHORT_TERM_MEMORY_LIMIT: int = 20
 
-    # Ollama base URL - used only by video_service.py's maestro-studio
-    # integration (narration/title generation), unrelated to the chat LLM
-    # provider settings (local chat providers were removed).
-    OLLAMA_BASE_URL: str = "http://localhost:11434"
-
     # API Keys (legacy - now stored encrypted in database)
     GEMINI_API_KEY: Optional[str] = None
     YOUTUBE_API_KEY: Optional[str] = None
@@ -76,14 +70,6 @@ class Settings(BaseSettings):
     AZURE_API_KEY: Optional[str] = None
     AZURE_API_BASE: Optional[str] = None
     DEEPSEEK_API_KEY: Optional[str] = None
-
-    # Default LLM Settings - these are only ever consulted as a last-resort
-    # fallback when a request doesn't specify a provider/model at all; every
-    # real request resolves the user's own configured LLMProviderConfig
-    # instead (see chat.py/video_tasks.py). Points at Karunya's institutional
-    # Sofie Code gateway, the app's primary/recommended provider.
-    DEFAULT_LLM_PROVIDER: str = "custom"
-    DEFAULT_LLM_MODEL: str = "sofie-code"
 
     # Encryption (REQUIRED for production - generate secure values!)
     SCORATIS_ENCRYPTION_KEY: str = "scoratis-default-dev-key-change-in-production-32chars"

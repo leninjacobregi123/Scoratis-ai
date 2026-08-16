@@ -1,46 +1,52 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
+// Local-machine-only override: port 8000 is occupied by an unrelated project
+// on this dev box, so the Scoratis backend runs on 8001 here instead.
+// Intentionally NOT committed - every other environment (and production,
+// which doesn't use this dev proxy at all) uses the default 8000 above.
+const BACKEND_URL = 'http://localhost:8001'
+
 export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: BACKEND_URL,
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, '')
       },
       '/auth': {
-        target: 'http://localhost:8000',
+        target: BACKEND_URL,
         changeOrigin: true
       },
       '/chat': {
-        target: 'http://localhost:8000',
+        target: BACKEND_URL,
         changeOrigin: true
       },
       '/agent': {
-        target: 'http://localhost:8000',
+        target: BACKEND_URL,
         changeOrigin: true
       },
       '/subjects': {
-        target: 'http://localhost:8000',
+        target: BACKEND_URL,
         changeOrigin: true
       },
       '/v1': {
-        target: 'http://localhost:8000',
+        target: BACKEND_URL,
         changeOrigin: true
       },
       '/health': {
-        target: 'http://localhost:8000',
+        target: BACKEND_URL,
         changeOrigin: true
       },
       '/generated_videos': {
-        target: 'http://localhost:8000',
+        target: BACKEND_URL,
         changeOrigin: true
       },
       '/audio': {
-        target: 'http://localhost:8000',
+        target: BACKEND_URL,
         changeOrigin: true
       }
     }

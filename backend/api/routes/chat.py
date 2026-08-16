@@ -38,7 +38,7 @@ from database import get_database
 from llm_service import llm_service
 from models import ProviderType, PROVIDER_INFO, LLMProviderConfig, Document, SourceType, DocumentStatus, User
 from prompts import detect_video_potential, get_system_prompt, CITATION_INSTRUCTIONS, RAG_CONTEXT_AWARENESS
-from services import get_rag_service, get_web_search_service, get_memory_service, review_service
+from services import get_rag_service, get_web_search_service, get_memory_service
 from services.agent import get_agent
 from services.citation_processor import get_citation_processor
 from services.encryption_service import get_encryption_service
@@ -50,26 +50,6 @@ from video_service import video_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["chat"])
-
-
-async def _seed_review_items(session_id: str, user_id: int) -> None:
-    """Seed spaced-repetition review items from this turn's
-    ConversationAnalyzer state. Called unconditionally after every AI turn
-    (independent of whether LangGraph or the plain ConversationAnalyzer path
-    handled video-trigger analysis) since `analyze_message` is a cheap local
-    heuristic, not an LLM call - safe to run alongside either path.
-    Best-effort: a seeding failure must never break the chat response the
-    user is waiting on.
-    """
-    try:
-        db = get_database()
-        turn_state = conversation_analyzer.get_or_create_state(session_id).to_dict()
-        async with db.get_session() as session:
-            await review_service.seed_from_key_discoveries(
-                session, user_id=user_id, discoveries=turn_state.get("key_discoveries", [])
-            )
-    except Exception as e:
-        logger.warning(f"Review-item seeding failed (continuing): {e}")
 
 
 async def _analyze_and_maybe_generate_video(
@@ -91,8 +71,7 @@ async def _analyze_and_maybe_generate_video(
 
     Also updates ConversationAnalyzer's per-session state for this turn
     (either via LangGraph's analysis or, if LangGraph is unavailable, a
-    direct analyze_message() call) - callers should call _seed_review_items()
-    right after this returns, since review-item seeding reads that state.
+    direct analyze_message() call).
 
     Returns a dict safe to merge directly into an SSE final payload or a
     non-streaming JSON response: video_available, video_topic,
@@ -194,7 +173,7 @@ async def _analyze_and_maybe_generate_video(
     if not analyzer_ran_this_turn:
         # LangGraph handled video-trigger analysis above (or the try block
         # raised before reaching it) - ConversationAnalyzer's own state still
-        # needs updating so review-item seeding has fresh data.
+        # needs updating for consistency with other session-state readers.
         try:
             conversation_analyzer.analyze_message(
                 session_id=session_id, user_message=user_message, ai_response=ai_response
@@ -205,7 +184,7 @@ async def _analyze_and_maybe_generate_video(
     return result
 
 
-async def _update_learning_state_for_review(
+async def _update_learning_state(
     langgraph_service,
     session_id: str,
     user_message: str,
@@ -215,9 +194,7 @@ async def _update_learning_state_for_review(
     count, key discoveries) for this turn - used by the agentic path, which
     no longer runs the full _analyze_and_maybe_generate_video() pipeline
     above (its own generate_video tool call handles video decisions now,
-    see services/agent/tools.py). _seed_review_items() still needs fresh
-    ConversationAnalyzer state regardless of who decided about video, so
-    this keeps just that part running. Never raises.
+    see services/agent/tools.py). Never raises.
     """
     result = {"learning_state": "initial", "turn_count": 0}
     try:
@@ -230,7 +207,7 @@ async def _update_learning_state_for_review(
             result["learning_state"] = lg_result.get("learning_state", "initial")
             result["turn_count"] = lg_result.get("turn_count", 0)
             # LangGraph handled its own state - ConversationAnalyzer's
-            # separate state still needs updating for review-item seeding.
+            # separate state still needs updating for consistency.
             conversation_analyzer.analyze_message(
                 session_id=session_id, user_message=user_message, ai_response=ai_response,
             )
@@ -247,8 +224,100 @@ async def _update_learning_state_for_review(
 
 import re
 
+
+async def _build_lesson_scene_context(
+    lesson_id: Optional[int], scene_id: Optional[str], user_id: int
+) -> str:
+    """Describe the lesson scene the learner is currently looking at.
+
+    This is what makes a question asked inside the lesson player answerable:
+    without it, "why is the midpoint 4?" arrives with no idea which array is
+    on screen. Returns "" whenever there is nothing useful to say, so the
+    caller can treat it exactly like the other optional context blocks.
+
+    Includes the whole outline (titles only) as well as the current scene, so
+    the tutor can place the question in the arc of the lesson - "we cover that
+    in the next scene" - without paying for every scene's full content.
+    """
+    if not lesson_id:
+        return ""
+
+    try:
+        from models import Lesson
+
+        db = get_database()
+        async with db.get_session() as session:
+            lesson = await session.get(Lesson, lesson_id)
+            # Ownership check: this text goes straight into a prompt, so a
+            # wrong lesson_id must never leak another user's material.
+            if not lesson or lesson.user_id != user_id or not lesson.scenes:
+                return ""
+
+            scenes = lesson.scenes
+            current = next((s for s in scenes if s.get("id") == scene_id), None)
+            if current is None:
+                return ""
+
+            # Slide text, tags stripped - the tutor needs the words, not markup.
+            slide_text = []
+            for el in (current.get("slide") or {}).get("elements", []):
+                raw = el.get("content") or ""
+                if not raw and isinstance(el.get("text"), dict):
+                    raw = el["text"].get("content") or ""
+                cleaned = re.sub(r"<[^>]+>", " ", str(raw)).strip()
+                if cleaned:
+                    slide_text.append(cleaned)
+
+            narration = " ".join(
+                a.get("content", "") for a in current.get("actions", [])
+                if a.get("type") == "speech"
+            ).strip()
+
+            outline = "\n".join(
+                f"  {s.get('order')}. {s.get('title')}"
+                + ("   <- they are here" if s.get("id") == scene_id else "")
+                for s in scenes
+            )
+
+            parts = [
+                "THE LEARNER IS CURRENTLY IN A LESSON. Answer about what is on "
+                "their screen right now; do not re-explain the whole topic.",
+                f"Lesson: {lesson.title}",
+                f"Scenes:\n{outline}",
+                f"\nCurrent scene: {current.get('title')}",
+            ]
+            if current.get("description"):
+                parts.append(f"Purpose: {current['description']}")
+            if slide_text:
+                parts.append("On the slide:\n" + "\n".join(f"  - {t}" for t in slide_text))
+            if narration:
+                # Truncated: narration runs to ~300 words per scene and the
+                # slide text already carries the specifics being asked about.
+                parts.append(f"What the tutor just said:\n  {narration[:1500]}")
+            if current.get("type") == "video":
+                parts.append("This scene is an animation, so the learner is watching it play.")
+
+            return "\n".join(parts)
+
+    except Exception as e:
+        # Never let scene lookup break a chat turn - the question is still
+        # answerable without it, just less precisely.
+        logger.warning(f"Could not build lesson scene context: {e}")
+        return ""
+
+
 _INTERNAL_REASONING_TAG_RE = re.compile(
     r"\*{0,2}<pedagogical_plan>\*{0,2}[\s\S]*?</pedagogical_plan>\*{0,2}|<think>[\s\S]*?</think>",
+    re.IGNORECASE,
+)
+
+# An UNMATCHED closing tag: the model emitted its scratchpad but never opened
+# the tag, so the paired regex above matches nothing and the entire plan leaks
+# through - which reads to the user as the answer being duplicated (plan text,
+# then a stray tag, then the real answer). Everything up to and including the
+# last stray closing tag is scratchpad, so drop it.
+_UNMATCHED_CLOSING_TAG_RE = re.compile(
+    r"[\s\S]*</(?:pedagogical_plan|think)>\*{0,2}",
     re.IGNORECASE,
 )
 
@@ -262,7 +331,19 @@ def strip_internal_reasoning(text: str) -> str:
     copy, which export/share read directly and unstripped otherwise."""
     if not text:
         return text
-    return _INTERNAL_REASONING_TAG_RE.sub("", text).strip()
+    cleaned = _INTERNAL_REASONING_TAG_RE.sub("", text)
+
+    # Only fires when a closing tag survived the paired pass above, i.e. it
+    # had no opening partner. Guarded so that a response with real content
+    # before a *matched* pair is never truncated.
+    if re.search(r"</(?:pedagogical_plan|think)>", cleaned, re.IGNORECASE):
+        stripped = _UNMATCHED_CLOSING_TAG_RE.sub("", cleaned, count=1)
+        # Never let the scrub blank out the whole message - if the scratchpad
+        # was all there was, keep the original rather than return nothing.
+        if stripped.strip():
+            cleaned = stripped
+
+    return cleaned.strip()
 
 
 # ==================== CHAT ENDPOINTS ====================
@@ -474,7 +555,7 @@ async def chat(message: ChatMessage, current_user: User = Depends(get_current_us
             conversation_memory[session_id] = []
 
         # Save user message to database with embedding
-        conversation_id = await db.add_chat_message(session_id, 'user', user_message, user_id=current_user.id)
+        conversation_id = await db.add_chat_message(session_id, 'user', user_message, user_id=current_user.id, notebook_id=message.notebook_id)
 
         # Add to memory service
         memory_service.add_message(session_id, "user", user_message)
@@ -489,17 +570,17 @@ async def chat(message: ChatMessage, current_user: User = Depends(get_current_us
         if len(conversation_memory[session_id]) > 20:
             conversation_memory[session_id] = conversation_memory[session_id][-20:]
 
-        # === RAG: Get relevant context from journals and past conversations ===
+        # === RAG: Get relevant context from past conversations ===
         rag_context = ""
         search_used = False
         try:
             async with db.get_session() as db_session:
                 relevant_context = await rag_service.get_relevant_context(
-                    db_session, user_message, session_id
+                    db_session, user_message, session_id, user_id=current_user.id
                 )
                 rag_context = rag_service.format_context_for_llm(relevant_context)
                 if rag_context:
-                    logger.info(f"RAG context found: {len(relevant_context.get('journals', []))} journals, {len(relevant_context.get('conversations', []))} past messages")
+                    logger.info(f"RAG context found: {len(relevant_context.get('conversations', []))} past messages")
         except Exception as rag_error:
             logger.warning(f"RAG search error (continuing without): {rag_error}")
 
@@ -624,11 +705,10 @@ async def chat(message: ChatMessage, current_user: User = Depends(get_current_us
 
         if not analyzer_ran_this_turn:
             # LangGraph handled video-trigger analysis above; ConversationAnalyzer's
-            # own state still needs updating so review-item seeding has fresh data.
+            # own state still needs updating for consistency.
             conversation_analyzer.analyze_message(
                 session_id=session_id, user_message=user_message, ai_response=response_text
             )
-        await _seed_review_items(session_id, current_user.id)
 
         return {
             "reply": response_text,
@@ -747,7 +827,7 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
             conversation_memory[session_id] = []
         history_before = list(conversation_memory[session_id])
 
-        await db.add_chat_message(session_id, 'user', user_message, user_id=current_user.id)
+        await db.add_chat_message(session_id, 'user', user_message, user_id=current_user.id, notebook_id=message.notebook_id)
         memory_service.add_message(session_id, "user", user_message)
         conversation_memory[session_id].append({"role": "user", "content": user_message})
         if len(conversation_memory[session_id]) > 20:
@@ -762,7 +842,8 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                         message=user_message,
                         db_session=db_session,
                         user_id=current_user.id,
-                        history=history_before
+                        history=history_before,
+                        notebook_id=message.notebook_id,
                     ):
                         event_type = event.get("type")
 
@@ -822,10 +903,9 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                                 'auto_video': auto_video,
                             }
 
-                            learning_state_result = await _update_learning_state_for_review(
+                            learning_state_result = await _update_learning_state(
                                 langgraph_service, session_id, user_message, final_response,
                             )
-                            await _seed_review_items(session_id, current_user.id)
 
                             # Final event with metadata
                             final_data = {
@@ -839,6 +919,10 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                                 'mode': 'agent',
                                 'learning_state': learning_state_result['learning_state'],
                                 'turn_count': learning_state_result['turn_count'],
+                                # Present only when the agent chose to build a
+                                # lesson this turn; the client renders it as a
+                                # card and polls the lesson for progress.
+                                'auto_lesson': event.get('metadata', {}).get('auto_lesson'),
                                 **video_result,
                             }
                             yield f"data: {json.dumps(final_data)}\n\n"
@@ -872,7 +956,7 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
         conversation_memory[session_id] = []
 
     # Save user message to database with embedding
-    conversation_id = await db.add_chat_message(session_id, 'user', user_message, user_id=current_user.id)
+    conversation_id = await db.add_chat_message(session_id, 'user', user_message, user_id=current_user.id, notebook_id=message.notebook_id)
 
     # Add to memory service
     memory_service.add_message(session_id, "user", user_message)
@@ -903,6 +987,7 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
             rag_result = await rag_service.get_context_with_citations(
                 db_session,
                 user_message,
+                user_id=current_user.id,
                 conversation_history=conversation_history_for_rag,
                 use_query_reformulation=True,
                 llm_service=llm_service,
@@ -918,9 +1003,9 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
     except Exception as rag_error:
         logger.warning(f"Document RAG search error (continuing without): {rag_error}")
 
-    # === Long-term memory: journal entries + past conversations ===
+    # === Long-term memory: past conversations ===
     # Independent of document RAG above - previously this only ran as a
-    # fallback when document search *threw*, meaning journals/past chats were
+    # fallback when document search *threw*, meaning past chats were
     # never actually recalled in normal operation. Runs every turn now,
     # alongside document context rather than instead of it.
     memory_context_text = ""
@@ -931,7 +1016,7 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
             )
             memory_context_text = rag_service.format_context_for_llm(relevant_context)
     except Exception as memory_error:
-        logger.warning(f"Journal/conversation memory search error (continuing without): {memory_error}")
+        logger.warning(f"Conversation memory search error (continuing without): {memory_error}")
 
     # === Web Search: Proactive search when enabled ===
     web_search_context = ""
@@ -975,14 +1060,25 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
         except Exception as web_error:
             logger.warning(f"Web search error (continuing without): {web_error}")
 
+    # === Lesson scene: what the learner is looking at right now ===
+    lesson_scene_context = await _build_lesson_scene_context(
+        message.lesson_id, message.scene_id, current_user.id
+    )
+
     # Build enhanced system prompt with RAG context, web search, and citation instructions
     context_parts = []
+
+    # Scene context goes FIRST: when the learner is pointing at something on
+    # screen, that is the subject of the question - it should outrank a
+    # document match or a web result, not compete with them.
+    if lesson_scene_context:
+        context_parts.append(lesson_scene_context)
 
     # Add RAG context if available
     if rag_context_xml:
         context_parts.append(f"DOCUMENT CONTEXT:\n{rag_context_xml}")
 
-    # Add recalled journal entries / past conversations if available
+    # Add recalled past conversations if available
     if memory_context_text:
         context_parts.append(memory_context_text)
 
@@ -1085,7 +1181,6 @@ async def chat_stream(message: ChatMessage, current_user: User = Depends(get_cur
                 langgraph_service, video_analyzer_service,
                 session_id, user_message, full_response, current_user.id,
             )
-            await _seed_review_items(session_id, current_user.id)
 
             # === Citation Processing: Convert [citation:chunk_id] to footnotes ===
             formatted_response = full_response
@@ -1583,10 +1678,16 @@ async def get_conversation_history(limit: int = Query(20, le=50), current_user: 
     return {"conversations": conversations}
 
 @router.get("/chat/conversations")
-async def get_all_conversations(limit: int = Query(50, le=100), current_user: User = Depends(get_current_user)):
-    """Get all conversations for sidebar"""
+async def get_all_conversations(
+    limit: int = Query(50, le=100),
+    notebook_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+):
+    """Get conversations for the sidebar, optionally scoped to a notebook."""
     db = get_database()
-    conversations = await db.get_conversations(user_id=current_user.id, limit=limit)
+    conversations = await db.get_conversations(
+        user_id=current_user.id, limit=limit, notebook_id=notebook_id
+    )
     return {"conversations": conversations}
 
 @router.get("/chat/conversation/{conversation_id}")

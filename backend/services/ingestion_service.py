@@ -445,7 +445,7 @@ class IngestionService:
         """
         Process raw text content for ingestion.
 
-        Used for migrating existing journals/conversations.
+        Used for migrating existing conversations.
 
         Args:
             content: Text content

@@ -2,8 +2,7 @@
 LLM configuration and provider-management routes.
 
 Uses database.get_database()'s singleton directly for db.get_session(),
-same pattern as api/routes/health.py/journals.py - see health.py's
-docstring for why.
+same pattern as api/routes/health.py - see health.py's docstring for why.
 """
 import logging
 
@@ -11,7 +10,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, update
 
 from api.schemas import LLMConfigUpdate, LLMProviderCreate, LLMProviderUpdate, SessionModelUpdate
-from config import settings
 from core.auth import get_current_user
 from database import get_database
 from llm_service import llm_service
@@ -53,7 +51,9 @@ async def configure_llm(config: LLMConfigUpdate, current_user: User = Depends(ge
     every user's requests until changed again - a known limitation to address
     when per-user LLM configuration isolation is built (not part of this pass).
     """
-    provider = config.provider or settings.DEFAULT_LLM_PROVIDER
+    if not config.provider:
+        raise HTTPException(status_code=400, detail="provider is required")
+    provider = config.provider
     db = get_database()
 
     # Fetch API key from database for cloud providers FIRST (needed for validation)
@@ -166,9 +166,11 @@ async def validate_llm_model(config: LLMConfigUpdate):
     Returns detailed error information if validation fails:
     - error_type: Type of error (model_not_installed, server_unavailable, etc.)
     - message: Human-readable error message
-    - suggestion: Actionable fix (e.g., 'ollama pull llama3.2')
+    - suggestion: Actionable fix for the reported error
     """
-    provider = config.provider or settings.DEFAULT_LLM_PROVIDER
+    if not config.provider:
+        raise HTTPException(status_code=400, detail="provider is required")
+    provider = config.provider
 
     result = await llm_service.validate_model_config(
         provider=provider,
@@ -370,22 +372,19 @@ async def set_session_model(update_data: SessionModelUpdate, current_user: User 
     # (main.py imports this router at its own top level).
     from main import conversation_memory
 
+    if not update_data.provider_id:
+        raise HTTPException(status_code=400, detail="provider_id is required")
+
     db = get_database()
 
-    # If provider_id is specified, get the configuration
-    api_key_encrypted = None
-    base_url = None
-    provider = settings.DEFAULT_LLM_PROVIDER
+    async with db.get_session() as session:
+        config = await session.get(LLMProviderConfig, update_data.provider_id)
+        if not config or config.user_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Provider configuration not found")
 
-    if update_data.provider_id:
-        async with db.get_session() as session:
-            config = await session.get(LLMProviderConfig, update_data.provider_id)
-            if not config or config.user_id != current_user.id:
-                raise HTTPException(status_code=404, detail="Provider configuration not found")
-
-            api_key_encrypted = config.api_key_encrypted
-            base_url = config.base_url
-            provider = config.provider.value if isinstance(config.provider, ProviderType) else config.provider
+        api_key_encrypted = config.api_key_encrypted
+        base_url = config.base_url
+        provider = config.provider.value if isinstance(config.provider, ProviderType) else config.provider
 
     # Store the session model preference (in-memory for now)
     session_id = update_data.session_id

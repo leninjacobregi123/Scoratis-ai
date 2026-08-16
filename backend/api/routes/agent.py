@@ -34,7 +34,7 @@ async def agentic_chat(message: AgenticChatMessage, current_user: User = Depends
     Non-streaming agentic chat endpoint.
 
     This endpoint uses the Scoratis Agent which can:
-    - Search the knowledge base (journals, documents)
+    - Search the knowledge base (documents, notes)
     - Search past conversations
     - Perform web searches
     - Track learning progress

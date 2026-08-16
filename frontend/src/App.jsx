@@ -3,13 +3,17 @@ import Dashboard from './pages/Dashboard';
 import Home from './pages/Home';
 import Chat from './pages/Chat';
 import VideoVault from './pages/VideoVault';
+import Lessons from './pages/Lessons';
+import Notebooks from './pages/Notebooks';
+import NotebookDetail from './pages/NotebookDetail';
+import Review from './pages/Review';
+import Lesson from './pages/Lesson';
 import Settings from './pages/Settings';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
-import Review from './pages/Review';
-import Quizzes from './pages/Quizzes';
 import SharedTranscript from './pages/SharedTranscript';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { NotebookProvider, useNotebook } from './context/NotebookContext';
 import ErrorBoundary from './components/ErrorBoundary';
 
 function RequireAuth({ children }) {
@@ -40,6 +44,27 @@ function Landing() {
   return <Navigate to={isAuthenticated ? '/app' : '/login'} replace />;
 }
 
+// The flow the app is built around: sign in, land in a notebook, study.
+// Everything a student generates is filed into the active notebook, so
+// "/app" resolves to one rather than to a generic dashboard - and to the
+// create screen when they have none yet, which is the only honest place
+// to send someone with nowhere to file anything.
+function NotebookGate() {
+  const { loading, activeId, notebooks } = useNotebook();
+
+  if (loading) {
+    return (
+      <div className="min-h-[60vh] flex items-center justify-center text-text-muted">
+        Loading your notebooks...
+      </div>
+    );
+  }
+  if (!notebooks.length || !activeId) {
+    return <Navigate to="/app/notebooks" replace />;
+  }
+  return <Navigate to={`/app/notebooks/${activeId}`} replace />;
+}
+
 function App() {
   return (
     <ErrorBoundary>
@@ -57,16 +82,21 @@ function App() {
             path="/app"
             element={
               <RequireAuth>
-                <Dashboard />
+                <NotebookProvider>
+                  <Dashboard />
+                </NotebookProvider>
               </RequireAuth>
             }
           >
-            <Route index element={<Home />} />
+            <Route index element={<NotebookGate />} />
+            <Route path="notebooks" element={<Notebooks />} />
+            <Route path="notebooks/:notebookId" element={<NotebookDetail />} />
+            <Route path="review" element={<Review />} />
             <Route path="home" element={<Home />} />
             <Route path="scoratis" element={<Chat />} />
             <Route path="videos" element={<VideoVault />} />
-            <Route path="review" element={<Review />} />
-            <Route path="quizzes" element={<Quizzes />} />
+            <Route path="lessons" element={<Lessons />} />
+            <Route path="lessons/:lessonId" element={<Lesson />} />
             <Route path="settings" element={<Settings />} />
           </Route>
         </Routes>

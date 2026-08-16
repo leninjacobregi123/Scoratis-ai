@@ -35,7 +35,6 @@ class ResponseFormat(str, Enum):
 class ToolExpectation(str, Enum):
     """Expected tool usage."""
     SEARCH_KNOWLEDGE = "search_knowledge_base"
-    SEARCH_JOURNALS = "search_journals"
     WEB_SEARCH = "web_search"
     NONE = "none"
 
@@ -211,7 +210,7 @@ GOLDEN_DATASET: List[GoldenTestCase] = [
         category="personal_knowledge",
         expected_format=ResponseFormat.SUMMARY,
         expected_topics=["photosynthesis", "notes"],
-        expected_tools=[ToolExpectation.SEARCH_KNOWLEDGE, ToolExpectation.SEARCH_JOURNALS],
+        expected_tools=[ToolExpectation.SEARCH_KNOWLEDGE],
         criteria=EvaluationCriteria(
             uses_rag=True,
             uses_citations=True,
@@ -223,11 +222,11 @@ GOLDEN_DATASET: List[GoldenTestCase] = [
 
     GoldenTestCase(
         id="rag_002",
-        query="Summarize my journal entries about machine learning",
+        query="Summarize my notes about machine learning",
         category="personal_knowledge",
         expected_format=ResponseFormat.SUMMARY,
-        expected_topics=["machine learning", "journal", "notes"],
-        expected_tools=[ToolExpectation.SEARCH_JOURNALS],
+        expected_topics=["machine learning", "notes"],
+        expected_tools=[ToolExpectation.SEARCH_KNOWLEDGE],
         criteria=EvaluationCriteria(
             uses_rag=True,
             uses_citations=True,

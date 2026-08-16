@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Migration Script: Migrate to New RAG System
-Converts existing journals and conversations to the new document/chunk structure
+Converts existing conversations to the new document/chunk structure
 
 Usage:
     python scripts/migrate_to_new_rag.py [--dry-run] [--batch-size N] [--skip-embeddings]
@@ -153,12 +153,6 @@ async def get_migration_stats():
     """Get statistics about what needs to be migrated"""
     db = get_database()
     async with db.get_session() as session:
-        # Count journals
-        journals_result = await session.execute(text(
-            "SELECT COUNT(*) FROM journals WHERE is_deleted = false"
-        ))
-        journal_count = journals_result.scalar()
-
         # Count conversations
         conversations_result = await session.execute(text(
             "SELECT COUNT(*) FROM conversations"
@@ -184,7 +178,6 @@ async def get_migration_stats():
             chunk_count = 0
 
         return {
-            "journals": journal_count,
             "conversations": conversation_count,
             "existing_documents": document_count,
             "existing_chunks": chunk_count,
@@ -212,7 +205,6 @@ async def run_migration(
     # Get stats before migration
     stats = await get_migration_stats()
     logger.info(f"\nMigration Statistics:")
-    logger.info(f"  - Journals to migrate: {stats['journals']}")
     logger.info(f"  - Conversations to migrate: {stats['conversations']}")
     logger.info(f"  - Existing documents: {stats['existing_documents']}")
     logger.info(f"  - Existing chunks: {stats['existing_chunks']}")
@@ -248,12 +240,7 @@ async def run_migration(
     logger.info("Migration Complete!")
     logger.info("=" * 60)
     logger.info(f"\nResults:")
-    logger.info(f"  Journals:")
-    logger.info(f"    - Total: {results['journals']['total']}")
-    logger.info(f"    - Migrated: {results['journals']['migrated']}")
-    logger.info(f"    - Skipped: {results['journals']['skipped']}")
-    logger.info(f"    - Failed: {results['journals']['failed']}")
-    logger.info(f"\n  Conversations:")
+    logger.info(f"  Conversations:")
     logger.info(f"    - Total: {results['conversations']['total']}")
     logger.info(f"    - Migrated: {results['conversations']['migrated']}")
     logger.info(f"    - Skipped: {results['conversations']['skipped']}")
