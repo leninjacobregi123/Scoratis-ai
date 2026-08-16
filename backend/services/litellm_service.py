@@ -15,6 +15,8 @@ All error handling, validation, and configuration is centralized here.
 
 import os
 import re
+import random
+import asyncio
 import logging
 from typing import Optional, List, Dict, Any, AsyncGenerator, Tuple
 from dataclasses import dataclass
@@ -77,6 +79,48 @@ class LiteLLMConfig:
     top_p: float = 0.9
     stream: bool = True
     timeout: int = DEFAULT_TIMEOUT  # Timeout in seconds
+
+
+
+# Transient failures worth waiting out. Sofie enforces per-key rate and
+# daily-token limits, and a batch operation - generating a lesson, then
+# fourteen review-item jobs, then an eval run - is exactly the shape of
+# workload that trips them. Without this a 429 surfaced as a failed job
+# and the student lost the whole lesson.
+# These strings must match _categorize_error exactly. An earlier version
+# used "server_error" and "connection", neither of which this codebase
+# ever produces - the retry looked correct and covered half of what it
+# claimed.
+RETRYABLE_ERROR_TYPES = {
+    "rate_limit",
+    "timeout",
+    "service_unavailable",
+    "connection_error",
+}
+
+# Bounded on purpose. A request a user is waiting on cannot retry for
+# minutes, and a limit that resets tomorrow will not clear no matter how
+# long we sit here.
+MAX_RETRY_ATTEMPTS = 4
+BASE_RETRY_DELAY = 2.0
+MAX_RETRY_DELAY = 30.0
+
+
+def _retry_delay(attempt: int, error: Any = None) -> float:
+    """Exponential backoff with jitter, honouring Retry-After when given.
+
+    The jitter matters more than usual here: a lesson fans out into several
+    model calls, and without it every one of them retries on the same
+    schedule and hits the limit together.
+    """
+    retry_after = getattr(error, "retry_after", None)
+    if retry_after:
+        try:
+            return min(float(retry_after), MAX_RETRY_DELAY)
+        except (TypeError, ValueError):
+            pass
+    delay = min(BASE_RETRY_DELAY * (2 ** attempt), MAX_RETRY_DELAY)
+    return delay * (0.5 + random.random() / 2)
 
 
 class LiteLLMService:
@@ -473,17 +517,36 @@ class LiteLLMService:
 
         kwargs = self._prepare_litellm_kwargs(config, messages, system_prompt)
 
-        try:
-            logger.info(f"LiteLLM generating with {provider.value}/{model}")
-            response = await acompletion(**kwargs)
-            return response.choices[0].message.content
+        last_error = None
+        for attempt in range(MAX_RETRY_ATTEMPTS):
+            try:
+                logger.info(f"LiteLLM generating with {provider.value}/{model}")
+                response = await acompletion(**kwargs)
+                return response.choices[0].message.content
 
-        except Exception as e:
-            # Categorize the error and re-raise with structured info
-            error = self._categorize_error(e, provider, model)
-            logger.error(f"LiteLLM generation error ({provider.value}/{model}): {error.message}")
-            # Re-raise with error info attached
-            raise LLMGenerationError(error) from e
+            except Exception as e:
+                error = self._categorize_error(e, provider, model)
+                last_error = error
+
+                # Only wait out failures that waiting can actually fix. A bad
+                # key or a malformed request will fail identically forever,
+                # and retrying it just delays telling the user.
+                if (error.error_type not in RETRYABLE_ERROR_TYPES
+                        or attempt == MAX_RETRY_ATTEMPTS - 1):
+                    logger.error(
+                        f"LiteLLM generation error ({provider.value}/{model}): "
+                        f"{error.message}"
+                    )
+                    raise LLMGenerationError(error) from e
+
+                delay = _retry_delay(attempt, e)
+                logger.warning(
+                    f"{error.error_type} from {provider.value}/{model}, retrying "
+                    f"in {delay:.1f}s (attempt {attempt + 1}/{MAX_RETRY_ATTEMPTS})"
+                )
+                await asyncio.sleep(delay)
+
+        raise LLMGenerationError(last_error)
 
     async def generate_stream(
         self,
