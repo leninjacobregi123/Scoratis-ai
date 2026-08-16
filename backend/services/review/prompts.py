@@ -57,8 +57,14 @@ These are for spaced repetition, so they are answered days or weeks later with
 the lesson NOT in front of the student. Write accordingly.
 
 Rules:
-- Ask about the idea, not the slide. "Why does a heavier cart accelerate less
-  under the same force?" not "What did the diagram on slide 3 show?"
+- Ask about the idea, not the lesson. The student answers this weeks later
+  with nothing on screen, so the question must stand completely alone.
+  Never write "this slide", "the diagram above", "in the video", "in the
+  lesson", "discussed in the lesson", "as we saw" or "what we learned" -
+  there is no we, and there is no lesson in front of them.
+  "Why does a heavier cart accelerate less under the same force?" works.
+  "What did the diagram on slide 3 show?" and "What is one application of
+  integration discussed in the lesson?" are both unanswerable.
 - Every question must be answerable from the lesson content given to you. Do
   not test anything the lesson did not cover.
 - One idea per question. A question with "and" in the middle is two questions.

@@ -33,6 +33,18 @@ logger = logging.getLogger(__name__)
 LLMCall = Callable[[str, str, int], Awaitable[str]]
 
 VALID_KINDS = {"recall", "mcq", "problem"}
+
+# Sofie's context window is 131,072 tokens. A whole six-scene lesson
+# measures around 2,000 tokens, so these bounds exist only to stop a
+# pathological lesson from blowing the window - not to ration ordinary
+# content, which is what the previous 1200/1500 character caps ended up
+# doing to 10 of 36 real scenes.
+#
+# ~4 characters per token, leaving generous room for the prompt itself
+# and the response.
+MAX_EXTRACTION_CHARS = 240_000   # whole lesson, all scenes together
+MAX_SCENE_CHARS = 60_000         # one scene on its own
+MIN_SCENE_CHARS = 400            # never trim a scene below this
 MAX_CONCEPTS_PER_SCENE = 3
 MCQ_OPTION_COUNT = 4
 
@@ -239,22 +251,58 @@ def _normalise_concepts(data: Any) -> Tuple[Dict[str, List[Dict[str, Any]]], Lis
     return by_scene, edges
 
 
+def _fit_to_budget(blocks: List[Tuple[str, str]], budget: int) -> List[str]:
+    """Whole scenes where they fit, trimming the longest first when they do not.
+
+    A flat per-scene cap is the wrong shape: it truncated 10 of 36 real
+    scenes at 1500 characters of narration while the slide text - never
+    more than 324 characters - had 1200 it never used. Trimming the
+    longest blocks first spends the budget where the content actually is,
+    and short scenes are never cut at all.
+    """
+    total = sum(len(body) for _, body in blocks)
+    if total <= budget:
+        return [f"{head}\n{body}" for head, body in blocks]
+
+    # Largest-first, shrinking the biggest block until the total fits.
+    order = sorted(range(len(blocks)), key=lambda i: len(blocks[i][1]), reverse=True)
+    lengths = [len(body) for _, body in blocks]
+    while sum(lengths) > budget:
+        biggest = max(order, key=lambda i: lengths[i])
+        second = sorted(lengths, reverse=True)[1] if len(lengths) > 1 else 0
+        target = max(second, budget // len(lengths), MIN_SCENE_CHARS)
+        if lengths[biggest] <= target:
+            break
+        lengths[biggest] = target
+
+    logger.info(
+        f"Lesson content is {total} chars; trimming to {sum(lengths)} to stay "
+        f"inside the {budget}-char extraction budget"
+    )
+    return [
+        f"{head}\n{body[:lengths[i]]}"
+        for i, (head, body) in enumerate(blocks)
+    ]
+
+
 async def extract_concepts(
     llm: LLMCall, lesson_title: str, scenes: List[Dict[str, Any]]
 ) -> Tuple[Dict[str, List[Dict[str, Any]]], List[Tuple[str, str]]]:
     """Concepts per scene, plus within-lesson prerequisite edges."""
-    blocks: List[str] = []
+    parts: List[Tuple[str, str]] = []
     for scene in scenes:
         if not scene_is_substantive(scene):
             continue
         slide, narration = scene_text(scene)
-        blocks.append(
-            f"--- {scene.get('id')} | {scene.get('title') or ''}\n"
-            f"{slide[:1200]}\n{narration[:1500]}"
-        )
+        parts.append((
+            f"--- {scene.get('id')} | {scene.get('title') or ''}",
+            f"{slide}\n{narration}",
+        ))
 
-    if not blocks:
+    if not parts:
         return {}, []
+
+    blocks = _fit_to_budget(parts, MAX_EXTRACTION_CHARS)
 
     raw = await llm(
         CONCEPT_SYSTEM,
@@ -334,8 +382,8 @@ async def generate_items(
             lesson_title=lesson_title,
             scene_title=scene.get("title") or "",
             concepts=", ".join(concepts) or "(none identified)",
-            slide_text=slide[:2000],
-            narration=narration[:2500],
+            slide_text=slide[:MAX_SCENE_CHARS],
+            narration=narration[:MAX_SCENE_CHARS],
             count=count,
         ),
         4000,

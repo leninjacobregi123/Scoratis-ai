@@ -105,7 +105,12 @@ def check_review_items(items: Iterable[Any], report: CheckReport) -> None:
 
         # A prompt referring to what is on screen cannot be answered weeks
         # later with the lesson closed.
-        for phrase in ("this slide", "the diagram above", "shown above", "in the video"):
+        # Anything anchored to the lesson rather than the idea. Reviewed
+        # weeks later with nothing on screen, "discussed in the lesson" is
+        # as unanswerable as "shown above".
+        for phrase in ("this slide", "the diagram above", "shown above",
+                       "in the video", "in the lesson", "discussed in the",
+                       "we learned", "as we saw", "from the lesson"):
             if phrase in (item.prompt or "").lower():
                 report.add("item.self_contained", subject,
                            f"prompt refers to {phrase!r}, but review happens without the lesson")
