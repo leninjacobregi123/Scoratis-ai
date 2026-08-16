@@ -56,3 +56,7 @@ Dockerfile
 
 # Generated videos (mount as volume instead)
 generated_videos/
+
+# Runtime caches - mounted as volumes in compose, never needed at build
+audio_cache/
+media/

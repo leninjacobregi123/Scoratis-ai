@@ -31,6 +31,8 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    mem_limit: 1g
+    cpus: "1.0"
 
   redis:
     image: redis:7-alpine
@@ -44,6 +46,48 @@ services:
       timeout: 3s
       retries: 5
     restart: unless-stopped
+    mem_limit: 256m
+    cpus: "0.5"
+
+  # Nightly database dump. Without this, the only copy of every student's
+  # notebooks, courses, concepts and review history is one Docker volume on
+  # one VM - a single bad disk, or a single `docker compose down -v`, from
+  # gone for good.
+  #
+  # Runs the same image as postgres so pg_dump always matches the server
+  # major version, and writes a custom-format dump (restore with pg_restore).
+  # The dump is written under a temp name and renamed only after pg_dump
+  # exits clean, so a dump interrupted halfway can never be mistaken for a
+  # usable backup - which is the failure mode that makes people think they
+  # have backups when they do not.
+  backup:
+    image: pgvector/pgvector:pg16
+    container_name: scoratis-backup
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_backups:/backups
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          ts=$$(date +%Y%m%d-%H%M%S)
+          if pg_dump -h postgres -U scoratis -d scoratis -Fc -f /backups/.in-progress.dump; then
+            mv /backups/.in-progress.dump /backups/scoratis-$$ts.dump
+            echo "backup ok: scoratis-$$ts.dump"
+          else
+            rm -f /backups/.in-progress.dump
+            echo "backup FAILED at $$ts" >&2
+          fi
+          ls -1t /backups/scoratis-*.dump 2>/dev/null | tail -n +8 | xargs -r rm -f
+          sleep 86400
+        done
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: "0.5"
 
   backend:
     build:
@@ -63,6 +107,8 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    mem_limit: 1g
+    cpus: "1.0"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -74,7 +120,7 @@ services:
     build:
       context: ./backend
     container_name: scoratis-worker
-    command: ["celery", "-A", "celery_app", "worker", "-Q", "default,ingestion,video", "--concurrency=2"]
+    command: ["celery", "-A", "celery_app", "worker", "-Q", "default,ingestion,video,review", "--concurrency=2"]
     env_file:
       - .env.production
     volumes:
@@ -87,6 +133,8 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    mem_limit: 2g
+    cpus: "2.0"
     # The image's HEALTHCHECK (backend/Dockerfile) probes the FastAPI /health
     # endpoint - this container only runs the Celery worker, nothing ever
     # listens on 8000 here, so that probe would always fail and mark this
@@ -108,6 +156,8 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+    mem_limit: 128m
+    cpus: "0.5"
 
   caddy:
     image: caddy:2-alpine
@@ -125,9 +175,12 @@ services:
     depends_on:
       - frontend
     restart: unless-stopped
+    mem_limit: 128m
+    cpus: "0.5"
 
 volumes:
   postgres_data:
+  postgres_backups:
   redis_data:
   generated_videos_data:
   uploads_data:
