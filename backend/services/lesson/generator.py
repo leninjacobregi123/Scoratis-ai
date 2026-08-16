@@ -92,7 +92,7 @@ async def generate_outline(llm: LLMCall, requirement: str, context: str = "") ->
     raw = await llm(
         OUTLINE_SYSTEM,
         OUTLINE_USER.format(requirement=requirement, context_block=context_block),
-        2000,
+        3000,
     )
     data = _extract_json(raw)
 

@@ -208,7 +208,7 @@ async def run_probe(probe: Probe, respond: Callable, judge: LLMCall) -> ProbeRes
             message=probe.message,
             response=response[:4000],
         ),
-        400,
+        1500,
     )
     passed, reason = _parse_verdict(raw)
     return ProbeResult(probe.id, passed, reason, response)

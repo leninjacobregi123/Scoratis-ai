@@ -259,7 +259,7 @@ async def extract_concepts(
     raw = await llm(
         CONCEPT_SYSTEM,
         CONCEPT_USER.format(lesson_title=lesson_title, scenes_block="\n\n".join(blocks)),
-        2000,
+        4000,
     )
     return _normalise_concepts(_extract_json(raw))
 
@@ -338,7 +338,7 @@ async def generate_items(
             narration=narration[:2500],
             count=count,
         ),
-        2000,
+        4000,
     )
     return _normalise_items(_extract_json(raw))
 
@@ -370,7 +370,7 @@ async def grade_response(
             must_include=", ".join(must_include) if must_include else "(none given)",
             response=response,
         ),
-        600,
+        1500,
     )
     return _normalise_grade(_extract_json(raw))
 
