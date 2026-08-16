@@ -102,6 +102,19 @@ RETRYABLE_ERROR_TYPES = {
 # minutes, and a limit that resets tomorrow will not clear no matter how
 # long we sit here.
 MAX_RETRY_ATTEMPTS = 4
+
+# How many attempts each failure is worth, because they are not equally
+# likely to come good. A rate limit clears on its own, so it earns the full
+# budget. A refused connection usually means the host is not reachable from
+# here at all - measured against a provider on a private network the app
+# could not route to, four attempts turned an instant failure into a 20
+# second wait for the same error. One retry still covers a genuine blip.
+RETRY_ATTEMPTS_BY_TYPE = {
+    "rate_limit": MAX_RETRY_ATTEMPTS,
+    "service_unavailable": 3,
+    "timeout": 3,
+    "connection_error": 2,
+}
 BASE_RETRY_DELAY = 2.0
 MAX_RETRY_DELAY = 30.0
 
@@ -531,8 +544,11 @@ class LiteLLMService:
                 # Only wait out failures that waiting can actually fix. A bad
                 # key or a malformed request will fail identically forever,
                 # and retrying it just delays telling the user.
+                attempts_allowed = RETRY_ATTEMPTS_BY_TYPE.get(
+                    error.error_type, MAX_RETRY_ATTEMPTS
+                )
                 if (error.error_type not in RETRYABLE_ERROR_TYPES
-                        or attempt == MAX_RETRY_ATTEMPTS - 1):
+                        or attempt >= attempts_allowed - 1):
                     logger.error(
                         f"LiteLLM generation error ({provider.value}/{model}): "
                         f"{error.message}"
@@ -542,7 +558,7 @@ class LiteLLMService:
                 delay = _retry_delay(attempt, e)
                 logger.warning(
                     f"{error.error_type} from {provider.value}/{model}, retrying "
-                    f"in {delay:.1f}s (attempt {attempt + 1}/{MAX_RETRY_ATTEMPTS})"
+                    f"in {delay:.1f}s (attempt {attempt + 1}/{attempts_allowed})"
                 )
                 await asyncio.sleep(delay)
 

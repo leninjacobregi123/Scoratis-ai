@@ -76,6 +76,30 @@ check("an absurd Retry-After is capped",
 check("junk Retry-After falls back to backoff",
       0 < _retry_delay(0, _JunkRetryAfter()) <= MAX_RETRY_DELAY)
 
+# --- per-type attempt budgets -------------------------------------------
+from services.litellm_service import RETRY_ATTEMPTS_BY_TYPE  # noqa: E402
+
+check("a rate limit gets the full budget",
+      RETRY_ATTEMPTS_BY_TYPE.get("rate_limit", MAX_RETRY_ATTEMPTS) == MAX_RETRY_ATTEMPTS)
+
+# A refused connection usually means the host is unreachable from here, not
+# that it is briefly busy. Four attempts against a provider on an
+# unroutable network turned an instant failure into a 20 second wait.
+check("a connection error gets fewer attempts than a rate limit",
+      RETRY_ATTEMPTS_BY_TYPE["connection_error"]
+      < RETRY_ATTEMPTS_BY_TYPE.get("rate_limit", MAX_RETRY_ATTEMPTS))
+check("a connection error still gets one retry",
+      RETRY_ATTEMPTS_BY_TYPE["connection_error"] >= 2)
+
+conn_worst = sum(min(BASE_RETRY_DELAY * (2 ** i), MAX_RETRY_DELAY)
+                 for i in range(RETRY_ATTEMPTS_BY_TYPE["connection_error"] - 1))
+check("an unreachable host fails in a few seconds, not twenty",
+      conn_worst <= 5, f"{conn_worst:.0f}s")
+
+check("every capped type is one that is actually retried",
+      set(RETRY_ATTEMPTS_BY_TYPE) <= RETRYABLE_ERROR_TYPES,
+      str(sorted(set(RETRY_ATTEMPTS_BY_TYPE) - RETRYABLE_ERROR_TYPES)))
+
 # --- the total wait has to stay bounded ---------------------------------
 worst_case = sum(min(BASE_RETRY_DELAY * (2 ** i), MAX_RETRY_DELAY)
                  for i in range(MAX_RETRY_ATTEMPTS - 1))
