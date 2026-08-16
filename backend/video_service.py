@@ -543,6 +543,36 @@ if "Oval" not in globals():
         return Ellipse(**kwargs)
 
 
+# Manim draws shapes with fill_opacity=0 by default, so `Rectangle(color=BLUE)`
+# is an empty outline. The model writes shapes that way constantly - 27 of 27
+# in one real DNS render had no fill at all - and the result reads as a
+# missing graphic: a bordered box with nothing in it where a diagram should
+# be. Filling them modestly keeps labels on top readable while making the
+# shape look deliberate rather than broken.
+try:
+    for _shape_name in ("Rectangle", "RoundedRectangle", "Square", "Circle",
+                        "Ellipse", "Polygon", "RegularPolygon", "Triangle"):
+        _shape_cls = globals().get(_shape_name)
+        if _shape_cls is None:
+            continue
+
+        def _with_default_fill(cls):
+            _orig = cls.__init__
+
+            def __init__(self, *args, **kwargs):
+                # Only ever fills a gap - an explicit fill of any kind wins,
+                # including a deliberate fill_opacity=0 for a true outline.
+                if "fill_opacity" not in kwargs and "fill_color" not in kwargs:
+                    kwargs["fill_opacity"] = 0.30
+                _orig(self, *args, **kwargs)
+
+            return __init__
+
+        _shape_cls.__init__ = _with_default_fill(_shape_cls)
+except Exception:
+    pass
+
+
 # arrange_in_grid(rows=1, cols=4) on a VGroup holding 8 things raises
 # "Too few rows and columns to fit all submobjects" and kills the render.
 # The model picks the grid from how it imagines the diagram, not from how
@@ -1192,6 +1222,24 @@ into unreadable overlapping text.
   dead-center and overlap.
 - Keep a title at `.to_edge(UP)` and body content below it - never both at
   the center.
+
+### 2b. POSITION AGAINST REAL OBJECTS, NEVER NEW ONES (CRITICAL)
+
+`next_to`, `move_to` and `align_to` must reference a variable you already
+created and are actually showing. Constructing a new object inside the call
+positions against an invisible throwaway sitting at the origin, and the
+label lands in the middle of the screen instead of beside the thing it
+names.
+
+WRONG - builds a second, invisible circle and points at that:
+    Text("Local Cache").next_to(Circle(radius=0.7, color=BLUE_C), DOWN)
+
+RIGHT - name the shape, then position against the name:
+    cache = Circle(radius=0.7, color=BLUE_C).shift(LEFT * 4)
+    cache_label = Text("Local Cache", font_size=18).next_to(cache, DOWN)
+
+This applies inside VGroup(...) literals too. Create and name each shape on
+its own line first, then build the VGroup from those names.
 
 ### 3. EVERYTHING MUST FIT THE FRAME (CRITICAL)
 
