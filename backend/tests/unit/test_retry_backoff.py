@@ -83,5 +83,12 @@ check("worst-case total wait stays under a minute", worst_case < 60,
       f"{worst_case:.0f}s")
 check("more than one attempt is actually made", MAX_RETRY_ATTEMPTS >= 2)
 
-print("\nALL PASS" if not failures else f"\n{len(failures)} FAILED: {failures}")
-sys.exit(0 if not failures else 1)
+
+def test_no_failures():
+    """Pytest entry point. The checks above run at import; this asserts them."""
+    assert not failures, "; ".join(failures)
+
+
+if __name__ == "__main__":
+    print("\nALL PASS" if not failures else f"\n{len(failures)} FAILED: {failures}")
+    sys.exit(0 if not failures else 1)

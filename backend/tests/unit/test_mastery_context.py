@@ -7,8 +7,9 @@ they do know costs a few minutes. So the bar for "known" is high and the bar
 for "shaky" is low, and these assertions pin that down.
 """
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "/home/lenin/Apps Developed/Socratic-ai/backend")
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from services.review.mastery import (  # noqa: E402
     classify, build_context, _filter_relevant,
@@ -101,5 +102,12 @@ messy, _ = classify([{"name": "", "strength": 0.9},
                      {"name": "ok", "strength": None, "review_count": 2}])
 check("rows with no name are skipped", messy == [])
 
-print("\nALL PASS" if not failures else f"\n{len(failures)} FAILED: {failures}")
-sys.exit(0 if not failures else 1)
+
+def test_no_failures():
+    """Pytest entry point. The checks above run at import; this asserts them."""
+    assert not failures, "; ".join(failures)
+
+
+if __name__ == "__main__":
+    print("\nALL PASS" if not failures else f"\n{len(failures)} FAILED: {failures}")
+    sys.exit(0 if not failures else 1)

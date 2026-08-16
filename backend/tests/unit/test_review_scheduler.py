@@ -7,9 +7,10 @@ an item away for a decade - rather than on the exact float the weights
 happen to produce. Reweighting FSRS later should not break this file.
 """
 import sys
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
-sys.path.insert(0, "/home/lenin/Apps Developed/Socratic-ai/backend")
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from services.review.scheduler import (  # noqa: E402
     new_state, review, interval_days, retrievability, mastery_strength,
@@ -129,5 +130,12 @@ try:
 except ValueError:
     check("out-of-range grade is rejected", True)
 
-print("\nALL PASS" if not failures else f"\n{len(failures)} FAILED: {failures}")
-sys.exit(0 if not failures else 1)
+
+def test_no_failures():
+    """Pytest entry point. The checks above run at import; this asserts them."""
+    assert not failures, "; ".join(failures)
+
+
+if __name__ == "__main__":
+    print("\nALL PASS" if not failures else f"\n{len(failures)} FAILED: {failures}")
+    sys.exit(0 if not failures else 1)

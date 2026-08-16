@@ -6,8 +6,9 @@ is that the handling of a malformed response is testable directly, and a
 malformed response is the normal case, not the exception.
 """
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "/home/lenin/Apps Developed/Socratic-ai/backend")
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from services.review.extractor import (  # noqa: E402
     slug_for, strip_html, scene_text, scene_is_substantive,
@@ -158,5 +159,12 @@ check("recovers complete entries from a truncated response",
 check("repair does not corrupt already-valid json",
       _extract_json('{"scenes": [{"scene_id": "s1", "concepts": []}]}')["scenes"][0]["scene_id"] == "s1")
 
-print("\nALL PASS" if not failures else f"\n{len(failures)} FAILED: {failures}")
-sys.exit(0 if not failures else 1)
+
+def test_no_failures():
+    """Pytest entry point. The checks above run at import; this asserts them."""
+    assert not failures, "; ".join(failures)
+
+
+if __name__ == "__main__":
+    print("\nALL PASS" if not failures else f"\n{len(failures)} FAILED: {failures}")
+    sys.exit(0 if not failures else 1)

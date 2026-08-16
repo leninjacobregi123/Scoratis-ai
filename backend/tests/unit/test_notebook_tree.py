@@ -4,7 +4,8 @@ The cycle and depth rules are the whole reason nesting is risky, so they
 get tested without a database in the loop.
 """
 import sys
-sys.path.insert(0, "/home/lenin/Apps Developed/Socratic-ai/backend")
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from api.routes.notebooks import _descendant_ids, _depth_of, _subtree_height
 
@@ -64,5 +65,13 @@ check("move 2 under 4 -> deepest level", _depth_of(tree, 4) + _subtree_height(tr
 cyclic = [NB(10, 11), NB(11, 10)]
 check("cyclic input terminates", _depth_of(cyclic, 10), 2)
 
-print("\nALL PASS" if ok else "\nFAILURES ABOVE")
-sys.exit(0 if ok else 1)
+
+
+def test_no_failures():
+    """Pytest entry point. The checks above run at import; this asserts them."""
+    assert ok, "see printed output for the failing check"
+
+
+if __name__ == "__main__":
+    print("\nALL PASS" if ok else "\nFAILURES ABOVE")
+    sys.exit(0 if ok else 1)
