@@ -12,8 +12,8 @@
 # stranded on the VM, which is the failure that matters: a transient network
 # blip is exactly when you least want the offsite copy to quietly stop.
 #
-# Without AZURE_BACKUP_SAS_URL this exits immediately rather than spinning -
-# local-only backups are a legitimate dev setup, not an error.
+# Without AZURE_BACKUP_SAS_URL this idles instead of uploading - local-only
+# backups are a legitimate dev setup, not an error.
 
 set -u
 
@@ -23,7 +23,14 @@ INTERVAL="${UPLOAD_INTERVAL_SECONDS:-3600}"
 
 if [ -z "${AZURE_BACKUP_SAS_URL:-}" ]; then
     echo "AZURE_BACKUP_SAS_URL not set - offsite backup disabled, local dumps only"
-    exit 0
+    # Idle rather than exit. `restart: unless-stopped` restarts a container
+    # that exits 0 just as eagerly as one that crashes, so exiting here spins
+    # in a restart loop that reprints this line forever and buries real logs
+    # in every `docker compose logs`. Parking keeps a local-only setup quiet
+    # while still coming back after a reboot.
+    while true; do
+        sleep 3600
+    done
 fi
 
 mkdir -p "$MARKERS"
